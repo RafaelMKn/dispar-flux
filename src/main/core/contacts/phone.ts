@@ -20,7 +20,7 @@ export function normalizePhone(
   if (!raw) return null
 
   // Remove separadores comuns e ruido de planilha, preservando o '+' inicial.
-  const cleaned = raw.trim().replace(/[\s()\-. ]/g, '')
+  const cleaned = raw.trim().replace(/[\s()\-.\u00a0]/g, '')
   if (!cleaned) return null
 
   // Rejeita ramais/textos ("11987654210 ramal 3") e celulas de planilha vazias.

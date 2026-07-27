@@ -36,7 +36,7 @@ export function normalizeMessage(body: string): string {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '') // remove acentos
     .toLowerCase()
-    .replace(/[!.,;:?"'`´~^()\[\]{}\-_*]/g, ' ')
+    .replace(/[!.,;:?"'`´~^()[\]{}\-_*]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }

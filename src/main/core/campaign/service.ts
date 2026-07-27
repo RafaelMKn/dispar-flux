@@ -62,7 +62,12 @@ export function planCampaign(
   const all = eligibleContacts(listId)
   const optedOut = getOptOutSet(all.map((c) => c.phoneE164))
 
-  let skippedInvalid = 0
+  // Sempre 0: `eligibleContacts` nao separa "numero nao existe no WhatsApp"
+  // (waValid = 0) de "ainda nao verificado" (waValid = null), entao os dois
+  // caem em skippedUnchecked abaixo. O campo fica no contrato por enquanto —
+  // corrigir a contagem muda o que o usuario le na previa, e isso e mudanca
+  // de comportamento, nao limpeza.
+  const skippedInvalid = 0
   let skippedUnchecked = 0
   let skippedOptOut = 0
   const targets: typeof all = []
