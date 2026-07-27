@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises'
-import { basename } from 'node:path'
 import { decodeCsvBuffer, parseCsv, cell } from './csv'
 import { normalizePhone } from './phone'
 import {
@@ -36,7 +35,7 @@ export function guessMapping(headers: string[]): CsvMapping {
     s
       .toLowerCase()
       .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
+      .replace(/[\u0300-\u036f]/g, '')
 
   const findBy = (candidates: string[]): string | null =>
     headers.find((h) => candidates.some((c) => norm(h).includes(c))) ?? null
@@ -127,10 +126,6 @@ export async function importCsv(
   report.imported = insertContacts(toInsert)
   report.samples = toInsert.slice(0, 3).map((c) => ({ name: c.name, phoneE164: c.phoneE164 }))
   return report
-}
-
-export function fileLabel(filePath: string): string {
-  return basename(filePath)
 }
 
 /**

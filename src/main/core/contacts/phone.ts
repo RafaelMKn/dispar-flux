@@ -26,10 +26,7 @@ export function normalizePhone(
   // Rejeita ramais/textos ("11987654210 ramal 3") e celulas de planilha vazias.
   if (!/^\+?\d+$/.test(cleaned)) return null
 
-  const parsed = parsePhoneNumberFromString(
-    cleaned.startsWith('+') ? cleaned : cleaned,
-    region
-  )
+  const parsed = parsePhoneNumberFromString(cleaned, region)
   if (!parsed || !parsed.isValid()) return null
 
   return parsed.number // formato E.164

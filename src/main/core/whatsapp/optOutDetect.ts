@@ -34,7 +34,7 @@ const KEYWORDS = [
 export function normalizeMessage(body: string): string {
   return body
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '') // remove acentos
+    .replace(/[\u0300-\u036f]/g, '') // remove acentos
     .toLowerCase()
     .replace(/[!.,;:?"'`´~^()\[\]{}\-_*]/g, ' ')
     .replace(/\s+/g, ' ')

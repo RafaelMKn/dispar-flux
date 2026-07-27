@@ -25,7 +25,3 @@ export function getOptOutSet(phones?: string[]): Set<string> {
     : q.all()
   return new Set(rows.map((r) => r.phone))
 }
-
-export function isOptedOut(phoneE164: string): boolean {
-  return getOptOutSet([phoneE164]).has(phoneE164)
-}

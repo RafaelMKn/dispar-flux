@@ -1,4 +1,4 @@
-import { desc, eq, sql, and, asc } from 'drizzle-orm'
+import { desc, eq, sql } from 'drizzle-orm'
 import { getDb, scheduleSave } from '../db'
 import { chats, messages } from '../db/schema'
 import type { Chat, Message, MessageDirection } from '@shared/types'
@@ -91,13 +91,4 @@ export function totalUnread(): number {
       .from(chats)
       .get()?.n ?? 0
   )
-}
-
-export function findMessage(chatJid: string, waMessageId: string): Message | undefined {
-  return getDb()
-    .select()
-    .from(messages)
-    .where(and(eq(messages.chatJid, chatJid), eq(messages.waMessageId, waMessageId)))
-    .orderBy(asc(messages.ts))
-    .get() as Message | undefined
 }
