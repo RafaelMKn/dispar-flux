@@ -1,0 +1,145 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   Tokens do design system (Dispar Flux) — fonte da verdade das cores.
+   Tema claro no :root, escuro em [data-theme="dark"] no <html>.
+   ========================================================================== */
+:root {
+  --surface-base: #fbefe5;
+  --surface-raised: #fff9f4;
+  --surface-sunken: #f5e2d3;
+  --border: #e8d1be;
+  --border-subtle: #efdfd1;
+
+  --accent: #d97757;
+  --accent-hover: #c4633f;
+  --accent-strong: #b54f2c;
+  --accent-text: #a8451f; /* laranja escurecido: unico aprovado p/ texto pequeno */
+  --accent-wash: #f7e1d5;
+  --accent-wash-strong: #f2d2c0;
+
+  /* Botao primario: fill escurecido + tinta branca (opcao validada em AA) */
+  --btn: #b54f2c;
+  --btn-hover: #a8451f;
+  --btn-active: #8f3a19;
+  --btn-ink: #ffffff;
+
+  --ink: #1a1614;
+  --ink-secondary: #6b5d54;
+  --ink-tertiary: #9a8b80;
+  --ink-meta: #74655b;
+
+  --success: #4f7a52;
+  --success-text: #3f6642;
+  --success-wash: #e4ede2;
+  --warning: #b8862b;
+  --warning-text: #8a6116;
+  --warning-wash: #f7e8ce;
+  --danger: #a8322a;
+  --danger-text: #a8322a;
+  --danger-wash: #f6dcd8;
+
+  --shadow-flat: 0 1px 2px rgba(26, 22, 20, 0.06);
+  --shadow-float: 0 12px 32px rgba(26, 22, 20, 0.16), 0 2px 6px rgba(26, 22, 20, 0.08);
+
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  --surface-base: #14100e;
+  --surface-raised: #1e1917;
+  --surface-sunken: #0e0b0a;
+  --border: #2e2724;
+  --border-subtle: #241e1c;
+
+  --accent: #e08a67;
+  --accent-hover: #ec9e7e;
+  --accent-strong: #e08a67;
+  --accent-text: #e9a184;
+  --accent-wash: #2c201b;
+  --accent-wash-strong: #3a2820;
+
+  --btn: #e08a67;
+  --btn-hover: #ec9e7e;
+  --btn-active: #c4633f;
+  --btn-ink: #14100e;
+
+  --ink: #f5efe9;
+  --ink-secondary: #b5a79d;
+  --ink-tertiary: #8a7b71;
+  --ink-meta: #b5a79d;
+
+  --success: #7faf83;
+  --success-text: #8fbf93;
+  --success-wash: #1b241c;
+  --warning: #d9a94a;
+  --warning-text: #e0b65e;
+  --warning-wash: #2a2116;
+  --danger: #e0665c;
+  --danger-text: #e8817a;
+  --danger-wash: #2b1715;
+
+  --shadow-flat: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.4);
+
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--surface-base);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Foco sempre visivel e tematizado — nunca o anel azul do navegador. */
+:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: var(--accent-wash-strong);
+  color: var(--ink);
+}
+
+/* Numerais tabulares em metricas e contadores. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes dfspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes dfin {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

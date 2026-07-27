@@ -1,0 +1,22 @@
+appId: com.disparflux.app
+productName: Dispar Flux
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**/*
+  - package.json
+asarUnpack:
+  - "**/*.node"
+  - "**/*.wasm"
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Dispar Flux
