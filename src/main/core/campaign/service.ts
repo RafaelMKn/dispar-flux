@@ -2,15 +2,20 @@ import {
   createCampaign,
   enqueueJobs,
   eligibleContacts,
-  campaignProgress,
-  type CampaignProgress
+  campaignProgress
 } from '../../repos/campaigns'
 import { getOptOutSet } from '../../repos/optOuts'
 import { whatsapp } from '../whatsapp/client'
 import { campaignRunner, type Sender } from './worker'
 import { renderFixed, renderRotate, renderParagraph, type RenderContext } from '../messages/render'
 import { scoped } from '../../logger'
-import type { MessageMode, SendingDefaults, CampaignPlan, MessageConfig } from '@shared/types'
+import type {
+  MessageMode,
+  SendingDefaults,
+  CampaignPlan,
+  CampaignProgress,
+  MessageConfig
+} from '@shared/types'
 
 const log = scoped('campaign')
 

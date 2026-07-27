@@ -9,8 +9,7 @@ import {
   markJobSkipped,
   campaignProgress,
   sentToday,
-  runningCampaign,
-  type CampaignProgress
+  runningCampaign
 } from '../../repos/campaigns'
 import { getContact } from '../../repos/contacts'
 import { getOptOutSet } from '../../repos/optOuts'
@@ -33,7 +32,7 @@ export interface Sender {
   sendText: (jid: string, text: string) => Promise<string | null>
 }
 
-export type StopReason = 'done' | 'paused' | 'canceled' | 'disconnected' | 'dailyCap' | 'error'
+export type StopReason = 'done' | 'paused' | 'canceled' | 'disconnected' | 'dailyCap'
 
 export const campaignEvents = new EventEmitter()
 
@@ -197,7 +196,6 @@ class CampaignRunner {
           campaign.restDurationMs > 0
         ) {
           log.info('descanso', { apos: sentInThisRun, ms: campaign.restDurationMs })
-          campaignEvents.emit('resting', { campaignId, untilMs: Date.now() + campaign.restDurationMs })
           await this.sleep(campaign.restDurationMs)
           continue
         }
@@ -233,5 +231,3 @@ export function reconcileRunningCampaign(): string | null {
   })
   return c.id
 }
-
-export type { CampaignProgress }

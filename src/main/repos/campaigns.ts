@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm'
 import { getDb, scheduleSave, saveNow } from '../db'
 import { campaigns, campaignJobs, contacts } from '../db/schema'
-import type { CampaignStatus, JobStatus, MessageMode, SendingDefaults } from '@shared/types'
+import type {
+  CampaignProgress,
+  CampaignStatus,
+  JobStatus,
+  MessageMode,
+  SendingDefaults
+} from '@shared/types'
 
 export interface CampaignRow {
   id: string
@@ -180,17 +186,6 @@ export function reconcileStuckJobs(): number {
     .run()
   saveNow()
   return stuck.length
-}
-
-export interface CampaignProgress {
-  campaignId: string
-  total: number
-  sent: number
-  failed: number
-  skipped: number
-  unknown: number
-  pending: number
-  status: string
 }
 
 export function campaignProgress(campaignId: string): CampaignProgress {
