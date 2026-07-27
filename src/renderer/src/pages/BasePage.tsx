@@ -468,7 +468,11 @@ function BaseDetail({
 
           {pages > 1 && (
             <div className="mt-4 flex items-center justify-center gap-3">
-              <Button variant="secondary" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
+              <Button
+                variant="secondary"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+              >
                 Anterior
               </Button>
               <Pill>

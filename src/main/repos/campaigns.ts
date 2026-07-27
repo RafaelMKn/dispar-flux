@@ -102,7 +102,10 @@ export function enqueueJobs(
   }))
   const CHUNK = 400
   for (let i = 0; i < values.length; i += CHUNK) {
-    getDb().insert(campaignJobs).values(values.slice(i, i + CHUNK)).run()
+    getDb()
+      .insert(campaignJobs)
+      .values(values.slice(i, i + CHUNK))
+      .run()
   }
   saveNow() // a fila e a fonte da verdade: nao pode se perder
   return values.length

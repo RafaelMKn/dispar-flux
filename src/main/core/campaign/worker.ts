@@ -204,8 +204,7 @@ class CampaignRunner {
         await this.sleep(randomBetween(campaign.delayMinMs, campaign.delayMaxMs))
       }
     } finally {
-      const finalStatus =
-        reason === 'done' ? 'done' : reason === 'canceled' ? 'canceled' : 'paused'
+      const finalStatus = reason === 'done' ? 'done' : reason === 'canceled' ? 'canceled' : 'paused'
       setCampaignStatus(campaignId, finalStatus)
       this.running = null
       this.pauseRequested = false

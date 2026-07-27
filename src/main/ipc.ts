@@ -1,9 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
-import {
-  listContactLists,
-  createContactList,
-  removeContactList
-} from './repos/contactLists'
+import { listContactLists, createContactList, removeContactList } from './repos/contactLists'
 import {
   pageContacts,
   listStats,
@@ -14,12 +10,7 @@ import {
   extraKeys
 } from './repos/contacts'
 import { addOptOut, removeOptOut } from './repos/optOuts'
-import {
-  getSendingDefaults,
-  setSendingDefaults,
-  getAiSettings,
-  setAiSettings
-} from './settings'
+import { getSendingDefaults, setSendingDefaults, getAiSettings, setAiSettings } from './settings'
 import { whatsapp } from './core/whatsapp/client'
 import { join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
@@ -257,9 +248,7 @@ export function registerIpc(): void {
 
   /* ── Configuracoes ────────────────────────────────────────────────────── */
   ipcMain.handle('settings:getSendingDefaults', () => getSendingDefaults())
-  ipcMain.handle('settings:setSendingDefaults', (_e, v: SendingDefaults) =>
-    setSendingDefaults(v)
-  )
+  ipcMain.handle('settings:setSendingDefaults', (_e, v: SendingDefaults) => setSendingDefaults(v))
   ipcMain.handle('settings:getAi', () => getAiSettings())
   ipcMain.handle(
     'settings:setAi',

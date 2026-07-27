@@ -13,10 +13,7 @@ export const DEFAULT_REGION: CountryCode = 'BR'
  * digito por conta propria e a causa classica de mandar mensagem para o numero
  * errado.
  */
-export function normalizePhone(
-  raw: string,
-  region: CountryCode = DEFAULT_REGION
-): string | null {
+export function normalizePhone(raw: string, region: CountryCode = DEFAULT_REGION): string | null {
   if (!raw) return null
 
   // Remove separadores comuns e ruido de planilha, preservando o '+' inicial.

@@ -13,15 +13,16 @@ export function addOptOut(phoneE164: string, reason?: string): void {
 }
 
 export function removeOptOut(phoneE164: string): void {
-  getDb().delete(optOuts).where(inArray(optOuts.phoneE164, [phoneE164])).run()
+  getDb()
+    .delete(optOuts)
+    .where(inArray(optOuts.phoneE164, [phoneE164]))
+    .run()
   scheduleSave()
 }
 
 /** Conjunto de numeros descadastrados, para filtrar em lote sem N consultas. */
 export function getOptOutSet(phones?: string[]): Set<string> {
   const q = getDb().select({ phone: optOuts.phoneE164 }).from(optOuts)
-  const rows = phones?.length
-    ? q.where(inArray(optOuts.phoneE164, phones)).all()
-    : q.all()
+  const rows = phones?.length ? q.where(inArray(optOuts.phoneE164, phones)).all() : q.all()
   return new Set(rows.map((r) => r.phone))
 }

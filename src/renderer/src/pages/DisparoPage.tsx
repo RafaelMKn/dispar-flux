@@ -51,7 +51,12 @@ interface ModeCard {
 
 const MODES: ModeCard[] = [
   { id: 'fixed', label: 'Fixa', icon: Type, desc: 'Um texto unico, com variaveis do contato.' },
-  { id: 'rotate', label: 'Alternada', icon: Layers, desc: 'Varias mensagens completas em rodizio.' },
+  {
+    id: 'rotate',
+    label: 'Alternada',
+    icon: Layers,
+    desc: 'Varias mensagens completas em rodizio.'
+  },
   {
     id: 'paragraph',
     label: 'Alternada por paragrafo',
@@ -77,7 +82,11 @@ export default function DisparoPage(): JSX.Element {
   const [listId, setListId] = useState<string>('')
   const [mode, setMode] = useState<MessageMode>('fixed')
   const [name, setName] = useState('')
-  const [config, setConfig] = useState<MessageConfig>({ text: '', messages: [''], pools: [[''], [''], ['']] })
+  const [config, setConfig] = useState<MessageConfig>({
+    text: '',
+    messages: [''],
+    pools: [[''], [''], ['']]
+  })
   const [pacing, setPacing] = useState<SendingDefaults | null>(null)
   const [plan, setPlan] = useState<CampaignPlan | null>(null)
   const [progress, setProgress] = useState<CampaignProgress | null>(null)
@@ -209,7 +218,10 @@ export default function DisparoPage(): JSX.Element {
             </Button>
           </div>
 
-          <Progress value={progress.sent + progress.failed + progress.skipped} max={progress.total} />
+          <Progress
+            value={progress.sent + progress.failed + progress.skipped}
+            max={progress.total}
+          />
 
           <div className="tnum mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs">
             <span className="text-state-successText">{progress.sent} enviados</span>
@@ -258,7 +270,9 @@ export default function DisparoPage(): JSX.Element {
                     onClick={() => setListId(l.id)}
                     className={[
                       'flex flex-wrap items-center gap-4 rounded-lg border p-4 text-left transition-colors',
-                      on ? 'border-accent bg-accent-wash' : 'border-line bg-surface-raised hover:bg-accent-wash'
+                      on
+                        ? 'border-accent bg-accent-wash'
+                        : 'border-line bg-surface-raised hover:bg-accent-wash'
                     ].join(' ')}
                   >
                     <Database size={18} className="flex-none text-accent-text" />
@@ -483,7 +497,11 @@ export default function DisparoPage(): JSX.Element {
           )}
         </StepSection>
 
-        <StepSection step={4} title="Ritmo" hint="Intervalos aleatorios e descansos imitam o uso humano.">
+        <StepSection
+          step={4}
+          title="Ritmo"
+          hint="Intervalos aleatorios e descansos imitam o uso humano."
+        >
           <Card>
             {pacing && (
               <>
@@ -521,7 +539,11 @@ export default function DisparoPage(): JSX.Element {
           </Card>
         </StepSection>
 
-        <StepSection step={5} title="Revisar e disparar" hint="Confira as amostras antes de enviar.">
+        <StepSection
+          step={5}
+          title="Revisar e disparar"
+          hint="Confira as amostras antes de enviar."
+        >
           <div className="flex flex-col gap-3">
             <Card>
               <Input

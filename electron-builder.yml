@@ -7,8 +7,8 @@ files:
   - out/**/*
   - package.json
 asarUnpack:
-  - "**/*.node"
-  - "**/*.wasm"
+  - '**/*.node'
+  - '**/*.wasm'
 win:
   target:
     - target: nsis

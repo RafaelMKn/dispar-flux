@@ -112,13 +112,13 @@ export default function CsvImportModal({
       {step === 'pick' && (
         <div className="space-y-4">
           <p className="text-sm text-ink-secondary [text-wrap:pretty]">
-            Escolha um arquivo <strong>.csv</strong>. O app detecta sozinho o separador
-            (<code>,</code> ou <code>;</code>) e a codificacao — inclusive arquivos exportados do
+            Escolha um arquivo <strong>.csv</strong>. O app detecta sozinho o separador (
+            <code>,</code> ou <code>;</code>) e a codificacao — inclusive arquivos exportados do
             Excel em portugues, que costumam vir em latin1 e quebrariam os acentos.
           </p>
           <Callout tone="neutral" icon={FileUp}>
-            Importe apenas contatos que autorizaram receber suas mensagens. Numeros com
-            descadastro registrado sao ignorados automaticamente.
+            Importe apenas contatos que autorizaram receber suas mensagens. Numeros com descadastro
+            registrado sao ignorados automaticamente.
           </Callout>
 
           <div className="flex items-center gap-2 text-sm">
@@ -140,7 +140,14 @@ export default function CsvImportModal({
               Linhas: <strong className="text-ink">{preview.totalRows}</strong>
             </span>
             <span>
-              Separador: <strong className="text-ink">{preview.delimiter === ';' ? 'ponto e virgula' : preview.delimiter === ',' ? 'virgula' : preview.delimiter}</strong>
+              Separador:{' '}
+              <strong className="text-ink">
+                {preview.delimiter === ';'
+                  ? 'ponto e virgula'
+                  : preview.delimiter === ','
+                    ? 'virgula'
+                    : preview.delimiter}
+              </strong>
             </span>
             <span>
               Codificacao: <strong className="text-ink">{preview.encoding}</strong>

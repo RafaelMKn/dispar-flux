@@ -50,7 +50,8 @@ function extractText(message: Record<string, unknown> | null | undefined): strin
   if (m.extendedTextMessage?.text) return m.extendedTextMessage.text
   if (m.imageMessage) return m.imageMessage.caption || '[imagem]'
   if (m.videoMessage) return m.videoMessage.caption || '[video]'
-  if (m.documentMessage) return m.documentMessage.caption || `[documento: ${m.documentMessage.fileName ?? 'arquivo'}]`
+  if (m.documentMessage)
+    return m.documentMessage.caption || `[documento: ${m.documentMessage.fileName ?? 'arquivo'}]`
   if (m.audioMessage) return '[audio]'
   if (m.stickerMessage) return '[sticker]'
   return null

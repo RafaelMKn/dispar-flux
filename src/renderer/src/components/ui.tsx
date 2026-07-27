@@ -1,4 +1,9 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from 'react'
+import type {
+  ButtonHTMLAttributes,
+  InputHTMLAttributes,
+  ReactNode,
+  SelectHTMLAttributes
+} from 'react'
 import { ShieldAlert, X, type LucideIcon } from 'lucide-react'
 
 /* ── Cabecalho de pagina ───────────────────────────────────────────────── */
@@ -41,9 +46,7 @@ export function Card({
   className?: string
 }): JSX.Element {
   return (
-    <div
-      className={`rounded-lg border border-line bg-surface-raised p-4 shadow-flat ${className}`}
-    >
+    <div className={`rounded-lg border border-line bg-surface-raised p-4 shadow-flat ${className}`}>
       {children}
     </div>
   )
@@ -88,8 +91,7 @@ export function Button({
     'inline-flex items-center justify-center gap-2 rounded font-medium transition-colors duration-120 ease-out disabled:cursor-not-allowed disabled:opacity-45'
   const styles: Record<ButtonVariant, string> = {
     primary: 'bg-btn text-btn-ink hover:bg-btn-hover active:bg-btn-active px-4 py-2 text-sm',
-    secondary:
-      'border border-line bg-transparent text-ink hover:bg-accent-wash px-4 py-2 text-sm',
+    secondary: 'border border-line bg-transparent text-ink hover:bg-accent-wash px-4 py-2 text-sm',
     ghost: 'text-accent-text hover:bg-accent-wash px-2 py-2 text-sm',
     danger:
       'border border-line bg-transparent text-state-dangerText hover:bg-state-dangerWash px-4 py-2 text-sm'
@@ -287,7 +289,13 @@ export function Table({ children }: { children: ReactNode }): JSX.Element {
   )
 }
 
-export function Th({ children, className = '' }: { children?: ReactNode; className?: string }): JSX.Element {
+export function Th({
+  children,
+  className = ''
+}: {
+  children?: ReactNode
+  className?: string
+}): JSX.Element {
   return (
     <th
       className={`border-b border-line bg-surface-sunken px-3 py-2 text-left text-[11px] font-medium uppercase tracking-[.06em] text-ink-meta ${className}`}
@@ -297,7 +305,13 @@ export function Th({ children, className = '' }: { children?: ReactNode; classNa
   )
 }
 
-export function Td({ children, className = '' }: { children?: ReactNode; className?: string }): JSX.Element {
+export function Td({
+  children,
+  className = ''
+}: {
+  children?: ReactNode
+  className?: string
+}): JSX.Element {
   return <td className={`border-b border-line-subtle px-3 py-2 ${className}`}>{children}</td>
 }
 
@@ -312,7 +326,10 @@ export function Progress({ value, max }: { value: number; max: number }): JSX.El
       aria-valuemin={0}
       aria-valuemax={max}
     >
-      <div className="h-full rounded-full bg-accent transition-[width] duration-180 ease-out" style={{ width: `${pct}%` }} />
+      <div
+        className="h-full rounded-full bg-accent transition-[width] duration-180 ease-out"
+        style={{ width: `${pct}%` }}
+      />
     </div>
   )
 }

@@ -32,6 +32,7 @@ Paleta: **laranja quente + preto**. Ponto crítico de execução:
 Ponto de partida de paleta (ajuste se justificar, mas mantenha a temperatura quente):
 
 **Claro**
+
 ```
 --surface-base     #FBEFE5   /* fundo do app — pêssego quente */
 --surface-raised   #FFF9F4   /* cards, campos */
@@ -50,6 +51,7 @@ Ponto de partida de paleta (ajuste se justificar, mas mantenha a temperatura que
 ```
 
 **Escuro**
+
 ```
 --surface-base     #14100E
 --surface-raised   #1E1917
@@ -82,19 +84,21 @@ O app é uma janela redimensionável (hoje mínimo 940×640; projete resistindo 
 
 ## 5. As 4 telas (especifique cada uma)
 
-### 5.1 Disparo — *tela mais importante*
+### 5.1 Disparo — _tela mais importante_
+
 Fluxo em seções verticais numeradas, tudo em uma página (sem wizard modal):
+
 1. **Base de destino** — seletor com nome da base e contagem de contatos válidos.
-2. **Modo de mensagem** — 4 *radio-cards* selecionáveis, com ícone e uma linha de explicação:
+2. **Modo de mensagem** — 4 _radio-cards_ selecionáveis, com ícone e uma linha de explicação:
    - **Fixa** — texto único com variáveis
    - **Alternada** — várias mensagens completas em rodízio
    - **Alternada por parágrafo** — sorteia 1 variação de cada parágrafo
    - **IA** — a IA escreve conforme o prompt do usuário
 3. **Conteúdo** — o editor muda conforme o modo:
-   - *Fixa*: textarea + **chips de variável** clicáveis (`[nome]`, e campos extras do CSV)
-   - *Alternada*: lista de blocos de mensagem, adicionar/remover/reordenar
-   - *Alternada por parágrafo*: 3 grupos (P1, P2, P3), cada um com N variações, e um **contador de combinações** em destaque: "3 × 3 × 3 = 27 mensagens únicas"
-   - *IA*: campo de prompt + badge do modelo ativo + botão "gerar amostra"
+   - _Fixa_: textarea + **chips de variável** clicáveis (`[nome]`, e campos extras do CSV)
+   - _Alternada_: lista de blocos de mensagem, adicionar/remover/reordenar
+   - _Alternada por parágrafo_: 3 grupos (P1, P2, P3), cada um com N variações, e um **contador de combinações** em destaque: "3 × 3 × 3 = 27 mensagens únicas"
+   - _IA_: campo de prompt + badge do modelo ativo + botão "gerar amostra"
 4. **Ritmo (anti-ban)** — intervalo mín/máx entre mensagens, descanso a cada N envios, duração do descanso, teto diário. **Crucial**: mostre um resumo em linguagem natural, tipo "≈120 msgs/h · pausa de 5 min a cada 40 envios · máx. 300/dia".
 5. **Revisar e disparar** — painel de **preview** com mensagens já renderizadas (navegável entre amostras) e o botão de disparo.
 
@@ -103,6 +107,7 @@ Fluxo em seções verticais numeradas, tudo em uma página (sem wizard modal):
 Inclua um **aviso de risco** (Termos do WhatsApp + LGPD) presente e legível, mas discreto — um callout, não um alarme vermelho.
 
 ### 5.2 Base de Dados
+
 - Lista de bases (cards ou tabela): nome, total de contatos, válidos/inválidos, opt-outs, data de criação.
 - Criar base; renomear; excluir (com confirmação).
 - **Importação de CSV** em modal de 3 passos: (1) soltar/selecionar arquivo, (2) **mapear colunas** com selects + tabela de preview das primeiras linhas, (3) resumo antes de confirmar (quantos válidos, duplicados, telefones inválidos).
@@ -110,13 +115,16 @@ Inclua um **aviso de risco** (Termos do WhatsApp + LGPD) presente e legível, ma
 - Ação "validar no WhatsApp" com progresso.
 
 ### 5.3 Configurações
+
 Seções em cards:
+
 - **Conexão WhatsApp** — área emoldurada para o **QR Code** + pill de status (desconectado / pareando / conectado) + botão desconectar.
 - **Inteligência Artificial** — select de empresa → select de modelo (dependente) → campo de chave de API mascarado, com estado "chave salva" e botão testar.
 - **Envio** — os parâmetros padrão de ritmo (mesmos controles da tela de Disparo).
 - **Sobre / Aviso legal**.
 
 ### 5.4 Conversas (inbox)
+
 - Painel de lista: busca + itens com avatar, nome, trecho da última mensagem, horário, badge de não lidas.
 - Thread: bolhas (recebida = superfície elevada; enviada = tom de acento), divisores de data, indicador de status de envio.
 - Compositor: textarea que cresce + botão enviar.
@@ -130,7 +138,7 @@ botão (primário, secundário, ghost, perigo), input, select, textarea, toggle,
 ## 7. Acessibilidade — requisito, não opcional
 
 - WCAG **AA**: texto normal ≥ 4.5:1, texto grande e elementos de UI ≥ 3:1.
-- **Atenção ao laranja**: `#D97757` sobre fundo creme dá ~3:1 — **reprova para texto pequeno**. Portanto: (a) laranja de acento serve para preenchimentos, bordas e texto grande; (b) para texto pequeno "laranja" use um tom escurecido (~`#A8451F`); (c) no botão primário, escolha e **valide** uma das opções: texto near-black sobre laranja, ou fill escurecido (`#B54F2C`) com texto branco. Declare os ratios calculados.
+- **Atenção ao laranja**: `#D97757` sobre fundo creme dá ~~3:1 — **reprova para texto pequeno**. Portanto: (a) laranja de acento serve para preenchimentos, bordas e texto grande; (b) para texto pequeno "laranja" use um tom escurecido (~~`#A8451F`); (c) no botão primário, escolha e **valide** uma das opções: texto near-black sobre laranja, ou fill escurecido (`#B54F2C`) com texto branco. Declare os ratios calculados.
 - Foco sempre visível (anel de 2px com offset), navegação completa por teclado.
 - Status (enviado / falhou / pulado) **nunca só por cor** — combine com ícone ou forma.
 

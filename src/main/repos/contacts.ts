@@ -29,7 +29,10 @@ export function insertContacts(rows: NewContact[]): number {
   // Insere em lotes: o sql.js monta a query inteira em memoria.
   const CHUNK = 400
   for (let i = 0; i < values.length; i += CHUNK) {
-    getDb().insert(contacts).values(values.slice(i, i + CHUNK)).run()
+    getDb()
+      .insert(contacts)
+      .values(values.slice(i, i + CHUNK))
+      .run()
   }
   scheduleSave()
   return values.length
@@ -73,19 +76,14 @@ export function pageContacts(
     cond = and(cond, or(like(contacts.name, term), like(contacts.phoneE164, term)))!
   }
 
-  const total = getDb()
-    .select({ n: sql<number>`count(*)` })
-    .from(contacts)
-    .where(cond)
-    .get()?.n ?? 0
+  const total =
+    getDb()
+      .select({ n: sql<number>`count(*)` })
+      .from(contacts)
+      .where(cond)
+      .get()?.n ?? 0
 
-  const rows = getDb()
-    .select()
-    .from(contacts)
-    .where(cond)
-    .limit(limit)
-    .offset(offset)
-    .all()
+  const rows = getDb().select().from(contacts).where(cond).limit(limit).offset(offset).all()
 
   return { rows, total }
 }

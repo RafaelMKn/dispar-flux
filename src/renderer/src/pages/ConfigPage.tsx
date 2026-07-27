@@ -62,8 +62,7 @@ export default function ConfigPage(): JSX.Element {
     const perCycle = n > 0 ? n : 1
     const perHour = Math.round((3600000 / cycleMs) * perCycle)
     const restMin = Math.round(sending.restDurationMs / 60000)
-    const restPart =
-      n > 0 ? ` · pausa de ${restMin} min a cada ${n} envios` : ''
+    const restPart = n > 0 ? ` · pausa de ${restMin} min a cada ${n} envios` : ''
     return `≈${perHour} msgs/h${restPart} · max. ${sending.dailyCap}/dia`
   })()
 
@@ -129,9 +128,7 @@ export default function ConfigPage(): JSX.Element {
 
         <Card>
           <SectionTitle icon={Gauge} title="Envio" />
-          {paceSummary && (
-            <p className="tnum mb-4 text-sm text-accent-text">{paceSummary}</p>
-          )}
+          {paceSummary && <p className="tnum mb-4 text-sm text-accent-text">{paceSummary}</p>}
           {sending && (
             <div className="grid gap-4 sm:grid-cols-2">
               <Input
@@ -156,9 +153,7 @@ export default function ConfigPage(): JSX.Element {
                 label="Duracao do descanso (ms)"
                 type="number"
                 value={sending.restDurationMs}
-                onChange={(e) =>
-                  setSending({ ...sending, restDurationMs: Number(e.target.value) })
-                }
+                onChange={(e) => setSending({ ...sending, restDurationMs: Number(e.target.value) })}
               />
               <Input
                 label="Teto diario"

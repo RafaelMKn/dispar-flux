@@ -162,7 +162,11 @@ export default function InboxPage(): JSX.Element {
       </div>
 
       {/* Thread */}
-      <div className={['min-w-0 flex-1 flex-col', active ? 'flex' : 'hidden min-[1100px]:flex'].join(' ')}>
+      <div
+        className={['min-w-0 flex-1 flex-col', active ? 'flex' : 'hidden min-[1100px]:flex'].join(
+          ' '
+        )}
+      >
         {activeChat ? (
           <>
             <div className="flex items-center gap-3 border-b border-line bg-surface-sunken px-4 py-3">

@@ -62,7 +62,11 @@ export function insertMessage(m: {
   waMessageId: string | null
   status?: string | null
 }): boolean {
-  const exists = getDb().select({ id: messages.id }).from(messages).where(eq(messages.id, m.id)).get()
+  const exists = getDb()
+    .select({ id: messages.id })
+    .from(messages)
+    .where(eq(messages.id, m.id))
+    .get()
   if (exists) return false
   getDb()
     .insert(messages)

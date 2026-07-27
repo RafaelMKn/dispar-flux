@@ -120,12 +120,23 @@ describe('renderParagraph', () => {
 
 describe('countCombinations', () => {
   it('multiplica o tamanho dos pools', () => {
-    expect(countCombinations([['a', 'b', 'c'], ['d', 'e', 'f'], ['g', 'h', 'i']])).toBe(27)
+    expect(
+      countCombinations([
+        ['a', 'b', 'c'],
+        ['d', 'e', 'f'],
+        ['g', 'h', 'i']
+      ])
+    ).toBe(27)
     expect(countCombinations([['a', 'b'], ['c']])).toBe(2)
   })
 
   it('desconsidera variacoes vazias', () => {
-    expect(countCombinations([['a', '', '  '], ['b', 'c']])).toBe(2)
+    expect(
+      countCombinations([
+        ['a', '', '  '],
+        ['b', 'c']
+      ])
+    ).toBe(2)
   })
 
   it('devolve 0 sem pools utilizaveis', () => {
@@ -136,10 +147,7 @@ describe('countCombinations', () => {
 
 describe('extractVars', () => {
   it('lista as variaveis usadas, sem repetir e sem o fallback', () => {
-    expect(extractVars('Oi [nome], da [empresa]. Certo [nome|amigo]?')).toEqual([
-      'nome',
-      'empresa'
-    ])
+    expect(extractVars('Oi [nome], da [empresa]. Certo [nome|amigo]?')).toEqual(['nome', 'empresa'])
   })
 })
 

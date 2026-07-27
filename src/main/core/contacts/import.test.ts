@@ -102,8 +102,8 @@ describe('importCsv', () => {
     const list = createContactList('Teste sem telefone')
     const file = writeExcelBrCsv('semtel.csv', ['a;b', '1;2'].join('\n'))
     const preview = await buildPreview(file)
-    await expect(importCsv(list.id, preview, { name: null, phone: null, extras: [] })).rejects.toThrow(
-      /telefone/i
-    )
+    await expect(
+      importCsv(list.id, preview, { name: null, phone: null, extras: [] })
+    ).rejects.toThrow(/telefone/i)
   })
 })

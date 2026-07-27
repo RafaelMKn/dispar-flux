@@ -29,7 +29,10 @@ function escapeCell(v: string): string {
 }
 
 export function buildTemplateCsv(): Buffer {
-  const lines = [TEMPLATE_HEADERS.join(';'), ...EXAMPLE_ROWS.map((r) => r.map(escapeCell).join(';'))]
+  const lines = [
+    TEMPLATE_HEADERS.join(';'),
+    ...EXAMPLE_ROWS.map((r) => r.map(escapeCell).join(';'))
+  ]
   // \r\n: o Excel lida melhor com quebra de linha do Windows.
   return Buffer.from(BOM + lines.join('\r\n') + '\r\n', 'utf-8')
 }

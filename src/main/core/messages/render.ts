@@ -97,9 +97,7 @@ export function renderParagraph(
   ctx: RenderContext,
   rng: () => number = Math.random
 ): string {
-  const pools = config.pools
-    .map((p) => p.filter((v) => v.trim()))
-    .filter((p) => p.length > 0)
+  const pools = config.pools.map((p) => p.filter((v) => v.trim())).filter((p) => p.length > 0)
   if (pools.length === 0) return ''
   const parts = pools.map((pool) => pool[Math.floor(rng() * pool.length) % pool.length])
   return substituteVars(parts.join('\n\n'), ctx)

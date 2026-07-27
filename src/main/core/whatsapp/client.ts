@@ -179,8 +179,11 @@ class WhatsappService extends EventEmitter {
   private async open(): Promise<void> {
     this.patch({ status: 'connecting', lastError: null })
 
-    const { default: makeWASocket, useMultiFileAuthState, makeCacheableSignalKeyStore } =
-      await loadBaileys()
+    const {
+      default: makeWASocket,
+      useMultiFileAuthState,
+      makeCacheableSignalKeyStore
+    } = await loadBaileys()
 
     const { state: authState, saveCreds } = await useMultiFileAuthState(AUTH_DIR())
     const logger = pinoAdapter('baileys')
@@ -249,9 +252,7 @@ class WhatsappService extends EventEmitter {
         status: 'connected',
         qrDataUrl: null,
         lastError: null,
-        me: this.sock?.user
-          ? { id: this.sock.user.id, name: this.sock.user.name ?? null }
-          : null
+        me: this.sock?.user ? { id: this.sock.user.id, name: this.sock.user.name ?? null } : null
       })
       return
     }

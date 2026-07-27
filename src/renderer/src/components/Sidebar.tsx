@@ -1,13 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import {
-  MessageCircle,
-  Send,
-  Database,
-  Settings,
-  Moon,
-  Sun,
-  type LucideIcon
-} from 'lucide-react'
+import { MessageCircle, Send, Database, Settings, Moon, Sun, type LucideIcon } from 'lucide-react'
 import { StatusDot } from './ui'
 import type { Theme } from '../useTheme'
 
