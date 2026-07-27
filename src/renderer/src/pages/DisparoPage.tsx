@@ -22,6 +22,7 @@ import type {
   CampaignPlan,
   CampaignProgress
 } from '@shared/types'
+import { countCombinations, poolSizes } from '@shared/messages'
 import {
   PageBody,
   PageHeader,
@@ -36,7 +37,6 @@ import {
   Progress,
   EmptyState,
   Table,
-  Th,
   Td
 } from '../components/ui'
 import { useWhatsapp } from '../useWhatsapp'
@@ -69,11 +69,6 @@ const MODES: ModeCard[] = [
 
 const textareaCls =
   'w-full rounded border border-line bg-surface-raised px-3 py-2 text-sm text-ink outline-none placeholder:text-ink-tertiary focus-visible:border-accent-strong'
-
-function countCombos(pools: string[][]): number {
-  const sizes = pools.map((p) => p.filter((v) => v.trim()).length).filter((n) => n > 0)
-  return sizes.length === 0 ? 0 : sizes.reduce((a, n) => a * n, 1)
-}
 
 export default function DisparoPage(): JSX.Element {
   const wa = useWhatsapp()
@@ -153,7 +148,7 @@ export default function DisparoPage(): JSX.Element {
     }
   }
 
-  const combos = countCombos(config.pools ?? [])
+  const combos = countCombinations(config.pools ?? [])
   const selectedStats = listId ? stats[listId] : undefined
   const canStart =
     Boolean(listId) &&
@@ -473,10 +468,7 @@ export default function DisparoPage(): JSX.Element {
                 </Button>
                 <span className="tnum text-sm text-accent-text">
                   {combos > 0
-                    ? `${(config.pools ?? [])
-                        .map((p) => p.filter((v) => v.trim()).length)
-                        .filter((n) => n > 0)
-                        .join(' × ')} = ${combos} mensagens unicas`
+                    ? `${poolSizes(config.pools ?? []).join(' × ')} = ${combos} mensagens unicas`
                     : 'Preencha as variacoes para ver as combinacoes'}
                 </span>
               </div>

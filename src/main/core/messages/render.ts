@@ -105,16 +105,6 @@ export function renderParagraph(
   return substituteVars(parts.join('\n\n'), ctx)
 }
 
-/**
- * Quantas mensagens distintas o modo paragrafo consegue gerar.
- * Produto do tamanho dos pools — e o numero que a UI mostra ao usuario.
- */
-export function countCombinations(pools: string[][]): number {
-  const sizes = pools.map((p) => p.filter((v) => v.trim()).length).filter((n) => n > 0)
-  if (sizes.length === 0) return 0
-  return sizes.reduce((acc, n) => acc * n, 1)
-}
-
 /** Variaveis usadas num template, para a UI mostrar chips clicaveis. */
 export function extractVars(template: string): string[] {
   const found = new Set<string>()

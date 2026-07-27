@@ -4,11 +4,11 @@ import {
   renderFixed,
   renderRotate,
   renderParagraph,
-  countCombinations,
   extractVars,
   tidy,
   type RenderContext
 } from './render'
+import { countCombinations } from '@shared/messages'
 
 const ctx = (over: Partial<RenderContext> = {}): RenderContext => ({
   name: 'Ana',
