@@ -4,13 +4,20 @@ import { rm } from 'node:fs/promises'
 import { EventEmitter } from 'node:events'
 import QRCode from 'qrcode'
 import type { WASocket } from 'baileys'
-import type { Boom } from '@hapi/boom'
 import type { WhatsappState, WaCheckResult } from '@shared/types'
 import { scoped, pinoAdapter } from '../../logger'
 import { getJson, setJson } from '../../settings'
 import { handleUpsert } from './inbox'
 
 const log = scoped('whatsapp')
+
+/**
+ * O erro de desconexao do Baileys e um Boom, mas `@hapi/boom` nao esta no
+ * package.json — so resolvia por ser dependencia transitiva icada do baileys.
+ * O typecheck quebraria no dia em que o baileys trocasse isso. Como o unico
+ * campo usado e `output.statusCode`, um tipo estrutural resolve sem dependencia.
+ */
+type BoomLike = { output?: { statusCode?: number } }
 
 /**
  * O `baileys` e um pacote ESM-only e o processo main e empacotado como CJS,
@@ -251,7 +258,7 @@ class WhatsappService extends EventEmitter {
 
     if (connection === 'close') {
       const { DisconnectReason } = await loadBaileys()
-      const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode
+      const statusCode = (lastDisconnect?.error as BoomLike | undefined)?.output?.statusCode
 
       if (this.intentionalClose) {
         this.patch({ status: 'disconnected', qrDataUrl: null, me: null })

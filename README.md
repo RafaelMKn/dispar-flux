@@ -28,7 +28,7 @@ TypeScript**, com o WhatsApp rodando **embutido** no app via
 - **Electron** (shell) + **electron-vite** (build)
 - **React + TypeScript + Tailwind** (renderer), com o design system em tokens CSS
   (`src/renderer/src/index.css`) e tema **claro/escuro** — ver [docs/design-prompt.md](docs/design-prompt.md)
-- **Baileys** (`@whiskeysockets/baileys`) para o WhatsApp — Fase 1
+- **Baileys** (`baileys`) para o WhatsApp — Fase 1
 - **SQLite** via **sql.js** (WASM, sem build nativo) + **drizzle-orm** (dados locais)
 - **safeStorage** (DPAPI) para segredos criptografados
 - **electron-builder** (instalador NSIS para Windows)

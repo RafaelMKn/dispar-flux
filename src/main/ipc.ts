@@ -58,6 +58,7 @@ import type {
 } from '@shared/types'
 
 const log = scoped('whatsapp')
+const csvLog = scoped('csv')
 
 /** Envia um evento para todas as janelas abertas. */
 function broadcast(channel: string, payload: unknown): void {
@@ -151,7 +152,7 @@ export function registerIpc(): void {
     })
     if (res.canceled || !res.filePath) return null
     await writeFile(res.filePath, buildTemplateCsv())
-    log.info('modelo de planilha salvo', { caminho: res.filePath })
+    csvLog.info('modelo de planilha salvo', { caminho: res.filePath })
     return res.filePath
   })
 
@@ -166,7 +167,7 @@ export function registerIpc(): void {
     })
     if (res.canceled || !res.filePath) return null
     await writeFile(res.filePath, buildExportCsv(listId))
-    log.info('base exportada', { listId, caminho: res.filePath })
+    csvLog.info('base exportada', { listId, caminho: res.filePath })
     return res.filePath
   })
 
