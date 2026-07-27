@@ -6,25 +6,11 @@ import { PageBody, PageHeader, Card, Button, Input, Select } from '../components
 import WhatsappCard from '../components/WhatsappCard'
 import { useWhatsapp } from '../useWhatsapp'
 
-function SectionTitle({
-  icon: Icon,
-  title,
-  aside
-}: {
-  icon: typeof QrCode
-  title: string
-  aside?: React.ReactNode
-}): JSX.Element {
+function SectionTitle({ icon: Icon, title }: { icon: typeof QrCode; title: string }): JSX.Element {
   return (
     <div className="mb-4 flex items-center gap-2.5">
       <Icon size={17} className="flex-none text-accent-text" />
       <h2 className="text-base font-semibold">{title}</h2>
-      {aside && (
-        <>
-          <div className="flex-1" />
-          {aside}
-        </>
-      )}
     </div>
   )
 }

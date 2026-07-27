@@ -123,7 +123,7 @@ export function IconButton({
 const fieldCls =
   'w-full min-h-9 rounded border border-line bg-surface-raised px-3 py-2 text-sm text-ink outline-none transition-colors duration-120 placeholder:text-ink-tertiary hover:border-ink-tertiary focus-visible:border-accent-strong'
 
-export function Field({
+function Field({
   label,
   hint,
   children
@@ -209,15 +209,24 @@ export function Callout({
   icon?: LucideIcon
   children: ReactNode
 }): JSX.Element {
-  const tones = {
-    warning: 'bg-state-warningWash text-state-warningText',
-    danger: 'bg-state-dangerWash text-state-dangerText',
-    success: 'bg-state-successWash text-state-successText',
-    neutral: 'bg-surface-sunken text-ink-secondary'
+  // O fundo vai no bloco; a cor do tom vale so para o icone, porque o texto tem
+  // contraste proprio (`text-ink-secondary`). Antes as duas classes iam juntas
+  // no bloco e a do texto era sobrescrita — mesma aparencia, intencao obscura.
+  const toneBg = {
+    warning: 'bg-state-warningWash',
+    danger: 'bg-state-dangerWash',
+    success: 'bg-state-successWash',
+    neutral: 'bg-surface-sunken'
+  }[tone]
+  const toneIcon = {
+    warning: 'text-state-warningText',
+    danger: 'text-state-dangerText',
+    success: 'text-state-successText',
+    neutral: 'text-ink-secondary'
   }[tone]
   return (
-    <div className={`flex gap-3 rounded-lg border border-line p-4 ${tones}`}>
-      <Icon size={17} className="mt-0.5 flex-none" />
+    <div className={`flex gap-3 rounded-lg border border-line p-4 ${toneBg}`}>
+      <Icon size={17} className={`mt-0.5 flex-none ${toneIcon}`} />
       <div className="text-xs text-ink-secondary [text-wrap:pretty]">{children}</div>
     </div>
   )
@@ -311,12 +320,10 @@ export function Progress({ value, max }: { value: number; max: number }): JSX.El
 /* ── Empty state (serif no titulo, conforme o design) ─────────────────── */
 export function EmptyState({
   title,
-  children,
-  action
+  children
 }: {
   title: string
   children?: ReactNode
-  action?: ReactNode
 }): JSX.Element {
   return (
     <div className="rounded-lg border border-line bg-surface-raised px-6 py-12 text-center">
@@ -324,7 +331,6 @@ export function EmptyState({
       {children && (
         <div className="mx-auto mt-2 max-w-md text-sm text-ink-secondary">{children}</div>
       )}
-      {action && <div className="mt-5 flex justify-center">{action}</div>}
     </div>
   )
 }

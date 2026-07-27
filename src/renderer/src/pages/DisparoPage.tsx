@@ -257,7 +257,7 @@ export default function DisparoPage(): JSX.Element {
                     key={l.id}
                     onClick={() => setListId(l.id)}
                     className={[
-                      'flex flex-wrap items-center gap-4 rounded-lg border p-4 text-left transition-colors duration-140',
+                      'flex flex-wrap items-center gap-4 rounded-lg border p-4 text-left transition-colors',
                       on ? 'border-accent bg-accent-wash' : 'border-line bg-surface-raised hover:bg-accent-wash'
                     ].join(' ')}
                   >
@@ -308,7 +308,7 @@ export default function DisparoPage(): JSX.Element {
                   disabled={off}
                   aria-pressed={on}
                   className={[
-                    'flex flex-col items-start gap-1.5 rounded-lg border p-3.5 text-left transition-colors duration-140',
+                    'flex flex-col items-start gap-1.5 rounded-lg border p-3.5 text-left transition-colors',
                     off
                       ? 'cursor-not-allowed border-line bg-surface-raised opacity-50'
                       : on

@@ -268,8 +268,7 @@ function BaseDetail({
   async function handleExport(): Promise<void> {
     setError(null)
     try {
-      const caminho = await window.api.csv.exportList(list.id)
-      if (caminho) setError(null)
+      await window.api.csv.exportList(list.id)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Falha ao exportar.')
     }

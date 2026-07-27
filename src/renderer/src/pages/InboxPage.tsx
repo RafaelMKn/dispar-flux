@@ -3,13 +3,7 @@ import { Search, MessageCircle, Send, ArrowLeft, ShieldOff } from 'lucide-react'
 import type { Chat, Message } from '@shared/types'
 import { EmptyState, Button, StatusDot } from '../components/ui'
 import { useWhatsapp } from '../useWhatsapp'
-
-/** "555181360431@s.whatsapp.net" -> "+55 51 8136-0431" */
-function jidToLabel(jid: string): string {
-  const d = jid.split(':')[0].split('@')[0].replace(/\D/g, '')
-  if (d.length < 12) return `+${d}`
-  return `+${d.slice(0, 2)} ${d.slice(2, 4)} ${d.slice(4, d.length - 4)}-${d.slice(-4)}`
-}
+import { formatJid } from '../format'
 
 function timeLabel(ts: number | null): string {
   if (!ts) return ''
@@ -140,12 +134,12 @@ export default function InboxPage(): JSX.Element {
                 ].join(' ')}
               >
                 <div className="grid h-9 w-9 flex-none place-items-center rounded-full bg-surface-raised text-xs font-semibold text-ink-secondary">
-                  {(c.name ?? jidToLabel(c.jid)).slice(0, 2).toUpperCase()}
+                  {(c.name ?? formatJid(c.jid)).slice(0, 2).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
                     <span className="truncate text-sm font-medium">
-                      {c.name || jidToLabel(c.jid)}
+                      {c.name || formatJid(c.jid)}
                     </span>
                     <div className="flex-1" />
                     <span className="tnum flex-none text-[11px] text-ink-tertiary">
@@ -181,9 +175,9 @@ export default function InboxPage(): JSX.Element {
               </button>
               <div className="min-w-0">
                 <div className="truncate text-sm font-medium">
-                  {activeChat.name || jidToLabel(activeChat.jid)}
+                  {activeChat.name || formatJid(activeChat.jid)}
                 </div>
-                <div className="tnum text-[11px] text-ink-meta">{jidToLabel(activeChat.jid)}</div>
+                <div className="tnum text-[11px] text-ink-meta">{formatJid(activeChat.jid)}</div>
               </div>
             </div>
 

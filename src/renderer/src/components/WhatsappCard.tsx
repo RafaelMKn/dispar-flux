@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { QrCode, Loader2, LogOut, Unplug, Plug } from 'lucide-react'
 import type { WhatsappState, WhatsappStatus } from '@shared/types'
 import { Card, Button, Pill, StatusDot, Callout } from './ui'
+import { formatJid } from '../format'
 
 const LABEL: Record<WhatsappStatus, string> = {
   disconnected: 'Desconectado',
@@ -17,18 +18,6 @@ const TONE: Record<WhatsappStatus, 'success' | 'warning' | 'danger' | 'idle'> = 
   pairing: 'warning',
   connected: 'success',
   loggedOut: 'danger'
-}
-
-/** Formata o JID do Baileys ("5511987654210:12@s.whatsapp.net") como telefone. */
-function formatMe(id: string): string {
-  const digits = id.split(':')[0].split('@')[0].replace(/\D/g, '')
-  if (digits.length < 12) return `+${digits}`
-  const ddi = digits.slice(0, 2)
-  const ddd = digits.slice(2, 4)
-  const rest = digits.slice(4)
-  const meio = rest.slice(0, rest.length - 4)
-  const fim = rest.slice(-4)
-  return `+${ddi} ${ddd} ${meio}-${fim}`
 }
 
 export default function WhatsappCard({ state }: { state: WhatsappState }): JSX.Element {
@@ -82,7 +71,7 @@ export default function WhatsappCard({ state }: { state: WhatsappState }): JSX.E
                 {me?.id && (
                   <>
                     {': '}
-                    <span className="tnum font-medium text-ink">{formatMe(me.id)}</span>
+                    <span className="tnum font-medium text-ink">{formatJid(me.id)}</span>
                   </>
                 )}
                 {me?.name ? ` (${me.name})` : ''}
