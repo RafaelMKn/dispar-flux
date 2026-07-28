@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { initDb, saveNow } from './db'
 import { registerIpc } from './ipc'
 import { whatsapp } from './core/whatsapp/client'
-import { log, getLogPath, closeLogger } from './logger'
+import { log, scoped, getLogPath, closeLogger } from './logger'
 import { reconcileStuckJobs } from './repos/campaigns'
 import { reconcileRunningCampaign } from './core/campaign/worker'
 
@@ -27,6 +27,24 @@ function createWindow(): BrowserWindow {
   })
 
   win.on('ready-to-show', () => win.show())
+
+  // Diagnostico de tela branca: no app empacotado nao ha console visivel, entao
+  // erro de renderer/preload so aparece se for espelhado no log do main.
+  const rlog = scoped('renderer')
+  win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    const at = sourceId ? ` (${sourceId}:${line})` : ''
+    if (level >= 3) rlog.error(`${message}${at}`)
+    else if (level === 2) rlog.warn(`${message}${at}`)
+  })
+  win.webContents.on('preload-error', (_e, preloadPath, error) => {
+    rlog.fatal(`preload falhou: ${preloadPath}`, error)
+  })
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    rlog.error(`did-fail-load ${code} ${desc}`, { url })
+  })
+  win.webContents.on('render-process-gone', (_e, details) => {
+    rlog.fatal('render-process-gone', details)
+  })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
