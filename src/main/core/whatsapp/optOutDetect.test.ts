@@ -61,7 +61,7 @@ describe('jidToE164', () => {
   })
 
   it('descarta o sufixo de dispositivo', () => {
-    expect(jidToE164('555181360431:11@s.whatsapp.net')).toBe('+555181360431')
+    expect(jidToE164('555132554210:11@s.whatsapp.net')).toBe('+555132554210')
   })
 
   it('devolve null para jid sem numero utilizavel', () => {
