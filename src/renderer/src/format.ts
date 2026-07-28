@@ -1,7 +1,7 @@
 /**
  * Formata o JID do Baileys como telefone legivel.
  *
- * "555181360431@s.whatsapp.net" -> "+55 51 8136-0431"
+ * "555132554210@s.whatsapp.net" -> "+55 51 3255-4210"
  * "5511987654210:12@s.whatsapp.net" -> "+55 11 98765-4210"
  *
  * Abaixo de 12 digitos nao da para separar DDI/DDD com seguranca, entao devolve
