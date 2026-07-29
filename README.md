@@ -14,6 +14,31 @@ TypeScript**, com o WhatsApp rodando **embutido** no app via
 > dedicado, volume baixo, mensagens personalizadas e sempre ofereça descadastro (opt-out).
 > Nenhuma técnica anti-ban elimina o risco.
 
+## Instalação (usuário final)
+
+1. Abra a página de
+   [releases](https://github.com/RafaelMKn/dispar-flux/releases/latest).
+2. Em **Assets**, baixe o `Dispar-Flux-Setup-<versão>.exe`.
+3. Execute o arquivo. A instalação é por usuário, em
+   `%LOCALAPPDATA%\Programs\dispar-flux` — **não pede senha de administrador**.
+
+Depois disso o app avisa sozinho quando sair versão nova: aparece uma faixa no topo da
+janela com o botão **Baixar agora** e, quando o download termina, **Reiniciar e
+instalar**. Nada é baixado sem você mandar, e a instalação fica bloqueada enquanto houver
+disparo em andamento. Você também pode conferir manualmente em **Configurações →
+Atualizações**. Seus dados (base de contatos, sessão do WhatsApp, configurações) ficam em
+`%APPDATA%\dispar-flux` e não são tocados pela atualização.
+
+> ⚠️ **O Windows vai mostrar um aviso azul.** O instalador **não é assinado
+> digitalmente** — um certificado de code signing custa centenas de dólares por ano e este
+> é um projeto gratuito. Ao abrir o `.exe` você verá _"O Windows protegeu o seu
+> computador"_: clique em **Mais informações** → **Executar assim mesmo**. O navegador
+> também pode avisar que o arquivo "não é baixado com frequência" — escolha **Manter**.
+>
+> Se preferir conferir antes de instalar: o código-fonte está todo aqui e o instalador é
+> gerado publicamente pelo GitHub Actions (aba **Actions**) a partir da tag
+> correspondente — dá para comparar o binário do release com o do run que o produziu.
+
 ## Telas
 
 1. **Conversas** (Fase 2) — inbox para responder dentro do app.
@@ -31,7 +56,8 @@ TypeScript**, com o WhatsApp rodando **embutido** no app via
 - **Baileys** (`baileys`) para o WhatsApp — Fase 1
 - **SQLite** via **sql.js** (WASM, sem build nativo) + **drizzle-orm** (dados locais)
 - **safeStorage** (DPAPI) para segredos criptografados
-- **electron-builder** (instalador NSIS para Windows)
+- **electron-builder** (instalador NSIS para Windows) + **electron-updater**
+  (atualização automática via GitHub Releases)
 
 ## Desenvolvimento
 
@@ -48,8 +74,31 @@ Outros comandos:
 ```bash
 npm run typecheck   # checagem de tipos (main + renderer)
 npm run test        # testes unitarios (vitest)
-npm run dist        # gera instalador NSIS em dist/
+npm run dist        # gera instalador NSIS em dist/ (nao publica nada)
 ```
+
+> A atualização automática fica **desativada em desenvolvimento** (não existe
+> `app-update.yml` fora do app instalado). Para testá-la de verdade é preciso instalar uma
+> versão e publicar uma mais nova.
+
+## Publicando uma versão
+
+```bash
+npm version patch -m "Release v%s"   # bump + commit + tag v0.1.2
+git push --follow-tags               # a tag dispara .github/workflows/release.yml
+```
+
+O workflow roda em `windows-latest`, confere que a tag bate com a `version` do
+`package.json`, roda typecheck/lint/testes e publica no GitHub Releases três arquivos: o
+instalador, o `.blockmap` (download diferencial) e o **`latest.yml`** — o manifesto que o
+`electron-updater` lê no PC do usuário para comparar versões e validar o `sha512` do
+download.
+
+> **O release precisa deixar de ser rascunho.** O electron-builder cria o release como
+> _draft_, e draft não aparece na API pública: o updater dos usuários recebe 404 e
+> ninguém atualiza. Confira os três assets e clique em **Publish release** (ou
+> `gh release edit v0.1.2 --draft=false`). Para publicar direto nos próximos, adicione
+> `releaseType: release` ao bloco `publish` do `electron-builder.yml`.
 
 ## Roadmap
 

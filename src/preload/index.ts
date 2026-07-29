@@ -5,7 +5,8 @@ import type {
   SendingDefaults,
   CsvPreview,
   CsvMapping,
-  WhatsappState
+  WhatsappState,
+  UpdateState
 } from '@shared/types'
 
 /**
@@ -82,6 +83,13 @@ const api: DisparApi = {
     getAi: () => ipcRenderer.invoke('settings:getAi'),
     setAi: (provider: AiSettings['provider'], model: string, apiKey?: string) =>
       ipcRenderer.invoke('settings:setAi', provider, model, apiKey)
+  },
+  updater: {
+    getState: () => ipcRenderer.invoke('updater:getState'),
+    check: () => ipcRenderer.invoke('updater:check'),
+    download: () => ipcRenderer.invoke('updater:download'),
+    install: () => ipcRenderer.invoke('updater:install'),
+    onState: (cb: (s: UpdateState) => void) => subscribe('updater:state', cb)
   }
 }
 

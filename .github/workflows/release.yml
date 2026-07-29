@@ -1,0 +1,54 @@
+name: Release
+
+# O gatilho e a TAG de versao, nao o push. O electron-updater compara versoes
+# semver: varios releases com a mesma version nao atualizariam ninguem, e cada
+# push viraria um download de ~90 MB empurrado para todos os usuarios.
+#
+#   npm version patch -m "Release v%s"
+#   git push --follow-tags
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+# Necessario para o electron-builder criar o release e subir os assets.
+# Sem isso o publish falha com 403.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Taguear v0.1.2 esquecendo de bumpar o package.json geraria um release
+      # cujo latest.yml aponta para a versao antiga — e ninguem atualizaria.
+      - name: Conferir se a tag bate com a versao do package.json
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag $GITHUB_REF_NAME nao corresponde a version $PKG do package.json"
+            exit 1
+          fi
+
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+
+      - name: Build e publish no GitHub Releases
+        env:
+          # O electron-builder le GH_TOKEN (nao GITHUB_TOKEN). O secret e
+          # automatico, nao precisa criar PAT.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run release

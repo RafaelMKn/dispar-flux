@@ -37,6 +37,13 @@ import {
   totalUnread
 } from './repos/chats'
 import { scoped } from './logger'
+import {
+  updaterEvents,
+  getUpdateState,
+  checkForUpdates,
+  downloadUpdate,
+  quitAndInstall
+} from './updater'
 import type {
   AiSettings,
   SendingDefaults,
@@ -45,7 +52,8 @@ import type {
   CsvMapping,
   WhatsappState,
   MessageMode,
-  MessageConfig
+  MessageConfig,
+  UpdateState
 } from '@shared/types'
 
 const log = scoped('whatsapp')
@@ -255,4 +263,12 @@ export function registerIpc(): void {
     (_e, provider: AiSettings['provider'], model: string, apiKey?: string) =>
       setAiSettings(provider, model, apiKey)
   )
+
+  /* ── Atualizacao ──────────────────────────────────────────────────────── */
+  updaterEvents.on('state', (s: UpdateState) => broadcast('updater:state', s))
+
+  ipcMain.handle('updater:getState', () => getUpdateState())
+  ipcMain.handle('updater:check', () => checkForUpdates())
+  ipcMain.handle('updater:download', () => downloadUpdate())
+  ipcMain.handle('updater:install', () => quitAndInstall())
 }

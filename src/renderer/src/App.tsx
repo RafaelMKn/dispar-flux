@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
+import UpdateBanner from './components/UpdateBanner'
 import BasePage from './pages/BasePage'
 import DisparoPage from './pages/DisparoPage'
 import ConfigPage from './pages/ConfigPage'
@@ -24,23 +25,27 @@ export default function App(): JSX.Element {
   }, [refreshUnread])
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-surface-base font-sans text-base text-ink">
-      <Sidebar
-        theme={theme}
-        onToggleTheme={toggle}
-        connected={wa.status === 'connected'}
-        unread={unread}
-      />
-      <main className="min-w-0 flex-1 overflow-y-auto">
-        <Routes>
-          <Route path="/" element={<Navigate to="/disparo" replace />} />
-          <Route path="/inbox" element={<InboxPage />} />
-          <Route path="/disparo" element={<DisparoPage />} />
-          <Route path="/base" element={<BasePage />} />
-          <Route path="/config" element={<ConfigPage />} />
-          <Route path="*" element={<Navigate to="/disparo" replace />} />
-        </Routes>
-      </main>
+    // Coluna: o aviso de atualizacao ocupa a largura toda, acima da sidebar.
+    <div className="flex h-full w-full flex-col overflow-hidden bg-surface-base font-sans text-base text-ink">
+      <UpdateBanner />
+      <div className="flex min-h-0 flex-1">
+        <Sidebar
+          theme={theme}
+          onToggleTheme={toggle}
+          connected={wa.status === 'connected'}
+          unread={unread}
+        />
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          <Routes>
+            <Route path="/" element={<Navigate to="/disparo" replace />} />
+            <Route path="/inbox" element={<InboxPage />} />
+            <Route path="/disparo" element={<DisparoPage />} />
+            <Route path="/base" element={<BasePage />} />
+            <Route path="/config" element={<ConfigPage />} />
+            <Route path="*" element={<Navigate to="/disparo" replace />} />
+          </Routes>
+        </main>
+      </div>
     </div>
   )
 }
