@@ -1,0 +1,28 @@
+name: CI
+
+# Roda em toda mudanca da main e em todo PR. Sem isso, um erro de lint ou de
+# tipo so apareceria depois da tag criada — e ai seria preciso apagar tag e
+# release para tentar de novo.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    # Os testes usam test/electron-stub.ts e nao precisam do Electron real,
+    # entao rodam no runner mais rapido.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test

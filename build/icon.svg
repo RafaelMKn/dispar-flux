@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    Icone do app: mesmo mark usado na Sidebar (quadrado arredondado na cor
+    accent + paper plane do lucide, branco).
+
+    A arte ocupa 1024x1024 inteiros de proposito: o Windows ja aplica a propria
+    margem em barra de tarefas e atalhos. O quadrado usa raio 22% (equivalente
+    ao rounded-lg sobre 28px do mark original).
+
+    O aviao vai PREENCHIDO, e nao em contorno como na Sidebar: a 16px (barra de
+    tarefas, Explorer) o contorno de 2px vira um borrao cinza. A silhueta e o
+    mesmo path externo do icone `send` do lucide.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e08a67" />
+      <stop offset="1" stop-color="#d97757" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="228" ry="228" fill="url(#bg)" />
+
+  <!-- lucide `send`, escalado de 24x24 para 560x560 e centralizado -->
+  <g transform="translate(232 232) scale(23.3333)">
+    <path fill="#fff9f4"
+      d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" />
+    <!-- Vinco da dobra: some no fundo, dando a leitura de aviao de papel.
+         Some naturalmente nos tamanhos pequenos, onde ja nao caberia. -->
+    <path fill="none" stroke="#d97757" stroke-width="1.6" stroke-linecap="round"
+      d="m21.4 2.6-10.5 10.5" />
+  </g>
+</svg>

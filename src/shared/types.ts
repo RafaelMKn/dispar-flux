@@ -162,6 +162,29 @@ export interface ImportReport {
   samples: { name: string | null; phoneE164: string }[]
 }
 
+/* ── Atualizacao automatica ──────────────────────────────────────────────── */
+
+export type UpdateStatus =
+  | 'idle' // nenhuma atualizacao pendente
+  | 'unsupported' // rodando em dev: nao ha o que atualizar
+  | 'checking'
+  | 'available' // ha versao nova, aguardando o usuario mandar baixar
+  | 'downloading'
+  | 'ready' // baixada, aguardando reinicio
+  | 'error'
+
+export interface UpdateState {
+  status: UpdateStatus
+  /** Versao instalada agora. */
+  currentVersion: string
+  /** Versao disponivel no GitHub, quando houver. */
+  version: string | null
+  /** 0..100 durante o download. */
+  percent: number
+  bytesPerSecond: number | null
+  error: string | null
+}
+
 // Contrato exposto no window.api (preload).
 export interface DisparApi {
   app: {
@@ -241,5 +264,15 @@ export interface DisparApi {
     setSendingDefaults: (v: SendingDefaults) => Promise<void>
     getAi: () => Promise<AiSettings>
     setAi: (provider: AiSettings['provider'], model: string, apiKey?: string) => Promise<void>
+  }
+  updater: {
+    getState: () => Promise<UpdateState>
+    /** Consulta o GitHub agora. Nao baixa nada. */
+    check: () => Promise<void>
+    /** Baixa o instalador da versao disponivel. */
+    download: () => Promise<void>
+    /** Fecha o app e roda o instalador. */
+    install: () => Promise<void>
+    onState: (cb: (s: UpdateState) => void) => () => void
   }
 }

@@ -1,9 +1,17 @@
 {
   "name": "dispar-flux",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "App desktop open-source para gestao de campanhas no WhatsApp (Baileys embutido).",
-  "author": "dispar-flux",
+  "author": {
+    "name": "RafaelMKn",
+    "url": "https://github.com/RafaelMKn"
+  },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RafaelMKn/dispar-flux.git"
+  },
+  "homepage": "https://github.com/RafaelMKn/dispar-flux",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -14,11 +22,13 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "dist": "electron-vite build && electron-builder --win --config electron-builder.yml"
+    "dist": "electron-vite build && electron-builder --win --config electron-builder.yml",
+    "release": "electron-vite build && electron-builder --win --config electron-builder.yml --publish always"
   },
   "dependencies": {
     "baileys": "^6.7.23",
     "drizzle-orm": "^0.38.3",
+    "electron-updater": "^6.8.9",
     "libphonenumber-js": "^1.13.9",
     "papaparse": "^5.5.4",
     "qrcode": "^1.5.4",

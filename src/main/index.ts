@@ -7,6 +7,7 @@ import { whatsapp } from './core/whatsapp/client'
 import { log, scoped, getLogPath, closeLogger } from './logger'
 import { reconcileStuckJobs } from './repos/campaigns'
 import { reconcileRunningCampaign } from './core/campaign/worker'
+import { initUpdater } from './updater'
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -60,7 +61,8 @@ function createWindow(): BrowserWindow {
   return win
 }
 
-app.whenReady().then(async () => {
+async function bootstrap(): Promise<void> {
+  await app.whenReady()
   log.info(`Dispar Flux v${app.getVersion()} iniciando`)
   await initDb()
   log.info('banco inicializado')
@@ -75,6 +77,8 @@ app.whenReady().then(async () => {
 
   registerIpc()
   createWindow()
+  // Depois da janela existir: o broadcast de estado so alcanca janelas abertas.
+  initUpdater()
   log.info('app pronto', { logFile: getLogPath() })
 
   app.on('activate', () => {
@@ -88,7 +92,23 @@ app.whenReady().then(async () => {
     log.info('sessao encontrada, reconectando WhatsApp')
     void whatsapp.connect().catch((e: unknown) => log.error('falha ao reconectar', e))
   }
-})
+}
+
+// Instancia unica. Duas janelas abertas corromperiam a base: o sql.js mantem o
+// banco em memoria e o save reescreve o arquivo inteiro, entao a ultima a salvar
+// apagaria o trabalho da outra. O reinicio automatico depois de uma atualizacao
+// torna a sobreposicao bem mais provavel.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.focus()
+  })
+  void bootstrap()
+}
 
 process.on('uncaughtException', (err) => {
   log.fatal('uncaughtException', err)

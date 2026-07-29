@@ -1,8 +1,12 @@
 appId: com.disparflux.app
 productName: Dispar Flux
+copyright: Copyright (c) 2026 RafaelMKn
 directories:
   buildResources: build
   output: dist
+# O electron-builder ACRESCENTA node_modules de producao a esta lista, entao
+# baileys/sql.js/electron-updater entram sozinhos e as devDependencies ficam de
+# fora. So o que e nosso precisa ser listado aqui.
 files:
   - out/**/*
   - package.json
@@ -10,13 +14,34 @@ asarUnpack:
   - '**/*.node'
   - '**/*.wasm'
 win:
+  icon: build/icon.ico
+  executableName: dispar-flux
+  # Sem espacos: o link do release fica limpo e nao vira %20. O updater acha o
+  # arquivo pelo latest.yml, entao o nome e livre.
+  artifactName: Dispar-Flux-Setup-${version}.${ext}
   target:
     - target: nsis
       arch:
         - x64
 nsis:
   oneClick: false
+  # Instala em %LOCALAPPDATA%\Programs: sem UAC na instalacao E sem UAC no
+  # update automatico. Mudar para true tornaria todo update um prompt de
+  # elevacao.
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   shortcutName: Dispar Flux
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  # O update roda o desinstalador em silencio antes de instalar a versao nova:
+  # isso garante que banco, sessao do WhatsApp e logs em %APPDATA%\dispar-flux
+  # sobrevivam.
+  deleteAppDataOnUninstall: false
+# De onde o electron-updater le o latest.yml e para onde o `npm run release`
+# publica os assets.
+publish:
+  provider: github
+  owner: RafaelMKn
+  repo: dispar-flux

@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Check, QrCode, Sparkles, Gauge, ScrollText } from 'lucide-react'
+import { Check, QrCode, Sparkles, Gauge, ScrollText, RefreshCw } from 'lucide-react'
 import type { AiSettings, SendingDefaults } from '@shared/types'
 import { AI_PROVIDERS } from '@shared/aiProviders'
 import { PageBody, PageHeader, Card, Button, Input, Select } from '../components/ui'
 import WhatsappCard from '../components/WhatsappCard'
 import { useWhatsapp } from '../useWhatsapp'
+import { useUpdater } from '../useUpdater'
 
 function SectionTitle({ icon: Icon, title }: { icon: typeof QrCode; title: string }): JSX.Element {
   return (
@@ -15,8 +16,29 @@ function SectionTitle({ icon: Icon, title }: { icon: typeof QrCode; title: strin
   )
 }
 
+/** Descricao em uma linha do estado da atualizacao. */
+function updateSummary(u: ReturnType<typeof useUpdater>): string {
+  switch (u.status) {
+    case 'unsupported':
+      return 'Modo de desenvolvimento: a atualizacao automatica so funciona no app instalado.'
+    case 'checking':
+      return 'Procurando atualizacoes...'
+    case 'available':
+      return `Versao ${u.version} disponivel. Use o aviso no topo da janela para baixar.`
+    case 'downloading':
+      return `Baixando a versao ${u.version}... ${u.percent}%`
+    case 'ready':
+      return `Versao ${u.version} baixada. Reinicie o app para instalar.`
+    case 'error':
+      return `Nao foi possivel verificar: ${u.error ?? 'erro desconhecido'}`
+    default:
+      return 'Voce esta na versao mais recente.'
+  }
+}
+
 export default function ConfigPage(): JSX.Element {
   const wa = useWhatsapp()
+  const updater = useUpdater()
   const [sending, setSending] = useState<SendingDefaults | null>(null)
   const [ai, setAi] = useState<AiSettings | null>(null)
   const [apiKey, setApiKey] = useState('')
@@ -165,6 +187,29 @@ export default function ConfigPage(): JSX.Element {
           )}
           <div className="mt-4">
             <Button onClick={saveSending}>Salvar parametros</Button>
+          </div>
+        </Card>
+
+        <Card>
+          <SectionTitle icon={RefreshCw} title="Atualizacoes" />
+          <p className="tnum text-sm text-ink-secondary">
+            Versao instalada: {updater.currentVersion || '—'}
+          </p>
+          <p
+            className={`mt-1 text-sm ${
+              updater.status === 'error' ? 'text-state-dangerText' : 'text-ink-meta'
+            }`}
+          >
+            {updateSummary(updater)}
+          </p>
+          <div className="mt-4">
+            <Button
+              variant="secondary"
+              disabled={updater.status === 'checking' || updater.status === 'unsupported'}
+              onClick={() => void window.api.updater.check()}
+            >
+              Procurar atualizacoes
+            </Button>
           </div>
         </Card>
 
