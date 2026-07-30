@@ -253,6 +253,21 @@ export function eligibleContacts(listId: string): {
     .all()
 }
 
+/**
+ * IDs de contato que ja receberam mensagem (job 'sent') em QUALQUER campanha
+ * anterior desta mesma base. Usado para, opcionalmente, nao repetir o envio ao
+ * disparar uma nova campanha para a mesma lista.
+ */
+export function contactIdsAlreadySent(listId: string): Set<string> {
+  const rows = getDb()
+    .select({ contactId: campaignJobs.contactId })
+    .from(campaignJobs)
+    .innerJoin(campaigns, eq(campaignJobs.campaignId, campaigns.id))
+    .where(and(eq(campaigns.listId, listId), eq(campaignJobs.status, 'sent')))
+    .all()
+  return new Set(rows.map((r) => r.contactId))
+}
+
 export function jobsByStatus(campaignId: string, status: JobStatus, limit = 200): JobRow[] {
   return getDb()
     .select()

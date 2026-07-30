@@ -109,6 +109,8 @@ export interface CampaignPlan {
   skippedInvalid: number
   skippedUnchecked: number
   skippedOptOut: number
+  /** So contado quando `skipAlreadySent` foi pedido no plano/inicio. */
+  skippedAlreadySent: number
   samples: string[]
 }
 
@@ -241,13 +243,20 @@ export interface DisparApi {
   }
   campaign: {
     /** Previa: quem entra, quem fica de fora e amostras renderizadas. */
-    plan: (listId: string, mode: MessageMode, config: MessageConfig) => Promise<CampaignPlan>
+    plan: (
+      listId: string,
+      mode: MessageMode,
+      config: MessageConfig,
+      skipAlreadySent?: boolean
+    ) => Promise<CampaignPlan>
     start: (input: {
       name: string
       listId: string
       mode: MessageMode
       config: MessageConfig
       pacing: SendingDefaults
+      /** Nao reenvia para quem ja recebeu mensagem em campanha anterior desta base. */
+      skipAlreadySent?: boolean
     }) => Promise<{ campaignId: string; queued: number }>
     pause: () => Promise<void>
     resume: (campaignId: string) => Promise<void>

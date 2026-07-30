@@ -88,6 +88,7 @@ export default function DisparoPage(): JSX.Element {
     pools: [[''], [''], ['']]
   })
   const [pacing, setPacing] = useState<SendingDefaults | null>(null)
+  const [skipAlreadySent, setSkipAlreadySent] = useState(false)
   const [plan, setPlan] = useState<CampaignPlan | null>(null)
   const [progress, setProgress] = useState<CampaignProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -150,11 +151,11 @@ export default function DisparoPage(): JSX.Element {
       return
     }
     try {
-      setPlan(await window.api.campaign.plan(listId, mode, config))
+      setPlan(await window.api.campaign.plan(listId, mode, config, skipAlreadySent))
     } catch {
       setPlan(null)
     }
-  }, [listId, mode, config])
+  }, [listId, mode, config, skipAlreadySent])
 
   useEffect(() => {
     void refreshPlan()
@@ -172,7 +173,8 @@ export default function DisparoPage(): JSX.Element {
         listId,
         mode,
         config,
-        pacing
+        pacing,
+        skipAlreadySent
       })
       setProgress(await window.api.campaign.progress(r.campaignId))
       // A campanha ja foi criada e enfileirada no banco; o rascunho nao serve mais.
@@ -590,6 +592,23 @@ export default function DisparoPage(): JSX.Element {
                     <RefreshCw size={14} />
                   </IconButton>
                 </div>
+
+                <label className="mb-3 flex cursor-pointer items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={skipAlreadySent}
+                    onChange={(e) => setSkipAlreadySent(e.target.checked)}
+                  />
+                  <span>
+                    Pular contatos que ja receberam mensagem desta base em campanhas anteriores
+                    <span className="block text-xs text-ink-tertiary">
+                      Evita mandar de novo para quem ja foi contatado. Desmarcado por padrao, pois
+                      as vezes reenviar (ex.: uma nova oferta) e intencional.
+                    </span>
+                  </span>
+                </label>
+
                 <Table>
                   <tbody>
                     <tr>
@@ -606,6 +625,12 @@ export default function DisparoPage(): JSX.Element {
                       <Td className="text-ink-secondary">Fora: descadastrados</Td>
                       <Td className="tnum w-24 text-right">{plan.skippedOptOut}</Td>
                     </tr>
+                    {skipAlreadySent && (
+                      <tr>
+                        <Td className="text-ink-secondary">Fora: ja receberam antes</Td>
+                        <Td className="tnum w-24 text-right">{plan.skippedAlreadySent}</Td>
+                      </tr>
+                    )}
                   </tbody>
                 </Table>
 
