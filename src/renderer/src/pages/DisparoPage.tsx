@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Type,
   Layers,
@@ -92,6 +92,9 @@ export default function DisparoPage(): JSX.Element {
   const [progress, setProgress] = useState<CampaignProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // So comeca a persistir o rascunho depois de restaurar o que ja existia,
+  // senao o primeiro render (com os defaults vazios) sobrescreveria o salvo.
+  const draftReady = useRef(false)
 
   useEffect(() => {
     void (async () => {
@@ -101,10 +104,32 @@ export default function DisparoPage(): JSX.Element {
         rows.map(async (l) => [l.id, await window.api.contactLists.stats(l.id)] as const)
       )
       setStats(Object.fromEntries(entries))
-      setPacing(await window.api.settings.getSendingDefaults())
+      const defaults = await window.api.settings.getSendingDefaults()
       setProgress(await window.api.campaign.active())
+
+      const draft = await window.api.campaign.loadDraft()
+      if (draft) {
+        setListId(draft.listId)
+        setMode(draft.mode)
+        setName(draft.name)
+        setConfig(draft.config)
+        setPacing(draft.pacing ?? defaults)
+      } else {
+        setPacing(defaults)
+      }
+      draftReady.current = true
     })()
   }, [])
+
+  // Salva o rascunho a cada mudanca (com debounce) para sobreviver a troca de
+  // aba e ao fechamento do app — antes disso o estado so existia em memoria.
+  useEffect(() => {
+    if (!draftReady.current) return
+    const t = setTimeout(() => {
+      void window.api.campaign.saveDraft({ listId, mode, name, config, pacing })
+    }, 400)
+    return () => clearTimeout(t)
+  }, [listId, mode, name, config, pacing])
 
   // Progresso e parada chegam por evento do main.
   useEffect(() => {
@@ -150,6 +175,8 @@ export default function DisparoPage(): JSX.Element {
         pacing
       })
       setProgress(await window.api.campaign.progress(r.campaignId))
+      // A campanha ja foi criada e enfileirada no banco; o rascunho nao serve mais.
+      void window.api.campaign.saveDraft(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Falha ao iniciar a campanha.')
     } finally {

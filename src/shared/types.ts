@@ -94,6 +94,15 @@ export interface MessageConfig {
   prompt?: string // ai (Fase 3)
 }
 
+/** Rascunho da tela Disparo, persistido para sobreviver a troca de aba e reabertura do app. */
+export interface CampaignDraft {
+  listId: string
+  mode: MessageMode
+  name: string
+  config: MessageConfig
+  pacing: SendingDefaults | null
+}
+
 export interface CampaignPlan {
   listId: string
   eligible: number
@@ -247,6 +256,10 @@ export interface DisparApi {
     list: () => Promise<CampaignSummary[]>
     /** Campanha em execucao ou pausada com fila pendente, se houver. */
     active: () => Promise<CampaignProgress | null>
+    /** Rascunho salvo da tela Disparo (config ainda nao enviada). */
+    loadDraft: () => Promise<CampaignDraft | null>
+    /** Salva o rascunho atual, ou `null` para limpar. */
+    saveDraft: (draft: CampaignDraft | null) => Promise<void>
     onProgress: (cb: (p: CampaignProgress) => void) => () => void
     onStopped: (cb: (p: { campaignId: string; reason: string }) => void) => () => void
   }
