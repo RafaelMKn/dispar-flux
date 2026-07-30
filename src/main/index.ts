@@ -10,6 +10,15 @@ import { log, scoped, getLogPath, closeLogger } from './logger'
 import { reconcileStuckJobs } from './repos/campaigns'
 import { reconcileRunningCampaign } from './core/campaign/worker'
 import { initUpdater } from './updater'
+import {
+  initTray,
+  destroyTray,
+  applyLaunchAtLogin,
+  shouldStartHidden,
+  notifyMinimizedToTray
+} from './tray'
+import { getBackgroundSettings, shouldShowTrayNotice } from './settings'
+import { beginQuit, isQuitting } from './lifecycle'
 
 /**
  * Scheme proprio para o renderer exibir midia da inbox.
@@ -41,7 +50,24 @@ function registerMediaProtocol(): void {
   })
 }
 
-function createWindow(): BrowserWindow {
+function requestQuit(): void {
+  beginQuit()
+  app.quit()
+}
+
+/** Traz a janela de volta da bandeja, recriando-a se ja foi destruida. */
+function showWindow(): void {
+  const win = BrowserWindow.getAllWindows()[0]
+  if (!win || win.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+function createWindow(startHidden = false): BrowserWindow {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -59,7 +85,23 @@ function createWindow(): BrowserWindow {
     }
   })
 
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => {
+    // Aberto pelo sistema no login: sobe direto para a bandeja, sem roubar a
+    // tela de quem acabou de ligar o computador.
+    if (!startHidden) win.show()
+  })
+
+  /**
+   * Fechar a janela esconde o app em vez de encerrar, para o disparo em
+   * andamento continuar. E a razao de existir a issue: hoje um clique no X
+   * matava a campanha no meio.
+   */
+  win.on('close', (e) => {
+    if (isQuitting() || !getBackgroundSettings().closeToTray) return
+    e.preventDefault()
+    win.hide()
+    if (shouldShowTrayNotice()) notifyMinimizedToTray()
+  })
 
   // Diagnostico de tela branca: no app empacotado nao ha console visivel, entao
   // erro de renderer/preload so aparece se for espelhado no log do main.
@@ -107,12 +149,21 @@ async function bootstrap(): Promise<void> {
   if (ambiguos > 0) log.warn(`${ambiguos} envio(s) com entrega indeterminada apos encerramento`)
   reconcileRunningCampaign()
 
+  // Sem isso o Windows nao mostra as notificacoes do app (ele as associa ao
+  // executavel do Electron em vez do nosso).
+  app.setAppUserModelId('com.disparflux.app')
+
   registerMediaProtocol()
   registerIpc()
-  createWindow()
+
+  const background = getBackgroundSettings()
+  applyLaunchAtLogin(background.launchAtLogin)
+  createWindow(shouldStartHidden())
+  initTray({ showWindow, requestQuit })
+
   // Depois da janela existir: o broadcast de estado so alcanca janelas abertas.
   initUpdater()
-  log.info('app pronto', { logFile: getLogPath() })
+  log.info('app pronto', { logFile: getLogPath(), bandeja: background.closeToTray })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -134,12 +185,9 @@ async function bootstrap(): Promise<void> {
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    const win = BrowserWindow.getAllWindows()[0]
-    if (!win) return
-    if (win.isMinimized()) win.restore()
-    win.focus()
-  })
+  // Abrir o app de novo enquanto ele roda escondido deve trazer a janela de
+  // volta, e nao parecer que nada aconteceu.
+  app.on('second-instance', () => showWindow())
   void bootstrap()
 }
 
@@ -152,11 +200,19 @@ process.on('unhandledRejection', (reason) => {
 })
 
 app.on('before-quit', () => {
+  // Cobre tambem os encerramentos que nao passam por requestQuit(): logoff do
+  // sistema, `app.quit()` de qualquer outro ponto.
+  beginQuit()
   saveNow()
+  destroyTray()
   log.info('encerrando')
   closeLogger()
 })
 
 app.on('window-all-closed', () => {
+  // Com fechar-para-bandeja ligado a janela e escondida, nao fechada, entao
+  // este evento nao dispara. A guarda cobre o caso de a janela ser destruida
+  // por outro caminho: encerrar aqui mataria o disparo em andamento.
+  if (getBackgroundSettings().closeToTray) return
   if (process.platform !== 'darwin') app.quit()
 })

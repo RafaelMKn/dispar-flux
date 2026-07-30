@@ -10,6 +10,10 @@ directories:
 files:
   - out/**/*
   - package.json
+  # O icone da bandeja e carregado em runtime (src/main/tray.ts). `build/` e so
+  # buildResources e nao entra no pacote por padrao, entao sem esta linha o
+  # icone existiria em dev e sumiria no app instalado.
+  - build/icon.png
 asarUnpack:
   - '**/*.node'
   - '**/*.wasm'

@@ -8,6 +8,7 @@ import type {
   WhatsappState,
   CampaignDraft,
   JobStatus,
+  BackgroundSettings,
   UpdateState
 } from '@shared/types'
 
@@ -98,7 +99,9 @@ const api: DisparApi = {
       ipcRenderer.invoke('settings:setSendingDefaults', v),
     getAi: () => ipcRenderer.invoke('settings:getAi'),
     setAi: (provider: AiSettings['provider'], model: string, apiKey?: string) =>
-      ipcRenderer.invoke('settings:setAi', provider, model, apiKey)
+      ipcRenderer.invoke('settings:setAi', provider, model, apiKey),
+    getBackground: () => ipcRenderer.invoke('settings:getBackground'),
+    setBackground: (v: BackgroundSettings) => ipcRenderer.invoke('settings:setBackground', v)
   },
   updater: {
     getState: () => ipcRenderer.invoke('updater:getState'),

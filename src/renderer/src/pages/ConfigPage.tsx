@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Check, QrCode, Sparkles, Gauge, ScrollText, RefreshCw } from 'lucide-react'
-import type { AiSettings, SendingDefaults } from '@shared/types'
+import { Check, QrCode, Sparkles, Gauge, ScrollText, RefreshCw, PanelBottom } from 'lucide-react'
+import type { AiSettings, BackgroundSettings, SendingDefaults } from '@shared/types'
 import { AI_PROVIDERS } from '@shared/aiProviders'
-import { PageBody, PageHeader, Card, Button, Input, Select } from '../components/ui'
+import { PageBody, PageHeader, Card, Button, Input, Select, Toggle } from '../components/ui'
 import WhatsappCard from '../components/WhatsappCard'
 import { useWhatsapp } from '../useWhatsapp'
 import { useUpdater } from '../useUpdater'
@@ -42,12 +42,14 @@ export default function ConfigPage(): JSX.Element {
   const [sending, setSending] = useState<SendingDefaults | null>(null)
   const [ai, setAi] = useState<AiSettings | null>(null)
   const [apiKey, setApiKey] = useState('')
+  const [background, setBackground] = useState<BackgroundSettings | null>(null)
   const [savedFlag, setSavedFlag] = useState('')
 
   useEffect(() => {
     void (async () => {
       setSending(await window.api.settings.getSendingDefaults())
       setAi(await window.api.settings.getAi())
+      setBackground(await window.api.settings.getBackground())
     })()
   }, [])
 
@@ -60,6 +62,14 @@ export default function ConfigPage(): JSX.Element {
     if (!sending) return
     await window.api.settings.setSendingDefaults(sending)
     flash('Parametros de envio salvos')
+  }
+
+  // Chave liga/desliga salva na hora: um botao "Salvar" para duas chaves so
+  // criaria a chance de mexer e esquecer de confirmar.
+  async function saveBackground(next: BackgroundSettings): Promise<void> {
+    setBackground(next)
+    await window.api.settings.setBackground(next)
+    flash('Preferencia salva')
   }
 
   async function saveAi(): Promise<void> {
@@ -188,6 +198,26 @@ export default function ConfigPage(): JSX.Element {
           <div className="mt-4">
             <Button onClick={saveSending}>Salvar parametros</Button>
           </div>
+        </Card>
+
+        <Card>
+          <SectionTitle icon={PanelBottom} title="Rodar em segundo plano" />
+          {background && (
+            <div className="flex flex-col gap-4">
+              <Toggle
+                checked={background.closeToTray}
+                onChange={(v) => void saveBackground({ ...background, closeToTray: v })}
+                label="Continuar rodando ao fechar a janela"
+                hint="Fechar a janela esconde o app na bandeja do sistema, ao lado do relogio, e o disparo em andamento continua. Para encerrar de vez, use Sair no menu do icone. Desligado, o X encerra o app e interrompe o disparo."
+              />
+              <Toggle
+                checked={background.launchAtLogin}
+                onChange={(v) => void saveBackground({ ...background, launchAtLogin: v })}
+                label="Iniciar junto com o sistema"
+                hint="O app sobe minimizado na bandeja quando voce liga o computador, sem abrir a janela."
+              />
+            </div>
+          )}
         </Card>
 
         <Card>

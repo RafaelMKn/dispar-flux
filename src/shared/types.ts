@@ -113,6 +113,17 @@ export interface AiSettings {
   hasKey: boolean
 }
 
+/** Comportamento do app rodando em segundo plano (bandeja do sistema). */
+export interface BackgroundSettings {
+  /**
+   * Fechar a janela esconde o app na bandeja em vez de encerrar, mantendo o
+   * disparo em andamento.
+   */
+  closeToTray: boolean
+  /** Subir junto com o sistema, ja minimizado na bandeja. */
+  launchAtLogin: boolean
+}
+
 export interface SendingDefaults {
   delayMinMs: number
   delayMaxMs: number
@@ -358,6 +369,9 @@ export interface DisparApi {
     setSendingDefaults: (v: SendingDefaults) => Promise<void>
     getAi: () => Promise<AiSettings>
     setAi: (provider: AiSettings['provider'], model: string, apiKey?: string) => Promise<void>
+    /** Comportamento em segundo plano (bandeja, iniciar com o sistema). */
+    getBackground: () => Promise<BackgroundSettings>
+    setBackground: (v: BackgroundSettings) => Promise<void>
   }
   updater: {
     getState: () => Promise<UpdateState>

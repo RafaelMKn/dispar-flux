@@ -16,8 +16,11 @@ import {
   getAiSettings,
   setAiSettings,
   getCampaignDraft,
-  setCampaignDraft
+  setCampaignDraft,
+  getBackgroundSettings,
+  setBackgroundSettings
 } from './settings'
+import { applyLaunchAtLogin } from './tray'
 import { whatsapp } from './core/whatsapp/client'
 import { join, basename } from 'node:path'
 import { statSync } from 'node:fs'
@@ -68,6 +71,7 @@ import type {
   CampaignDraft,
   JobStatus,
   MediaKind,
+  BackgroundSettings,
   UpdateState
 } from '@shared/types'
 
@@ -436,6 +440,14 @@ export function registerIpc(): void {
   /* ── Configuracoes ────────────────────────────────────────────────────── */
   ipcMain.handle('settings:getSendingDefaults', () => getSendingDefaults())
   ipcMain.handle('settings:setSendingDefaults', (_e, v: SendingDefaults) => setSendingDefaults(v))
+  ipcMain.handle('settings:getBackground', () => getBackgroundSettings())
+  ipcMain.handle('settings:setBackground', (_e, v: BackgroundSettings) => {
+    setBackgroundSettings(v)
+    // Aplica na hora: o item de inicializacao do sistema e estado externo ao
+    // app, entao guardar sem aplicar deixaria os dois fora de sincronia.
+    applyLaunchAtLogin(v.launchAtLogin)
+  })
+
   ipcMain.handle('settings:getAi', () => getAiSettings())
   ipcMain.handle(
     'settings:setAi',

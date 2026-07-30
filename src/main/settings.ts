@@ -2,7 +2,7 @@ import { safeStorage } from 'electron'
 import { eq } from 'drizzle-orm'
 import { getDb, scheduleSave } from './db'
 import { settings } from './db/schema'
-import type { AiSettings, CampaignDraft, SendingDefaults } from '@shared/types'
+import type { AiSettings, BackgroundSettings, CampaignDraft, SendingDefaults } from '@shared/types'
 
 const ENC_PREFIX = 'enc::'
 
@@ -84,6 +84,37 @@ export function getSendingDefaults(): SendingDefaults {
 
 export function setSendingDefaults(v: SendingDefaults): void {
   setJson('sending.defaults', v)
+}
+
+/**
+ * Fechar-para-bandeja vem LIGADO: o motivo de existir a bandeja e nao perder um
+ * disparo em andamento por causa de um clique no X. Na primeira vez o app avisa
+ * para onde a janela foi — sem isso o usuario acha que fechou e o app fica
+ * rodando escondido.
+ *
+ * Iniciar-com-o-sistema vem DESLIGADO: instalar um app e ele passar a abrir
+ * sozinho e intrusivo; quem quer isso liga em Configuracoes.
+ */
+export const DEFAULT_BACKGROUND: BackgroundSettings = {
+  closeToTray: true,
+  launchAtLogin: false
+}
+
+export function getBackgroundSettings(): BackgroundSettings {
+  return { ...DEFAULT_BACKGROUND, ...getJson('background', {}) }
+}
+
+export function setBackgroundSettings(v: BackgroundSettings): void {
+  setJson('background', v)
+}
+
+const TRAY_NOTICE_KEY = 'background.trayNoticeShown'
+
+/** true na primeira vez; usado para explicar a bandeja so uma vez. */
+export function shouldShowTrayNotice(): boolean {
+  if (getJson(TRAY_NOTICE_KEY, false)) return false
+  setJson(TRAY_NOTICE_KEY, true)
+  return true
 }
 
 const CAMPAIGN_DRAFT_KEY = 'campaign.draft'

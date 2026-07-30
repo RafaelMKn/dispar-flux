@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { EventEmitter } from 'node:events'
 import { autoUpdater } from 'electron-updater'
 import { saveNow } from './db'
+import { beginQuit } from './lifecycle'
 import { scoped } from './logger'
 import type { UpdateState } from '@shared/types'
 
@@ -127,6 +128,9 @@ export function quitAndInstall(): void {
   // bytes. `quitAndInstall` nao passa pelo caminho normal de saida, entao o
   // save tem que ser explicito aqui.
   saveNow()
+  // Sem isto, o handler de `close` da janela (fechar-para-bandeja) cancelaria o
+  // fechamento e a atualizacao nunca seria instalada.
+  beginQuit()
   log.info('reiniciando para instalar a atualizacao')
   // isSilent=false mostra o instalador; isForceRunAfter=true reabre o app.
   autoUpdater.quitAndInstall(false, true)
