@@ -6,6 +6,7 @@ import type {
   CsvPreview,
   CsvMapping,
   WhatsappState,
+  CampaignDraft,
   UpdateState
 } from '@shared/types'
 
@@ -65,6 +66,8 @@ const api: DisparApi = {
     progress: (campaignId: string) => ipcRenderer.invoke('campaign:progress', campaignId),
     list: () => ipcRenderer.invoke('campaign:list'),
     active: () => ipcRenderer.invoke('campaign:active'),
+    loadDraft: () => ipcRenderer.invoke('campaign:loadDraft'),
+    saveDraft: (draft: CampaignDraft | null) => ipcRenderer.invoke('campaign:saveDraft', draft),
     onProgress: (cb) => subscribe('campaign:progress', cb),
     onStopped: (cb) => subscribe('campaign:stopped', cb)
   },

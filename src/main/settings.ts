@@ -2,7 +2,7 @@ import { safeStorage } from 'electron'
 import { eq } from 'drizzle-orm'
 import { getDb, scheduleSave } from './db'
 import { settings } from './db/schema'
-import type { AiSettings, SendingDefaults } from '@shared/types'
+import type { AiSettings, CampaignDraft, SendingDefaults } from '@shared/types'
 
 const ENC_PREFIX = 'enc::'
 
@@ -84,6 +84,17 @@ export function getSendingDefaults(): SendingDefaults {
 
 export function setSendingDefaults(v: SendingDefaults): void {
   setJson('sending.defaults', v)
+}
+
+const CAMPAIGN_DRAFT_KEY = 'campaign.draft'
+
+/** Rascunho da tela Disparo. `null` quando nao ha nada salvo (ou foi limpo). */
+export function getCampaignDraft(): CampaignDraft | null {
+  return getJson<CampaignDraft | null>(CAMPAIGN_DRAFT_KEY, null)
+}
+
+export function setCampaignDraft(v: CampaignDraft | null): void {
+  setJson(CAMPAIGN_DRAFT_KEY, v)
 }
 
 const AI_KEY_SECRET = 'secret.ai.apiKey'

@@ -10,7 +10,14 @@ import {
   extraKeys
 } from './repos/contacts'
 import { addOptOut, removeOptOut } from './repos/optOuts'
-import { getSendingDefaults, setSendingDefaults, getAiSettings, setAiSettings } from './settings'
+import {
+  getSendingDefaults,
+  setSendingDefaults,
+  getAiSettings,
+  setAiSettings,
+  getCampaignDraft,
+  setCampaignDraft
+} from './settings'
 import { whatsapp } from './core/whatsapp/client'
 import { join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
@@ -53,6 +60,7 @@ import type {
   WhatsappState,
   MessageMode,
   MessageConfig,
+  CampaignDraft,
   UpdateState
 } from '@shared/types'
 
@@ -219,6 +227,11 @@ export function registerIpc(): void {
     }
     return null
   })
+
+  ipcMain.handle('campaign:loadDraft', () => getCampaignDraft())
+  ipcMain.handle('campaign:saveDraft', (_e, draft: CampaignDraft | null) =>
+    setCampaignDraft(draft)
+  )
 
   /* ── Inbox ────────────────────────────────────────────────────────────── */
   inboxEvents.on('changed', (p: { chatJid: string; optOut?: boolean }) =>
