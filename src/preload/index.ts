@@ -58,7 +58,8 @@ const api: DisparApi = {
     exportList: (listId: string) => ipcRenderer.invoke('csv:exportList', listId)
   },
   campaign: {
-    plan: (listId, mode, config) => ipcRenderer.invoke('campaign:plan', listId, mode, config),
+    plan: (listId, mode, config, skipAlreadySent) =>
+      ipcRenderer.invoke('campaign:plan', listId, mode, config, skipAlreadySent),
     start: (input) => ipcRenderer.invoke('campaign:start', input),
     pause: () => ipcRenderer.invoke('campaign:pause'),
     resume: (campaignId: string) => ipcRenderer.invoke('campaign:resume', campaignId),

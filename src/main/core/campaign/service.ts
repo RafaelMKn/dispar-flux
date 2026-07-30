@@ -2,7 +2,8 @@ import {
   createCampaign,
   enqueueJobs,
   eligibleContacts,
-  campaignProgress
+  campaignProgress,
+  contactIdsAlreadySent
 } from '../../repos/campaigns'
 import { getOptOutSet } from '../../repos/optOuts'
 import { whatsapp } from '../whatsapp/client'
@@ -57,10 +58,12 @@ function renderFor(mode: MessageMode, config: MessageConfig, ctx: RenderContext)
 export function planCampaign(
   listId: string,
   mode: MessageMode,
-  config: MessageConfig
+  config: MessageConfig,
+  skipAlreadySent = false
 ): CampaignPlan {
   const all = eligibleContacts(listId)
   const optedOut = getOptOutSet(all.map((c) => c.phoneE164))
+  const alreadySent = skipAlreadySent ? contactIdsAlreadySent(listId) : null
 
   // Sempre 0: `eligibleContacts` nao separa "numero nao existe no WhatsApp"
   // (waValid = 0) de "ainda nao verificado" (waValid = null), entao os dois
@@ -70,6 +73,7 @@ export function planCampaign(
   const skippedInvalid = 0
   let skippedUnchecked = 0
   let skippedOptOut = 0
+  let skippedAlreadySent = 0
   const targets: typeof all = []
 
   for (const c of all) {
@@ -80,6 +84,10 @@ export function planCampaign(
     if (!c.jid) {
       // Sem jid confirmado nao ha como enviar com seguranca (9o digito).
       skippedUnchecked += 1
+      continue
+    }
+    if (alreadySent?.has(c.id)) {
+      skippedAlreadySent += 1
       continue
     }
     targets.push(c)
@@ -107,6 +115,7 @@ export function planCampaign(
     skippedInvalid,
     skippedUnchecked,
     skippedOptOut,
+    skippedAlreadySent,
     samples
   }
 }
@@ -124,14 +133,21 @@ export function startCampaign(input: {
   mode: MessageMode
   config: MessageConfig
   pacing: SendingDefaults
+  /** Nao reenvia para quem ja recebeu mensagem em campanha anterior desta base. */
+  skipAlreadySent?: boolean
 }): { campaignId: string; queued: number } {
   const all = eligibleContacts(input.listId)
   const optedOut = getOptOutSet(all.map((c) => c.phoneE164))
-  const targets = all.filter((c) => c.jid && !optedOut.has(c.phoneE164))
+  const alreadySent = input.skipAlreadySent ? contactIdsAlreadySent(input.listId) : null
+  const targets = all.filter(
+    (c) => c.jid && !optedOut.has(c.phoneE164) && !alreadySent?.has(c.id)
+  )
 
   if (targets.length === 0) {
     throw new Error(
-      'Nenhum contato elegivel. Valide os numeros no WhatsApp e confira os descadastros.'
+      input.skipAlreadySent
+        ? 'Nenhum contato elegivel: todos ja receberam mensagem antes, foram validados ou estao descadastrados.'
+        : 'Nenhum contato elegivel. Valide os numeros no WhatsApp e confira os descadastros.'
     )
   }
 

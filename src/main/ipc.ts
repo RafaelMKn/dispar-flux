@@ -184,8 +184,15 @@ export function registerIpc(): void {
   campaignEvents.on('progress', (p) => broadcast('campaign:progress', p))
   campaignEvents.on('stopped', (p) => broadcast('campaign:stopped', p))
 
-  ipcMain.handle('campaign:plan', (_e, listId: string, mode: MessageMode, config: MessageConfig) =>
-    planCampaign(listId, mode, config)
+  ipcMain.handle(
+    'campaign:plan',
+    (
+      _e,
+      listId: string,
+      mode: MessageMode,
+      config: MessageConfig,
+      skipAlreadySent?: boolean
+    ) => planCampaign(listId, mode, config, skipAlreadySent)
   )
   ipcMain.handle(
     'campaign:start',
@@ -197,6 +204,7 @@ export function registerIpc(): void {
         mode: MessageMode
         config: MessageConfig
         pacing: SendingDefaults
+        skipAlreadySent?: boolean
       }
     ) => startCampaign(input)
   )
