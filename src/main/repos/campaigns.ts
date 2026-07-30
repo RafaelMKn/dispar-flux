@@ -276,3 +276,58 @@ export function jobsByStatus(campaignId: string, status: JobStatus, limit = 200)
     .limit(limit)
     .all()
 }
+
+export interface JobWithContact {
+  id: string
+  contactId: string
+  contactName: string | null
+  phoneE164: string
+  status: string
+  renderedText: string | null
+  error: string | null
+  sentAt: number | null
+}
+
+/**
+ * Jobs de uma campanha com o nome/telefone do contato, para a visao "quem
+ * recebeu, quem nao recebeu" por-contato (nao so o agregado de `campaignProgress`).
+ * Ordenado pela ordem de insercao na fila (= ordem de envio), via `rowid`
+ * implicito do SQLite — os ids sao UUIDs, entao nao servem para ordenar.
+ */
+export function jobsWithContacts(
+  campaignId: string,
+  opts: { status?: JobStatus; limit?: number; offset?: number } = {}
+): { rows: JobWithContact[]; total: number } {
+  const { status, limit = 300, offset = 0 } = opts
+  const where = status
+    ? and(eq(campaignJobs.campaignId, campaignId), eq(campaignJobs.status, status))
+    : eq(campaignJobs.campaignId, campaignId)
+
+  const rows = getDb()
+    .select({
+      id: campaignJobs.id,
+      contactId: campaignJobs.contactId,
+      contactName: contacts.name,
+      phoneE164: contacts.phoneE164,
+      status: campaignJobs.status,
+      renderedText: campaignJobs.renderedText,
+      error: campaignJobs.error,
+      sentAt: campaignJobs.sentAt
+    })
+    .from(campaignJobs)
+    .innerJoin(contacts, eq(campaignJobs.contactId, contacts.id))
+    .where(where)
+    .orderBy(sql`campaign_jobs.rowid`)
+    .limit(limit)
+    .offset(offset)
+    .all()
+
+  const total =
+    getDb()
+      .select({ n: sql<number>`count(*)` })
+      .from(campaignJobs)
+      .where(where)
+      .get()?.n ?? 0
+
+  return { rows, total }
+}

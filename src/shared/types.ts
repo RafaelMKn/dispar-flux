@@ -125,6 +125,18 @@ export interface CampaignProgress {
   status: string
 }
 
+/** Um job de disparo com dados do contato, para a lista contato-a-contato. */
+export interface CampaignJobView {
+  id: string
+  contactId: string
+  contactName: string | null
+  phoneE164: string
+  status: JobStatus
+  renderedText: string | null
+  error: string | null
+  sentAt: number | null
+}
+
 export interface CampaignSummary {
   id: string
   name: string
@@ -265,6 +277,11 @@ export interface DisparApi {
     list: () => Promise<CampaignSummary[]>
     /** Campanha em execucao ou pausada com fila pendente, se houver. */
     active: () => Promise<CampaignProgress | null>
+    /** Jobs de uma campanha com nome/telefone do contato, para ver quem recebeu e quem nao. */
+    jobs: (
+      campaignId: string,
+      opts?: { status?: JobStatus; limit?: number; offset?: number }
+    ) => Promise<{ rows: CampaignJobView[]; total: number }>
     /** Rascunho salvo da tela Disparo (config ainda nao enviada). */
     loadDraft: () => Promise<CampaignDraft | null>
     /** Salva o rascunho atual, ou `null` para limpar. */

@@ -11,6 +11,8 @@ import {
   Pause,
   Square,
   RefreshCw,
+  ChevronDown,
+  ChevronUp,
   type LucideIcon
 } from 'lucide-react'
 import type {
@@ -20,7 +22,9 @@ import type {
   ContactListStats,
   SendingDefaults,
   CampaignPlan,
-  CampaignProgress
+  CampaignProgress,
+  CampaignJobView,
+  JobStatus
 } from '@shared/types'
 import { countCombinations, poolSizes } from '@shared/messages'
 import {
@@ -37,7 +41,9 @@ import {
   Progress,
   EmptyState,
   Table,
-  Td
+  Th,
+  Td,
+  Select
 } from '../components/ui'
 import { useWhatsapp } from '../useWhatsapp'
 
@@ -72,6 +78,24 @@ const MODES: ModeCard[] = [
   }
 ]
 
+const JOB_LABEL: Record<JobStatus, string> = {
+  pending: 'Na fila',
+  sending: 'Enviando',
+  sent: 'Enviado',
+  failed: 'Falhou',
+  skipped: 'Pulado',
+  unknown: 'Indeterminado'
+}
+
+const JOB_TONE: Record<JobStatus, 'success' | 'warning' | 'danger' | 'idle'> = {
+  pending: 'idle',
+  sending: 'idle',
+  sent: 'success',
+  failed: 'danger',
+  skipped: 'warning',
+  unknown: 'warning'
+}
+
 const textareaCls =
   'w-full rounded border border-line bg-surface-raised px-3 py-2 text-sm text-ink outline-none placeholder:text-ink-tertiary focus-visible:border-accent-strong'
 
@@ -93,6 +117,12 @@ export default function DisparoPage(): JSX.Element {
   const [progress, setProgress] = useState<CampaignProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [jobsOpen, setJobsOpen] = useState(false)
+  const [jobsFilter, setJobsFilter] = useState<JobStatus | 'all'>('all')
+  const [jobsView, setJobsView] = useState<{ rows: CampaignJobView[]; total: number } | null>(
+    null
+  )
+  const [jobsLoading, setJobsLoading] = useState(false)
   // So comeca a persistir o rascunho depois de restaurar o que ja existia,
   // senao o primeiro render (com os defaults vazios) sobrescreveria o salvo.
   const draftReady = useRef(false)
@@ -144,6 +174,37 @@ export default function DisparoPage(): JSX.Element {
       offS()
     }
   }, [])
+
+  const campaignId = progress?.campaignId ?? null
+
+  const loadJobs = useCallback(async () => {
+    if (!campaignId) return
+    setJobsLoading(true)
+    try {
+      setJobsView(
+        await window.api.campaign.jobs(
+          campaignId,
+          jobsFilter === 'all' ? undefined : { status: jobsFilter }
+        )
+      )
+    } finally {
+      setJobsLoading(false)
+    }
+  }, [campaignId, jobsFilter])
+
+  // Carrega ao abrir o painel e ao trocar o filtro.
+  useEffect(() => {
+    if (jobsOpen) void loadJobs()
+  }, [jobsOpen, loadJobs])
+
+  // Atualiza sozinho enquanto o painel esta aberto e o disparo avanca — e a
+  // parte "dinamica": sem isso, a lista so mudaria se o usuario reabrisse.
+  useEffect(() => {
+    if (!jobsOpen || !progress) return
+    void loadJobs()
+    // Dispara so quando os contadores mudam, nao a cada render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [progress?.sent, progress?.failed, progress?.skipped, progress?.unknown, progress?.pending])
 
   const refreshPlan = useCallback(async () => {
     if (!listId || mode === 'ai') {
@@ -222,29 +283,39 @@ export default function DisparoPage(): JSX.Element {
         </div>
       )}
 
-      {/* Execucao em andamento ou retomavel */}
-      {running && progress && (
+      {/* Execucao em andamento, retomavel, ou o ultimo disparo desta sessao */}
+      {progress && (
         <Card className="mb-8">
           <div className="mb-3 flex flex-wrap items-center gap-3">
             <h2 className="text-base font-semibold">
-              {progress.status === 'running' ? 'Disparo em andamento' : 'Disparo pausado'}
+              {progress.status === 'running'
+                ? 'Disparo em andamento'
+                : progress.status === 'paused'
+                  ? 'Disparo pausado'
+                  : progress.status === 'canceled'
+                    ? 'Disparo cancelado'
+                    : 'Ultimo disparo'}
             </h2>
             <div className="flex-1" />
-            {progress.status === 'running' ? (
-              <Button variant="secondary" onClick={() => void window.api.campaign.pause()}>
-                <Pause size={16} /> Pausar
-              </Button>
-            ) : (
-              <Button
-                onClick={() => void window.api.campaign.resume(progress.campaignId)}
-                disabled={wa.status !== 'connected'}
-              >
-                <Play size={16} /> Retomar
-              </Button>
+            {running && (
+              <>
+                {progress.status === 'running' ? (
+                  <Button variant="secondary" onClick={() => void window.api.campaign.pause()}>
+                    <Pause size={16} /> Pausar
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={() => void window.api.campaign.resume(progress.campaignId)}
+                    disabled={wa.status !== 'connected'}
+                  >
+                    <Play size={16} /> Retomar
+                  </Button>
+                )}
+                <Button variant="danger" onClick={() => void window.api.campaign.cancel()}>
+                  <Square size={16} /> Cancelar
+                </Button>
+              </>
             )}
-            <Button variant="danger" onClick={() => void window.api.campaign.cancel()}>
-              <Square size={16} /> Cancelar
-            </Button>
           </div>
 
           <Progress
@@ -275,6 +346,89 @@ export default function DisparoPage(): JSX.Element {
               </Callout>
             </div>
           )}
+
+          <div className="mt-4 border-t border-line pt-4">
+            <button
+              onClick={() => setJobsOpen((v) => !v)}
+              className="flex items-center gap-1.5 text-sm font-medium text-accent-text"
+            >
+              {jobsOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+              {jobsOpen ? 'Ocultar detalhes por contato' : 'Ver detalhes por contato'}
+            </button>
+
+            {jobsOpen && (
+              <div className="mt-3">
+                <div className="mb-3 flex flex-wrap items-center gap-3">
+                  <Select
+                    className="w-auto"
+                    value={jobsFilter}
+                    onChange={(e) => setJobsFilter(e.target.value as JobStatus | 'all')}
+                  >
+                    <option value="all">Todos</option>
+                    <option value="sent">Enviados</option>
+                    <option value="pending">Na fila</option>
+                    <option value="sending">Enviando</option>
+                    <option value="failed">Falharam</option>
+                    <option value="skipped">Pulados</option>
+                    <option value="unknown">Indeterminados</option>
+                  </Select>
+                  <div className="flex-1" />
+                  <IconButton label="Atualizar" onClick={() => void loadJobs()}>
+                    <RefreshCw size={14} />
+                  </IconButton>
+                </div>
+
+                {jobsLoading && !jobsView ? (
+                  <p className="text-sm text-ink-meta">Carregando...</p>
+                ) : jobsView && jobsView.rows.length > 0 ? (
+                  <>
+                    <div className="max-h-96 overflow-y-auto">
+                      <Table>
+                        <thead>
+                          <tr>
+                            <Th>Contato</Th>
+                            <Th>Status</Th>
+                            <Th>Detalhe</Th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {jobsView.rows.map((j) => (
+                            <tr key={j.id}>
+                              <Td>
+                                <div className="font-medium">{j.contactName || j.phoneE164}</div>
+                                {j.contactName && (
+                                  <div className="text-xs text-ink-meta">{j.phoneE164}</div>
+                                )}
+                              </Td>
+                              <Td>
+                                <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                                  <StatusDot tone={JOB_TONE[j.status]} />
+                                  {JOB_LABEL[j.status]}
+                                </span>
+                              </Td>
+                              <Td className="text-xs text-ink-meta">
+                                {j.status === 'sent' && j.sentAt
+                                  ? new Date(j.sentAt).toLocaleString('pt-BR')
+                                  : (j.error ?? '')}
+                              </Td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </Table>
+                    </div>
+                    {jobsView.total > jobsView.rows.length && (
+                      <p className="mt-2 text-xs text-ink-tertiary">
+                        Mostrando {jobsView.rows.length} de {jobsView.total}. Use o filtro de
+                        status para refinar.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-sm text-ink-meta">Nenhum contato neste filtro.</p>
+                )}
+              </div>
+            )}
+          </div>
         </Card>
       )}
 
