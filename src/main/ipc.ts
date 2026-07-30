@@ -34,7 +34,7 @@ import {
   progressOf
 } from './core/campaign/service'
 import { campaignEvents, campaignRunner } from './core/campaign/worker'
-import { listCampaigns } from './repos/campaigns'
+import { listCampaigns, jobsWithContacts } from './repos/campaigns'
 import {
   listChats,
   listMessages,
@@ -61,6 +61,7 @@ import type {
   MessageMode,
   MessageConfig,
   CampaignDraft,
+  JobStatus,
   UpdateState
 } from '@shared/types'
 
@@ -235,6 +236,15 @@ export function registerIpc(): void {
     }
     return null
   })
+
+  ipcMain.handle(
+    'campaign:jobs',
+    (
+      _e,
+      campaignId: string,
+      opts?: { status?: JobStatus; limit?: number; offset?: number }
+    ) => jobsWithContacts(campaignId, opts ?? {})
+  )
 
   ipcMain.handle('campaign:loadDraft', () => getCampaignDraft())
   ipcMain.handle('campaign:saveDraft', (_e, draft: CampaignDraft | null) =>
