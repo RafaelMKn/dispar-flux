@@ -2,7 +2,13 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { initDb } from '../db'
 import { createContactList } from './contactLists'
 import { insertContacts, pageContacts, setWaResult } from './contacts'
-import { createCampaign, enqueueJobs, markJobSent, markJobFailed, jobsWithContacts } from './campaigns'
+import {
+  createCampaign,
+  enqueueJobs,
+  markJobSent,
+  markJobFailed,
+  jobsWithContacts
+} from './campaigns'
 
 beforeAll(async () => {
   await initDb()

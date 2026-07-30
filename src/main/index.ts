@@ -1,6 +1,8 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, protocol, net, shell } from 'electron'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
+import { MEDIA_SCHEME, resolveMediaUrl } from './core/whatsapp/mediaStore'
 import { initDb, saveNow } from './db'
 import { registerIpc } from './ipc'
 import { whatsapp } from './core/whatsapp/client'
@@ -8,6 +10,36 @@ import { log, scoped, getLogPath, closeLogger } from './logger'
 import { reconcileStuckJobs } from './repos/campaigns'
 import { reconcileRunningCampaign } from './core/campaign/worker'
 import { initUpdater } from './updater'
+
+/**
+ * Scheme proprio para o renderer exibir midia da inbox.
+ *
+ * O renderer roda com `contextIsolation` e, no app instalado, com origem
+ * `file://` — nao pode apontar um `<img>`/`<audio>` para um caminho absoluto do
+ * disco. Registrar um scheme e o caminho suportado pelo Electron. `stream:
+ * true` e o que permite o `<audio>` fazer seek numa nota de voz, que um data:
+ * URL nao daria.
+ *
+ * Precisa acontecer ANTES do app ficar pronto, por isso esta no topo do modulo.
+ */
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: MEDIA_SCHEME,
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+  }
+])
+
+function registerMediaProtocol(): void {
+  protocol.handle(MEDIA_SCHEME, (request) => {
+    // A validacao de caminho vive no mediaStore: e ela que impede este handler
+    // de virar leitura arbitraria de disco a partir do renderer.
+    const path = resolveMediaUrl(request.url)
+    if (!path) return new Response(null, { status: 404 })
+    // `net.fetch` sobre file:// entrega o arquivo em stream e ja trata Range,
+    // que e o que o <audio> usa para navegar no meio do audio.
+    return net.fetch(pathToFileURL(path).toString())
+  })
+}
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -75,6 +107,7 @@ async function bootstrap(): Promise<void> {
   if (ambiguos > 0) log.warn(`${ambiguos} envio(s) com entrega indeterminada apos encerramento`)
   reconcileRunningCampaign()
 
+  registerMediaProtocol()
   registerIpc()
   createWindow()
   // Depois da janela existir: o broadcast de estado so alcanca janelas abertas.

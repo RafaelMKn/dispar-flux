@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import { listContactLists, createContactList, removeContactList } from './repos/contactLists'
 import {
   pageContacts,
@@ -19,12 +19,14 @@ import {
   setCampaignDraft
 } from './settings'
 import { whatsapp } from './core/whatsapp/client'
-import { join } from 'node:path'
-import { writeFile } from 'node:fs/promises'
+import { join, basename } from 'node:path'
+import { statSync } from 'node:fs'
+import { writeFile, copyFile } from 'node:fs/promises'
 import { buildPreview, importCsv, guessMapping, buildExportCsv } from './core/contacts/import'
 import { buildTemplateCsv, TEMPLATE_FILENAME } from './core/contacts/template'
 import { validateList } from './core/contacts/validate'
-import { inboxEvents } from './core/whatsapp/inbox'
+import { inboxEvents, downloadMedia, previewLabel } from './core/whatsapp/inbox'
+import { copyIntoMedia, kindForMime, mimeForPath, saveMedia } from './core/whatsapp/mediaStore'
 import {
   planCampaign,
   startCampaign,
@@ -41,7 +43,10 @@ import {
   markRead,
   insertMessage,
   upsertChat,
-  totalUnread
+  totalUnread,
+  getMessage,
+  getMessageRow,
+  type InsertMessageInput
 } from './repos/chats'
 import { scoped } from './logger'
 import {
@@ -62,6 +67,7 @@ import type {
   MessageConfig,
   CampaignDraft,
   JobStatus,
+  MediaKind,
   UpdateState
 } from '@shared/types'
 
@@ -73,6 +79,39 @@ function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(channel, payload)
   }
+}
+
+const IMAGE_EXT = ['jpg', 'jpeg', 'png', 'webp', 'gif']
+const VIDEO_EXT = ['mp4', 'mov', '3gp', 'webm']
+
+/**
+ * Grava na conversa uma mensagem que acabamos de enviar.
+ *
+ * Nao esperamos o eco do `messages.upsert`: ele chega com atraso e a mensagem
+ * do usuario ficaria alguns segundos sumida da tela. Como a insercao e
+ * idempotente pelo id da mensagem, quando o eco chegar ele nao duplica nada.
+ */
+function recordOutgoing(input: {
+  chatJid: string
+  waId: string | null
+  id?: string
+  body: string | null
+  preview: string | null
+  media?: Partial<InsertMessageInput>
+}): void {
+  const now = Date.now()
+  insertMessage({
+    id: input.id ?? input.waId ?? `local-${now}`,
+    chatJid: input.chatJid,
+    direction: 'out',
+    body: input.body,
+    ts: now,
+    waMessageId: input.waId,
+    status: 'sent',
+    ...input.media
+  })
+  upsertChat(input.chatJid, { lastMessage: input.preview, lastTs: now })
+  broadcast('inbox:changed', { chatJid: input.chatJid })
 }
 
 export function registerIpc(): void {
@@ -187,13 +226,8 @@ export function registerIpc(): void {
 
   ipcMain.handle(
     'campaign:plan',
-    (
-      _e,
-      listId: string,
-      mode: MessageMode,
-      config: MessageConfig,
-      skipAlreadySent?: boolean
-    ) => planCampaign(listId, mode, config, skipAlreadySent)
+    (_e, listId: string, mode: MessageMode, config: MessageConfig, skipAlreadySent?: boolean) =>
+      planCampaign(listId, mode, config, skipAlreadySent)
   )
   ipcMain.handle(
     'campaign:start',
@@ -239,17 +273,12 @@ export function registerIpc(): void {
 
   ipcMain.handle(
     'campaign:jobs',
-    (
-      _e,
-      campaignId: string,
-      opts?: { status?: JobStatus; limit?: number; offset?: number }
-    ) => jobsWithContacts(campaignId, opts ?? {})
+    (_e, campaignId: string, opts?: { status?: JobStatus; limit?: number; offset?: number }) =>
+      jobsWithContacts(campaignId, opts ?? {})
   )
 
   ipcMain.handle('campaign:loadDraft', () => getCampaignDraft())
-  ipcMain.handle('campaign:saveDraft', (_e, draft: CampaignDraft | null) =>
-    setCampaignDraft(draft)
-  )
+  ipcMain.handle('campaign:saveDraft', (_e, draft: CampaignDraft | null) => setCampaignDraft(draft))
 
   /* ── Inbox ────────────────────────────────────────────────────────────── */
   inboxEvents.on('changed', (p: { chatJid: string; optOut?: boolean }) =>
@@ -259,10 +288,12 @@ export function registerIpc(): void {
   ipcMain.handle('inbox:chats', () => listChats())
   ipcMain.handle('inbox:totalUnread', () => totalUnread())
   ipcMain.handle('inbox:messages', (_e, chatJid: string) => listMessages(chatJid))
-  ipcMain.handle('inbox:markRead', (_e, chatJid: string) => {
+  ipcMain.handle('inbox:markRead', async (_e, chatJid: string) => {
     markRead(chatJid)
     // Avisa o renderer para o badge de nao lidas zerar na hora.
     broadcast('inbox:changed', { chatJid })
+    // E manda o visto para o WhatsApp, para o nao-lido zerar no celular tambem.
+    await whatsapp.markReadOnWhatsapp(chatJid)
   })
 
   ipcMain.handle('inbox:send', async (_e, chatJid: string, text: string) => {
@@ -271,19 +302,136 @@ export function registerIpc(): void {
     const waId = await whatsapp.sendText(chatJid, trimmed)
     // Registra localmente na hora: o `messages.upsert` costuma ecoar o proprio
     // envio, e a insercao e idempotente pelo id, entao nao duplica.
-    const now = Date.now()
-    insertMessage({
-      id: waId ?? `local-${now}`,
-      chatJid,
-      direction: 'out',
-      body: trimmed,
-      ts: now,
-      waMessageId: waId,
-      status: 'sent'
-    })
-    upsertChat(chatJid, { lastMessage: trimmed, lastTs: now })
-    broadcast('inbox:changed', { chatJid })
+    recordOutgoing({ chatJid, waId, body: trimmed, preview: trimmed })
   })
+
+  ipcMain.handle('inbox:pickAttachment', async (_e, kind: 'media' | 'document' | 'audio') => {
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const filters = {
+      media: [{ name: 'Imagens e videos', extensions: [...IMAGE_EXT, ...VIDEO_EXT] }],
+      audio: [{ name: 'Audio', extensions: ['mp3', 'ogg', 'opus', 'm4a', 'aac', 'wav', 'amr'] }],
+      document: [{ name: 'Todos os arquivos', extensions: ['*'] }]
+    }[kind]
+
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Escolha o arquivo',
+      filters,
+      properties: ['openFile']
+    })
+    if (res.canceled || res.filePaths.length === 0) return null
+
+    const filePath = res.filePaths[0]
+    const fileName = basename(filePath)
+    const mime = mimeForPath(filePath)
+    return {
+      filePath,
+      fileName,
+      mime,
+      size: statSync(filePath).size,
+      // Documento e explicito: se o usuario escolheu "arquivo", mandar como
+      // imagem tiraria dele o nome do arquivo do outro lado.
+      kind: kind === 'document' ? ('document' as const) : kindForMime(mime, fileName)
+    }
+  })
+
+  ipcMain.handle(
+    'inbox:sendMedia',
+    async (
+      _e,
+      chatJid: string,
+      input: { filePath: string; kind: MediaKind; fileName: string; mime: string; caption?: string }
+    ) => {
+      const waId = await whatsapp.sendMedia(chatJid, input)
+      const id = waId ?? `local-${Date.now()}`
+      // Guarda uma copia local: o usuario pode apagar o original depois, e a
+      // conversa nao pode ficar com um anexo quebrado por causa disso.
+      const path = copyIntoMedia(id, input.filePath, input.mime, input.fileName)
+
+      recordOutgoing({
+        chatJid,
+        waId,
+        id,
+        body: input.caption?.trim() || null,
+        preview: previewLabel(
+          {
+            kind: input.kind,
+            mime: input.mime,
+            name: input.fileName,
+            size: null,
+            seconds: null,
+            ptt: false
+          },
+          input.caption?.trim() || null
+        ),
+        media: {
+          mediaKind: input.kind,
+          mediaPath: path,
+          mediaMime: input.mime,
+          mediaName: input.fileName,
+          mediaSize: statSync(path).size,
+          mediaState: 'done'
+        }
+      })
+    }
+  )
+
+  ipcMain.handle(
+    'inbox:sendVoice',
+    async (_e, chatJid: string, webmBase64: string, seconds: number) => {
+      const { waId, ogg } = await whatsapp.sendVoice(
+        chatJid,
+        Buffer.from(webmBase64, 'base64'),
+        seconds
+      )
+      const id = waId ?? `local-${Date.now()}`
+      // Guardamos o ogg (o que o contato recebeu), nao o webm gravado.
+      const path = saveMedia(id, ogg, 'audio/ogg')
+
+      recordOutgoing({
+        chatJid,
+        waId,
+        id,
+        body: null,
+        preview: '[audio]',
+        media: {
+          mediaKind: 'audio',
+          mediaPath: path,
+          mediaMime: 'audio/ogg; codecs=opus',
+          mediaSize: ogg.length,
+          mediaSeconds: Math.max(1, Math.round(seconds)),
+          mediaPtt: true,
+          mediaState: 'done'
+        }
+      })
+    }
+  )
+
+  ipcMain.handle('inbox:downloadMedia', async (_e, messageId: string) => {
+    await downloadMedia(messageId)
+    return getMessage(messageId)
+  })
+
+  ipcMain.handle('inbox:openMedia', async (_e, messageId: string) => {
+    const row = getMessageRow(messageId)
+    if (!row?.mediaPath) return
+    await shell.openPath(row.mediaPath)
+  })
+
+  ipcMain.handle('inbox:saveMediaAs', async (_e, messageId: string) => {
+    const row = getMessageRow(messageId)
+    if (!row?.mediaPath) return null
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const suggested = row.mediaName || basename(row.mediaPath)
+    const res = await dialog.showSaveDialog(win, {
+      title: 'Salvar anexo',
+      defaultPath: join(app.getPath('downloads'), suggested)
+    })
+    if (res.canceled || !res.filePath) return null
+    await copyFile(row.mediaPath, res.filePath)
+    return res.filePath
+  })
+
+  ipcMain.handle('inbox:resync', () => whatsapp.resync())
 
   /* ── Configuracoes ────────────────────────────────────────────────────── */
   ipcMain.handle('settings:getSendingDefaults', () => getSendingDefaults())

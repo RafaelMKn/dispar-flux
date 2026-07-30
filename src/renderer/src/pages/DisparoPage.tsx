@@ -119,9 +119,7 @@ export default function DisparoPage(): JSX.Element {
   const [busy, setBusy] = useState(false)
   const [jobsOpen, setJobsOpen] = useState(false)
   const [jobsFilter, setJobsFilter] = useState<JobStatus | 'all'>('all')
-  const [jobsView, setJobsView] = useState<{ rows: CampaignJobView[]; total: number } | null>(
-    null
-  )
+  const [jobsView, setJobsView] = useState<{ rows: CampaignJobView[]; total: number } | null>(null)
   const [jobsLoading, setJobsLoading] = useState(false)
   // So comeca a persistir o rascunho depois de restaurar o que ja existia,
   // senao o primeiro render (com os defaults vazios) sobrescreveria o salvo.
@@ -418,8 +416,8 @@ export default function DisparoPage(): JSX.Element {
                     </div>
                     {jobsView.total > jobsView.rows.length && (
                       <p className="mt-2 text-xs text-ink-tertiary">
-                        Mostrando {jobsView.rows.length} de {jobsView.total}. Use o filtro de
-                        status para refinar.
+                        Mostrando {jobsView.rows.length} de {jobsView.total}. Use o filtro de status
+                        para refinar.
                       </p>
                     )}
                   </>

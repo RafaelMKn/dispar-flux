@@ -139,9 +139,7 @@ export function startCampaign(input: {
   const all = eligibleContacts(input.listId)
   const optedOut = getOptOutSet(all.map((c) => c.phoneE164))
   const alreadySent = input.skipAlreadySent ? contactIdsAlreadySent(input.listId) : null
-  const targets = all.filter(
-    (c) => c.jid && !optedOut.has(c.phoneE164) && !alreadySent?.has(c.id)
-  )
+  const targets = all.filter((c) => c.jid && !optedOut.has(c.phoneE164) && !alreadySent?.has(c.id))
 
   if (targets.length === 0) {
     throw new Error(

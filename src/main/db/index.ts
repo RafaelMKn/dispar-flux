@@ -99,6 +99,56 @@ const BOOTSTRAP_SQL = `
   CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_jid, ts);
 `
 
+/**
+ * Colunas acrescentadas depois da primeira versao do schema.
+ *
+ * PORQUE ISSO EXISTE SEPARADO: o bootstrap usa CREATE TABLE IF NOT EXISTS, que
+ * nao toca numa tabela ja existente — o banco de quem ja usava o app nunca
+ * ganharia coluna nova. A alternativa obvia (declarar a coluna no CREATE **e**
+ * num ALTER) mantem duas definicoes que inevitavelmente divergem. Entao a
+ * coluna vive SO aqui: no banco novo a tabela nasce sem ela e recebe o mesmo
+ * ALTER que o banco antigo. Um caminho so.
+ *
+ * Regra do SQLite: ALTER TABLE ADD COLUMN nao aceita NOT NULL sem DEFAULT.
+ */
+const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
+  // Inbox: foto de perfil cacheada em disco.
+  { table: 'chats', column: 'avatar_path', ddl: 'avatar_path TEXT' },
+  { table: 'chats', column: 'avatar_ts', ddl: 'avatar_ts INTEGER' },
+  // Inbox: midia (imagem, video, audio, documento, sticker).
+  { table: 'messages', column: 'media_kind', ddl: 'media_kind TEXT' },
+  { table: 'messages', column: 'media_path', ddl: 'media_path TEXT' },
+  { table: 'messages', column: 'media_mime', ddl: 'media_mime TEXT' },
+  { table: 'messages', column: 'media_name', ddl: 'media_name TEXT' },
+  { table: 'messages', column: 'media_size', ddl: 'media_size INTEGER' },
+  { table: 'messages', column: 'media_seconds', ddl: 'media_seconds INTEGER' },
+  { table: 'messages', column: 'media_ptt', ddl: 'media_ptt INTEGER' },
+  { table: 'messages', column: 'media_state', ddl: 'media_state TEXT' },
+  { table: 'messages', column: 'raw_proto', ddl: 'raw_proto TEXT' }
+]
+
+/** Acrescenta as colunas de `ADDED_COLUMNS` que ainda nao existem. Idempotente. */
+export function migrateColumns(sql: SqlJsDb): void {
+  const cache = new Map<string, Set<string>>()
+  const columnsOf = (table: string): Set<string> => {
+    let set = cache.get(table)
+    if (!set) {
+      const info = sql.exec(`PRAGMA table_info(${table})`)
+      // values = [cid, name, type, notnull, dflt_value, pk]
+      set = new Set((info[0]?.values ?? []).map((row) => String(row[1])))
+      cache.set(table, set)
+    }
+    return set
+  }
+
+  for (const { table, column, ddl } of ADDED_COLUMNS) {
+    const existing = columnsOf(table)
+    if (existing.has(column)) continue
+    sql.run(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
+    existing.add(column)
+  }
+}
+
 export async function initDb(): Promise<SQLJsDatabase<typeof schema>> {
   if (_db) return _db
 
@@ -115,6 +165,7 @@ export async function initDb(): Promise<SQLJsDatabase<typeof schema>> {
   const initial = existsSync(_dbPath) ? new Uint8Array(readFileSync(_dbPath)) : undefined
   _sql = new SQL.Database(initial)
   _sql.exec(BOOTSTRAP_SQL)
+  migrateColumns(_sql)
 
   _db = drizzle(_sql, { schema })
   saveNow() // garante que o arquivo exista
