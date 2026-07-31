@@ -24,6 +24,13 @@ export default function App(): JSX.Element {
     return window.api.inbox.onChanged(refreshUnread)
   }, [refreshUnread])
 
+  // Polling do badge de nao-lidas: garante que fique atualizado mesmo se um
+  // evento se perder durante o envio em massa da campanha.
+  useEffect(() => {
+    const interval = setInterval(refreshUnread, 10_000)
+    return () => clearInterval(interval)
+  }, [refreshUnread])
+
   return (
     // Coluna: o aviso de atualizacao ocupa a largura toda, acima da sidebar.
     <div className="flex h-full w-full flex-col overflow-hidden bg-surface-base font-sans text-base text-ink">

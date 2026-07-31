@@ -79,6 +79,17 @@ export default function InboxPage(): JSX.Element {
     return off
   }, [active, loadChats, loadMessages])
 
+  // Polling periodico: garante que a inbox se atualize mesmo que um evento
+  // `inbox:changed` se perca (ex.: envio em massa pela campanha, reconexao,
+  // ou se o renderer nao estava inscrito no momento exato).
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void loadChats()
+      if (active) void loadMessages(active)
+    }, 10_000)
+    return () => clearInterval(interval)
+  }, [active, loadChats, loadMessages])
+
   // Rola para a ultima mensagem sempre que a thread muda.
   useEffect(() => {
     const el = threadRef.current
