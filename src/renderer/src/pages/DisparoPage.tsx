@@ -119,9 +119,13 @@ export default function DisparoPage(): JSX.Element {
   const [busy, setBusy] = useState(false)
   const [jobsOpen, setJobsOpen] = useState(false)
   const [jobsFilter, setJobsFilter] = useState<JobStatus | 'all'>('all')
+<<<<<<< HEAD
   const [jobsView, setJobsView] = useState<{ rows: CampaignJobView[]; total: number } | null>(
     null
   )
+=======
+  const [jobsView, setJobsView] = useState<{ rows: CampaignJobView[]; total: number } | null>(null)
+>>>>>>> f4de36f
   const [jobsLoading, setJobsLoading] = useState(false)
   // So comeca a persistir o rascunho depois de restaurar o que ja existia,
   // senao o primeiro render (com os defaults vazios) sobrescreveria o salvo.
@@ -145,6 +149,7 @@ export default function DisparoPage(): JSX.Element {
         setName(draft.name)
         setConfig(draft.config)
         setPacing(draft.pacing ?? defaults)
+        setSkipAlreadySent(draft.skipAlreadySent)
       } else {
         setPacing(defaults)
       }
@@ -157,10 +162,10 @@ export default function DisparoPage(): JSX.Element {
   useEffect(() => {
     if (!draftReady.current) return
     const t = setTimeout(() => {
-      void window.api.campaign.saveDraft({ listId, mode, name, config, pacing })
+      void window.api.campaign.saveDraft({ listId, mode, name, config, pacing, skipAlreadySent })
     }, 400)
     return () => clearTimeout(t)
-  }, [listId, mode, name, config, pacing])
+  }, [listId, mode, name, config, pacing, skipAlreadySent])
 
   // Progresso e parada chegam por evento do main.
   useEffect(() => {
@@ -418,8 +423,13 @@ export default function DisparoPage(): JSX.Element {
                     </div>
                     {jobsView.total > jobsView.rows.length && (
                       <p className="mt-2 text-xs text-ink-tertiary">
+<<<<<<< HEAD
                         Mostrando {jobsView.rows.length} de {jobsView.total}. Use o filtro de
                         status para refinar.
+=======
+                        Mostrando {jobsView.rows.length} de {jobsView.total}. Use o filtro de status
+                        para refinar.
+>>>>>>> f4de36f
                       </p>
                     )}
                   </>

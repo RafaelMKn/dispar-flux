@@ -66,7 +66,13 @@ export const chats = sqliteTable('chats', {
   name: text('name'),
   lastMessage: text('last_message'),
   lastTs: integer('last_ts'),
-  unread: integer('unread').notNull().default(0)
+  unread: integer('unread').notNull().default(0),
+  // Foto de perfil baixada e cacheada em disco (userData/avatars). Guardamos o
+  // caminho local, nao a URL do WhatsApp: a URL expira em poucas horas.
+  avatarPath: text('avatar_path'),
+  // Quando a foto foi buscada pela ultima vez, para revalidar com TTL sem
+  // martelar a API a cada render.
+  avatarTs: integer('avatar_ts')
 })
 
 export const messages = sqliteTable('messages', {
@@ -77,5 +83,24 @@ export const messages = sqliteTable('messages', {
   body: text('body'),
   ts: integer('ts').notNull(),
   waMessageId: text('wa_message_id'),
-  status: text('status')
+  status: text('status'), // pending | sent | delivered | read | error
+  /* ── Midia ───────────────────────────────────────────────────────────── */
+  mediaKind: text('media_kind'), // image | video | audio | document | sticker
+  mediaPath: text('media_path'), // caminho local depois de baixado
+  mediaMime: text('media_mime'),
+  mediaName: text('media_name'), // nome do arquivo (documentos)
+  mediaSize: integer('media_size'), // bytes informados pelo WhatsApp
+  mediaSeconds: integer('media_seconds'), // duracao de audio/video
+  mediaPtt: integer('media_ptt'), // 1 = nota de voz
+  mediaState: text('media_state'), // pending | downloading | done | error
+  /**
+   * Mensagem original do Baileys, serializada em protobuf/base64.
+   *
+   * Necessaria para baixar a midia depois (video e documento so baixam quando
+   * o usuario pede): o download exige as chaves de criptografia que vem dentro
+   * dela. Guardamos em protobuf e nao em JSON porque `JSON.stringify` destroi
+   * os campos binarios (`mediaKey` viraria `{"0":12,"1":...}`) e o download
+   * falharia.
+   */
+  rawProto: text('raw_proto')
 })

@@ -1,0 +1,295 @@
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
+import { initDb } from '../../db'
+import {
+  extractText,
+  describeMedia,
+  previewLabel,
+  mapStatus,
+  handleUpsert,
+  handleHistorySet,
+  handleMessagesUpdate,
+  handleContacts,
+  setMediaBridge,
+  inboxEvents
+} from './inbox'
+import { listChats, listMessages, getMessage, getChat } from '../../repos/chats'
+import { getOptOutSet } from '../../repos/optOuts'
+
+beforeAll(async () => {
+  await initDb()
+})
+
+beforeEach(() => {
+  setMediaBridge(null)
+  inboxEvents.removeAllListeners()
+})
+
+let counter = 0
+/** Cada teste usa um JID proprio: o banco de teste e compartilhado no arquivo. */
+function freshJid(): string {
+  counter += 1
+  return `5511900${String(counter).padStart(6, '0')}@s.whatsapp.net`
+}
+
+function incoming(jid: string, message: unknown, extra: Record<string, unknown> = {}): unknown {
+  counter += 1
+  return {
+    key: { id: `MSG${counter}`, remoteJid: jid, fromMe: false },
+    message,
+    messageTimestamp: 1_700_000_000,
+    ...extra
+  }
+}
+
+describe('extractText', () => {
+  it('le texto simples e texto estendido', () => {
+    expect(extractText({ conversation: 'oi' })).toBe('oi')
+    expect(extractText({ extendedTextMessage: { text: 'link' } })).toBe('link')
+  })
+
+  it('atravessa mensagem temporaria e de visualizacao unica', () => {
+    expect(extractText({ ephemeralMessage: { message: { conversation: 'some' } } })).toBe('some')
+    expect(
+      extractText({ viewOnceMessageV2: { message: { imageMessage: { caption: 'olha' } } } })
+    ).toBe('olha')
+  })
+
+  it('devolve a legenda da midia, e null quando nao ha texto nenhum', () => {
+    expect(extractText({ imageMessage: { caption: 'foto do produto' } })).toBe('foto do produto')
+    expect(extractText({ imageMessage: {} })).toBeNull()
+    expect(extractText({ reactionMessage: {} } as never)).toBeNull()
+  })
+})
+
+describe('describeMedia', () => {
+  it('descreve imagem, documento e nota de voz', () => {
+    expect(describeMedia({ imageMessage: { mimetype: 'image/jpeg', fileLength: 1234 } })).toEqual({
+      kind: 'image',
+      mime: 'image/jpeg',
+      name: null,
+      size: 1234,
+      seconds: null,
+      ptt: false
+    })
+
+    expect(
+      describeMedia({
+        documentMessage: { mimetype: 'application/pdf', fileName: 'proposta.pdf' }
+      })
+    ).toMatchObject({ kind: 'document', name: 'proposta.pdf' })
+
+    expect(
+      describeMedia({ audioMessage: { mimetype: 'audio/ogg', seconds: 7, ptt: true } })
+    ).toMatchObject({ kind: 'audio', seconds: 7, ptt: true })
+  })
+
+  it('converte fileLength em Long para numero', () => {
+    const media = describeMedia({ videoMessage: { fileLength: { toNumber: () => 999 } } })
+    expect(media?.size).toBe(999)
+  })
+
+  it('devolve null para mensagem so de texto', () => {
+    expect(describeMedia({ conversation: 'oi' })).toBeNull()
+  })
+
+  it('enxerga a midia dentro do documento-com-legenda', () => {
+    const media = describeMedia({
+      documentWithCaptionMessage: {
+        message: { documentMessage: { fileName: 'contrato.pdf', caption: 'segue' } }
+      }
+    })
+    expect(media).toMatchObject({ kind: 'document', name: 'contrato.pdf' })
+  })
+})
+
+describe('previewLabel', () => {
+  it('prefere o texto e, sem ele, rotula o tipo de anexo', () => {
+    expect(previewLabel(null, 'oi')).toBe('oi')
+    expect(
+      previewLabel(
+        { kind: 'image', mime: null, name: null, size: null, seconds: null, ptt: false },
+        null
+      )
+    ).toBe('[imagem]')
+    expect(
+      previewLabel(
+        { kind: 'audio', mime: null, name: null, size: null, seconds: null, ptt: true },
+        null
+      )
+    ).toBe('[audio]')
+    expect(
+      previewLabel(
+        { kind: 'document', mime: null, name: 'nota.pdf', size: null, seconds: null, ptt: false },
+        null
+      )
+    ).toBe('[documento: nota.pdf]')
+    // Legenda ganha do rotulo.
+    expect(
+      previewLabel(
+        { kind: 'image', mime: null, name: null, size: null, seconds: null, ptt: false },
+        'olha isso'
+      )
+    ).toBe('olha isso')
+  })
+})
+
+describe('mapStatus', () => {
+  it('traduz o enum do Baileys', () => {
+    expect(mapStatus(2)).toBe('sent')
+    expect(mapStatus(3)).toBe('delivered')
+    expect(mapStatus(4)).toBe('read')
+    expect(mapStatus(5)).toBe('read') // PLAYED tambem e lido
+    expect(mapStatus(0)).toBe('error')
+    expect(mapStatus(undefined)).toBeNull()
+  })
+})
+
+describe('handleUpsert', () => {
+  it('guarda mensagem de texto, conta nao lida e atualiza a previa da conversa', () => {
+    const jid = freshJid()
+    handleUpsert([incoming(jid, { conversation: 'bom dia' }, { pushName: 'Ana' })] as never)
+
+    const msgs = listMessages(jid)
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]).toMatchObject({ body: 'bom dia', direction: 'in', mediaKind: null })
+
+    const chat = listChats().find((c) => c.jid === jid)
+    expect(chat).toMatchObject({ name: 'Ana', lastMessage: 'bom dia', unread: 1 })
+  })
+
+  it('nao duplica quando o Baileys reemite a mesma mensagem', () => {
+    const jid = freshJid()
+    const msg = incoming(jid, { conversation: 'oi' })
+    handleUpsert([msg] as never)
+    handleUpsert([msg] as never)
+
+    expect(listMessages(jid)).toHaveLength(1)
+    expect(listChats().find((c) => c.jid === jid)?.unread).toBe(1)
+  })
+
+  it('ignora grupos, status e newsletters', () => {
+    for (const jid of ['x@g.us', 'status@broadcast', 'y@newsletter']) {
+      handleUpsert([incoming(jid, { conversation: 'ruido' })] as never)
+      expect(listMessages(jid)).toHaveLength(0)
+    }
+  })
+
+  it('registra opt-out global quando o contato responde SAIR', () => {
+    const jid = freshJid()
+    handleUpsert([incoming(jid, { conversation: 'SAIR' })] as never)
+    expect(getOptOutSet().has(`+${jid.split('@')[0]}`)).toBe(true)
+  })
+
+  it('guarda a midia como pendente e baixa sozinho o que e pequeno', async () => {
+    const jid = freshJid()
+    const download = vi.fn().mockResolvedValue({ data: Buffer.from('imagem'), mime: 'image/jpeg' })
+    setMediaBridge({ encode: () => 'RAW', download })
+
+    handleUpsert([
+      incoming(jid, { imageMessage: { mimetype: 'image/jpeg', fileLength: 2048 } })
+    ] as never)
+
+    const [msg] = listMessages(jid)
+    expect(msg.mediaKind).toBe('image')
+    // O download comeca em background; esperamos ele assentar.
+    await vi.waitFor(() => expect(download).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => {
+      const updated = getMessage(msg.id)
+      expect(updated?.mediaState).toBe('done')
+      expect(updated?.mediaUrl).toMatch(/^disparmedia:\/\/media\//)
+    })
+  })
+
+  it('nao baixa sozinho video nem documento', async () => {
+    const jid = freshJid()
+    const download = vi.fn().mockResolvedValue({ data: Buffer.from('x'), mime: null })
+    setMediaBridge({ encode: () => 'RAW', download })
+
+    handleUpsert([
+      incoming(jid, { videoMessage: { mimetype: 'video/mp4', fileLength: 5_000_000 } })
+    ] as never)
+    handleUpsert([
+      incoming(jid, { documentMessage: { mimetype: 'application/pdf', fileName: 'a.pdf' } })
+    ] as never)
+
+    await new Promise((r) => setTimeout(r, 20))
+    expect(download).not.toHaveBeenCalled()
+    expect(listMessages(jid).map((m) => m.mediaState)).toEqual(['pending', 'pending'])
+  })
+
+  it('nao baixa sozinho um anexo pequeno-mas-gigante', async () => {
+    const jid = freshJid()
+    const download = vi.fn().mockResolvedValue({ data: Buffer.from('x'), mime: null })
+    setMediaBridge({ encode: () => 'RAW', download })
+
+    handleUpsert([
+      incoming(jid, { imageMessage: { mimetype: 'image/png', fileLength: 64 * 1024 * 1024 } })
+    ] as never)
+
+    await new Promise((r) => setTimeout(r, 20))
+    expect(download).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleHistorySet', () => {
+  it('preenche conversa antiga sem marcar como nao lida nem disparar opt-out', () => {
+    const jid = freshJid()
+    handleHistorySet({
+      chats: [{ id: jid, name: 'Cliente Antigo', conversationTimestamp: 1_600_000_000 }],
+      contacts: [],
+      messages: [incoming(jid, { conversation: 'SAIR' })]
+    } as never)
+
+    expect(listMessages(jid)).toHaveLength(1)
+    // Historico nao pode inflar o badge: o usuario ja leu isso no celular.
+    expect(listChats().find((c) => c.jid === jid)?.unread).toBe(0)
+    // Nem processar um pedido de descadastro de meses atras como se fosse agora.
+    expect(getOptOutSet().has(`+${jid.split('@')[0]}`)).toBe(false)
+  })
+
+  it('emite um unico evento no fim do lote', () => {
+    const seen: unknown[] = []
+    inboxEvents.on('changed', (p) => seen.push(p))
+
+    const jid = freshJid()
+    handleHistorySet({
+      chats: [{ id: jid }],
+      messages: [
+        incoming(jid, { conversation: 'a' }),
+        incoming(jid, { conversation: 'b' }),
+        incoming(jid, { conversation: 'c' })
+      ]
+    } as never)
+
+    // Uma mensagem de historico nao dispara evento propria; so o resumo final.
+    expect(seen).toEqual([{ chatJid: '*' }])
+  })
+})
+
+describe('handleMessagesUpdate', () => {
+  it('avanca o status de entrega, mas nunca retrocede', () => {
+    const jid = freshJid()
+    handleUpsert([
+      { key: { id: 'OUT1', remoteJid: jid, fromMe: true }, message: { conversation: 'ola' } }
+    ] as never)
+
+    handleMessagesUpdate([{ key: { id: 'OUT1', remoteJid: jid }, update: { status: 3 } }])
+    expect(getMessage('OUT1')?.status).toBe('delivered')
+
+    handleMessagesUpdate([{ key: { id: 'OUT1', remoteJid: jid }, update: { status: 4 } }])
+    expect(getMessage('OUT1')?.status).toBe('read')
+
+    // Ack fora de ordem depois de reconectar nao pode voltar para "entregue".
+    handleMessagesUpdate([{ key: { id: 'OUT1', remoteJid: jid }, update: { status: 3 } }])
+    expect(getMessage('OUT1')?.status).toBe('read')
+  })
+})
+
+describe('handleContacts', () => {
+  it('grava o nome da agenda na conversa', () => {
+    const jid = freshJid()
+    handleUpsert([incoming(jid, { conversation: 'oi' })] as never)
+    handleContacts([{ id: jid, name: 'Maria Souza' }])
+    expect(getChat(jid)?.name).toBe('Maria Souza')
+  })
+})

@@ -4,10 +4,20 @@ import { rm } from 'node:fs/promises'
 import { EventEmitter } from 'node:events'
 import QRCode from 'qrcode'
 import type { WASocket } from 'baileys'
-import type { WhatsappState, WaCheckResult } from '@shared/types'
+import type { MediaKind, WhatsappState, WaCheckResult } from '@shared/types'
 import { scoped, pinoAdapter } from '../../logger'
 import { getJson, setJson } from '../../settings'
-import { handleUpsert } from './inbox'
+import {
+  handleUpsert,
+  handleMessagesUpdate,
+  handleContacts,
+  handleHistorySet,
+  setMediaBridge,
+  inboxEvents
+} from './inbox'
+import { chatsNeedingAvatar, setAvatar, unreadIncomingIds } from '../../repos/chats'
+import { saveAvatar } from './mediaStore'
+import { webmToOggOpus } from './opusOgg'
 
 const log = scoped('whatsapp')
 
@@ -125,6 +135,19 @@ async function resolveWaVersion(): Promise<{ version: WaVersion; source: string 
 /** 405 nao e recuperavel por retry: insistir so aumenta risco de bloqueio. */
 const FATAL_CODES = new Set([405])
 
+/**
+ * Por quanto tempo uma foto de perfil cacheada vale.
+ *
+ * Foto de perfil muda pouco e cada revalidacao e uma ida a rede por contato;
+ * um dia e curto o bastante para nao ficar desatualizado por semanas e longo o
+ * bastante para nao virar trafego constante.
+ */
+const AVATAR_TTL_MS = 24 * 60 * 60 * 1000
+
+/** Quantas fotos buscamos por rodada, para nao rajar a API depois de conectar. */
+const AVATAR_BATCH = 20
+const AVATAR_GAP_MS = 400
+
 class WhatsappService extends EventEmitter {
   private sock: WASocket | null = null
   private state: WhatsappState = {
@@ -148,6 +171,8 @@ class WhatsappService extends EventEmitter {
    */
   private paired = false
   private lastVersion: WaVersion | null = null
+  /** Evita duas varreduras de foto de perfil concorrentes (reconexao rapida). */
+  private avatarSweepRunning = false
 
   getState(): WhatsappState {
     return { ...this.state }
@@ -207,28 +232,113 @@ class WhatsappService extends EventEmitter {
       // Identificar-se como Ubuntu/Chrome e mais aceito no handshake do que
       // "Windows", que aparece associado ao 405 nos relatos do Baileys.
       browser: ['Ubuntu', 'Chrome', '120.0.0.0'],
-      // Nao sincroniza o historico completo: na Fase 1a so precisamos enviar, e
-      // baixar o historico inteiro e lento e pesado.
+      /**
+       * Nao baixamos o historico COMPLETO: numa conta antiga isso sao centenas
+       * de milhares de mensagens, que travam o app por minutos no primeiro
+       * pareamento. O WhatsApp ainda manda um recorte recente por conta propria
+       * em `messaging-history.set`, e e ele que preenche as conversas.
+       */
       syncFullHistory: false,
       markOnlineOnConnect: false
     })
 
     this.sock = sock
+    this.installMediaBridge()
     sock.ev.on('creds.update', saveCreds)
 
     sock.ev.on('connection.update', (update) => {
       void this.onConnectionUpdate(update)
     })
 
-    // Inbox (Fase 2): mensagens recebidas chegam localmente, sem webhook.
+    // Inbox: mensagens recebidas chegam localmente, sem webhook.
     sock.ev.on('messages.upsert', ({ messages: msgs, type }) => {
       try {
         // 'append' e historico antigo sendo sincronizado; 'notify' e o que chega
         // agora. Guardamos os dois para a conversa nao aparecer vazia.
         if (type !== 'notify' && type !== 'append') return
-        handleUpsert(msgs as Parameters<typeof handleUpsert>[0])
+        handleUpsert(msgs as Parameters<typeof handleUpsert>[0], { history: type === 'append' })
       } catch (e) {
         log.error('falha ao processar messages.upsert', e)
+      }
+    })
+
+    // Acks de entrega/leitura: sem isso o "enviado" nunca vira "lido" na tela.
+    sock.ev.on('messages.update', (updates) => {
+      try {
+        handleMessagesUpdate(updates as Parameters<typeof handleMessagesUpdate>[0])
+      } catch (e) {
+        log.error('falha ao processar messages.update', e)
+      }
+    })
+
+    // Nome do contato na agenda: melhor que o pushName para identificar quem e.
+    const onContacts = (contacts: unknown): void => {
+      try {
+        handleContacts(contacts as Parameters<typeof handleContacts>[0])
+      } catch (e) {
+        log.error('falha ao processar contatos', e)
+      }
+    }
+    sock.ev.on('contacts.upsert', onContacts)
+    sock.ev.on('contacts.update', onContacts)
+
+    // Recorte de historico que o WhatsApp manda apos o pareamento.
+    sock.ev.on('messaging-history.set', (payload) => {
+      try {
+        handleHistorySet(payload as Parameters<typeof handleHistorySet>[0])
+      } catch (e) {
+        log.error('falha ao sincronizar historico', e)
+      }
+    })
+  }
+
+  /**
+   * Liga a inbox ao Baileys para serializar e baixar midia.
+   *
+   * A serializacao e em protobuf, e nao JSON, porque `JSON.stringify` destroi
+   * os campos binarios da mensagem (`mediaKey`) — e sem eles o anexo nao
+   * descriptografa depois.
+   */
+  private installMediaBridge(): void {
+    setMediaBridge({
+      encode: (msg) => {
+        try {
+          const { proto } = baileysMod ?? {}
+          if (!proto) return null
+          const bytes = proto.WebMessageInfo.encode(
+            msg as Parameters<typeof proto.WebMessageInfo.encode>[0]
+          ).finish()
+          return Buffer.from(bytes).toString('base64')
+        } catch (e) {
+          log.warn('nao foi possivel guardar a mensagem para download posterior', e)
+          return null
+        }
+      },
+      download: async (raw) => {
+        const { proto, downloadMediaMessage } = await loadBaileys()
+        const msg = proto.WebMessageInfo.decode(Buffer.from(raw, 'base64'))
+        const data = (await downloadMediaMessage(
+          msg,
+          'buffer',
+          {},
+          {
+            logger: pinoAdapter('baileys'),
+            // Anexo antigo pode ter saido do servidor; isso pede reenvio ao
+            // aparelho do contato em vez de falhar direto.
+            reuploadRequest: this.sock!.updateMediaMessage
+          }
+        )) as Buffer
+
+        const content = msg.message
+        const mime =
+          content?.imageMessage?.mimetype ??
+          content?.videoMessage?.mimetype ??
+          content?.audioMessage?.mimetype ??
+          content?.documentMessage?.mimetype ??
+          content?.stickerMessage?.mimetype ??
+          null
+
+        return { data, mime }
       }
     })
   }
@@ -254,6 +364,10 @@ class WhatsappService extends EventEmitter {
         lastError: null,
         me: this.sock?.user ? { id: this.sock.user.id, name: this.sock.user.name ?? null } : null
       })
+      // Fotos de perfil em segundo plano: nada na tela espera por isso.
+      void this.refreshAvatars().catch((e: unknown) =>
+        log.warn('falha ao atualizar fotos de perfil', e)
+      )
       return
     }
 
@@ -401,6 +515,138 @@ class WhatsappService extends EventEmitter {
     if (!sock) throw new Error('WhatsApp nao esta conectado.')
     const sent = await sock.sendMessage(jid, { text })
     return sent?.key?.id ?? null
+  }
+
+  /** Envia um arquivo do disco como imagem, video, audio ou documento. */
+  async sendMedia(
+    jid: string,
+    input: { filePath: string; kind: MediaKind; fileName: string; mime: string; caption?: string }
+  ): Promise<string | null> {
+    const sock = this.socket
+    if (!sock) throw new Error('WhatsApp nao esta conectado.')
+
+    const caption = input.caption?.trim() || undefined
+    // `url` com caminho local faz o Baileys ler o arquivo em stream, sem
+    // carregar um video de 50MB inteiro na memoria.
+    const source = { url: input.filePath }
+
+    const content = {
+      image: { image: source, caption, mimetype: input.mime },
+      video: { video: source, caption, mimetype: input.mime },
+      audio: { audio: source, mimetype: input.mime, ptt: false },
+      sticker: { sticker: source },
+      document: {
+        document: source,
+        caption,
+        mimetype: input.mime,
+        fileName: input.fileName
+      }
+    }[input.kind]
+
+    const sent = await sock.sendMessage(jid, content as Parameters<typeof sock.sendMessage>[1])
+    return sent?.key?.id ?? null
+  }
+
+  /**
+   * Envia uma nota de voz gravada no app.
+   *
+   * Recebe o WebM/Opus do `MediaRecorder` (unico formato que o Chromium grava)
+   * e remuxa para Ogg/Opus, que e o que o WhatsApp exige para `ptt`. Devolve
+   * tambem o ogg para guardarmos o mesmo arquivo que o contato recebeu.
+   */
+  async sendVoice(
+    jid: string,
+    webm: Buffer,
+    seconds: number
+  ): Promise<{ waId: string | null; ogg: Buffer }> {
+    const sock = this.socket
+    if (!sock) throw new Error('WhatsApp nao esta conectado.')
+
+    const ogg = webmToOggOpus(webm)
+    const sent = await sock.sendMessage(jid, {
+      audio: ogg,
+      mimetype: 'audio/ogg; codecs=opus',
+      ptt: true,
+      // Informar a duracao evita o Baileys tentar calcular lendo o arquivo.
+      seconds: Math.max(1, Math.round(seconds))
+    })
+    return { waId: sent?.key?.id ?? null, ogg }
+  }
+
+  /**
+   * Manda confirmacao de leitura das mensagens recebidas de uma conversa.
+   *
+   * E o que mantem o app em sincronia com o celular: ler aqui zera o nao-lido
+   * la tambem. O contato passa a ver o visto azul — comportamento escolhido no
+   * produto, nao um efeito colateral.
+   */
+  async markReadOnWhatsapp(jid: string): Promise<void> {
+    const sock = this.socket
+    if (!sock) return
+    const ids = unreadIncomingIds(jid)
+    if (ids.length === 0) return
+    try {
+      await sock.readMessages(ids.map((id) => ({ remoteJid: jid, id, fromMe: false })))
+    } catch (e) {
+      // Confirmacao de leitura e best-effort: falhar aqui nao pode impedir o
+      // usuario de ler a conversa.
+      log.warn('nao foi possivel enviar confirmacao de leitura', e)
+    }
+  }
+
+  /* ── Fotos de perfil ──────────────────────────────────────────────────── */
+
+  /**
+   * Busca as fotos de perfil vencidas, aos poucos.
+   *
+   * Roda em segundo plano depois de conectar. O espacamento entre chamadas e
+   * proposital: uma rajada de dezenas de requisicoes logo apos o handshake e
+   * exatamente o tipo de padrao que chama atencao do anti-spam.
+   */
+  private async refreshAvatars(): Promise<void> {
+    if (this.avatarSweepRunning) return
+    this.avatarSweepRunning = true
+    try {
+      const jids = chatsNeedingAvatar(AVATAR_TTL_MS, AVATAR_BATCH)
+      for (const jid of jids) {
+        if (!this.socket) break
+        await this.fetchAvatar(jid)
+        await new Promise((r) => setTimeout(r, AVATAR_GAP_MS))
+      }
+      if (jids.length > 0) inboxEvents.emit('changed', { chatJid: '*' })
+    } finally {
+      this.avatarSweepRunning = false
+    }
+  }
+
+  private async fetchAvatar(jid: string): Promise<void> {
+    const sock = this.socket
+    if (!sock) return
+    try {
+      const url = await sock.profilePictureUrl(jid, 'image')
+      if (!url) {
+        // Sem foto: gravamos assim mesmo para o TTL valer e nao reperguntarmos
+        // a cada varredura.
+        setAvatar(jid, null)
+        return
+      }
+      const response = await fetch(url)
+      if (!response.ok) {
+        setAvatar(jid, null)
+        return
+      }
+      const buf = Buffer.from(await response.arrayBuffer())
+      setAvatar(jid, saveAvatar(jid, buf, response.headers.get('content-type')))
+    } catch {
+      // 404 = contato sem foto ou que restringiu quem pode ve-la. E o caso
+      // comum, nao um erro: marcamos como "sem foto" e seguimos.
+      setAvatar(jid, null)
+    }
+  }
+
+  /** Reconsulta fotos de perfil agora (usado pelo botao de sincronizar). */
+  async resync(): Promise<void> {
+    await this.refreshAvatars()
   }
 
   /** Presenca "digitando", para o envio parecer menos automatizado. */

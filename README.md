@@ -41,12 +41,28 @@ Atualizações**. Seus dados (base de contatos, sessão do WhatsApp, configuraç
 
 ## Telas
 
-1. **Conversas** (Fase 2) — inbox para responder dentro do app.
+1. **Conversas** — inbox para responder dentro do app: texto, emojis, imagens, vídeos,
+   documentos e áudios (inclusive gravar nota de voz), com foto de perfil dos contatos e
+   confirmação de leitura sincronizada com o celular.
 2. **Disparo** — configura a campanha: base, modo de mensagem (fixa, alternada, alternada
    por parágrafo, IA), intervalos e descanso.
 3. **Base de Dados** — cadastra bases de contatos, importa CSV (Fase 1), valida números.
-4. **Configurações** — conexão do WhatsApp (QR), provedor/modelo/chave de IA e parâmetros
-   padrão de envio.
+4. **Configurações** — conexão do WhatsApp (QR), provedor/modelo/chave de IA, parâmetros
+   padrão de envio e comportamento em segundo plano.
+
+## Rodar em segundo plano
+
+O disparo não depende da janela estar aberta. Ao fechar a janela, o app se recolhe para a
+bandeja do sistema (ao lado do relógio) e a campanha continua enviando. O ícone mostra o
+progresso e traz atalhos para **pausar**, **retomar** e **sair** — sair pelo menu do ícone
+é o que encerra o app de verdade.
+
+Você recebe uma notificação do sistema quando a campanha termina, quando ela para por ter
+batido o teto diário e quando o WhatsApp desconecta no meio do envio.
+
+Em **Configurações → Rodar em segundo plano** dá para desligar isso (aí o X encerra o app,
+interrompendo o disparo) e para ligar o **início junto com o sistema**, que sobe o app
+minimizado na bandeja.
 
 ## Stack
 
@@ -105,8 +121,10 @@ download.
 - **Fase 0 — Fundação** ✅ scaffold, IPC, SQLite, safeStorage, shell das 4 telas.
 - **Fase 1 — MVP** conexão por QR, import CSV, motor de mensagens (fixa/rotação/spintax),
   motor de disparo com pacing/anti-ban, tela de config completa.
-- **Fase 2 — Inbox** conversas em tempo real, opt-out automático ("SAIR").
-- **Fase 3 — Extras** modo IA com pré-geração, mídia, métricas, code signing.
+- **Fase 2 — Inbox** ✅ conversas em tempo real, opt-out automático ("SAIR"), mídia
+  (imagem/vídeo/documento/áudio), nota de voz, foto de perfil e sincronização de
+  histórico e de leitura.
+- **Fase 3 — Extras** modo IA com pré-geração, métricas, code signing.
 
 ## Licença
 

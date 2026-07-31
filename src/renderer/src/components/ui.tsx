@@ -172,6 +172,48 @@ export function Select({
   )
 }
 
+/** Chave liga/desliga com rotulo e explicacao. */
+export function Toggle({
+  checked,
+  onChange,
+  label,
+  hint
+}: {
+  checked: boolean
+  onChange: (next: boolean) => void
+  label: string
+  hint?: string
+}): JSX.Element {
+  return (
+    <label className="flex cursor-pointer items-start gap-3">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="peer sr-only"
+      />
+      <span
+        aria-hidden="true"
+        className={`mt-0.5 grid h-5 w-9 flex-none items-center rounded-full p-0.5 transition-colors duration-120 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent-strong ${
+          checked ? 'bg-btn' : 'bg-surface-sunken border border-line'
+        }`}
+      >
+        <span
+          className={`h-4 w-4 rounded-full bg-surface-raised shadow-flat transition-transform duration-120 ${
+            checked ? 'translate-x-4' : 'translate-x-0'
+          }`}
+        />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm text-ink">{label}</span>
+        {hint && (
+          <span className="mt-0.5 block text-xs text-ink-meta [text-wrap:pretty]">{hint}</span>
+        )}
+      </span>
+    </label>
+  )
+}
+
 /* ── Pills / badges / status ──────────────────────────────────────────── */
 export function Pill({
   children,

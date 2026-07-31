@@ -8,6 +8,7 @@ import type {
   WhatsappState,
   CampaignDraft,
   JobStatus,
+  BackgroundSettings,
   UpdateState
 } from '@shared/types'
 
@@ -81,6 +82,15 @@ const api: DisparApi = {
     messages: (chatJid: string) => ipcRenderer.invoke('inbox:messages', chatJid),
     send: (chatJid: string, text: string) => ipcRenderer.invoke('inbox:send', chatJid, text),
     markRead: (chatJid: string) => ipcRenderer.invoke('inbox:markRead', chatJid),
+    pickAttachment: (kind: 'media' | 'document' | 'audio') =>
+      ipcRenderer.invoke('inbox:pickAttachment', kind),
+    sendMedia: (chatJid: string, input) => ipcRenderer.invoke('inbox:sendMedia', chatJid, input),
+    sendVoice: (chatJid: string, webmBase64: string, seconds: number) =>
+      ipcRenderer.invoke('inbox:sendVoice', chatJid, webmBase64, seconds),
+    downloadMedia: (messageId: string) => ipcRenderer.invoke('inbox:downloadMedia', messageId),
+    openMedia: (messageId: string) => ipcRenderer.invoke('inbox:openMedia', messageId),
+    saveMediaAs: (messageId: string) => ipcRenderer.invoke('inbox:saveMediaAs', messageId),
+    resync: () => ipcRenderer.invoke('inbox:resync'),
     onChanged: (cb) => subscribe('inbox:changed', cb)
   },
   settings: {
@@ -89,7 +99,9 @@ const api: DisparApi = {
       ipcRenderer.invoke('settings:setSendingDefaults', v),
     getAi: () => ipcRenderer.invoke('settings:getAi'),
     setAi: (provider: AiSettings['provider'], model: string, apiKey?: string) =>
-      ipcRenderer.invoke('settings:setAi', provider, model, apiKey)
+      ipcRenderer.invoke('settings:setAi', provider, model, apiKey),
+    getBackground: () => ipcRenderer.invoke('settings:getBackground'),
+    setBackground: (v: BackgroundSettings) => ipcRenderer.invoke('settings:setBackground', v)
   },
   updater: {
     getState: () => ipcRenderer.invoke('updater:getState'),

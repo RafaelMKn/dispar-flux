@@ -35,12 +35,27 @@ export interface WaCheckResult {
 
 export type MessageDirection = 'in' | 'out'
 
+export type MediaKind = 'image' | 'video' | 'audio' | 'document' | 'sticker'
+
+/**
+ * Estado do download do anexo.
+ *
+ * 'pending' significa que a mensagem chegou com midia mas o conteudo ainda nao
+ * foi baixado — o padrao para video e documento, que so baixam quando o usuario
+ * pede.
+ */
+export type MediaState = 'pending' | 'downloading' | 'done' | 'error'
+
+export type MessageStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'error'
+
 export interface Chat {
   jid: string
   name: string | null
   lastMessage: string | null
   lastTs: number | null
   unread: number
+  /** URL interna (`disparmedia://`) da foto de perfil cacheada, se houver. */
+  avatarUrl: string | null
 }
 
 export interface Message {
@@ -50,7 +65,27 @@ export interface Message {
   body: string | null
   ts: number
   waMessageId: string | null
-  status: string | null
+  status: MessageStatus | null
+  /** null quando e mensagem so de texto. */
+  mediaKind: MediaKind | null
+  mediaState: MediaState | null
+  /** URL interna do arquivo local; null enquanto nao foi baixado. */
+  mediaUrl: string | null
+  mediaMime: string | null
+  mediaName: string | null
+  mediaSize: number | null
+  mediaSeconds: number | null
+  /** Nota de voz (gravada no microfone), nao um arquivo de audio qualquer. */
+  mediaPtt: boolean
+}
+
+/** Arquivo escolhido pelo usuario para enviar. */
+export interface PickedAttachment {
+  filePath: string
+  fileName: string
+  mime: string
+  size: number
+  kind: MediaKind
 }
 
 export interface ContactList {
@@ -78,6 +113,17 @@ export interface AiSettings {
   hasKey: boolean
 }
 
+/** Comportamento do app rodando em segundo plano (bandeja do sistema). */
+export interface BackgroundSettings {
+  /**
+   * Fechar a janela esconde o app na bandeja em vez de encerrar, mantendo o
+   * disparo em andamento.
+   */
+  closeToTray: boolean
+  /** Subir junto com o sistema, ja minimizado na bandeja. */
+  launchAtLogin: boolean
+}
+
 export interface SendingDefaults {
   delayMinMs: number
   delayMaxMs: number
@@ -101,6 +147,12 @@ export interface CampaignDraft {
   name: string
   config: MessageConfig
   pacing: SendingDefaults | null
+  /**
+   * A opcao de nao reenviar entra no rascunho junto com o resto: ela some ao
+   * trocar de aba, o padrao e `false`, e reenviar para quem ja recebeu e
+   * exatamente o erro que ela existe para evitar.
+   */
+  skipAlreadySent: boolean
 }
 
 export interface CampaignPlan {
@@ -295,6 +347,26 @@ export interface DisparApi {
     messages: (chatJid: string) => Promise<Message[]>
     send: (chatJid: string, text: string) => Promise<void>
     markRead: (chatJid: string) => Promise<void>
+    /** Abre o seletor de arquivo. `kind` filtra as extensoes oferecidas. */
+    pickAttachment: (kind: 'media' | 'document' | 'audio') => Promise<PickedAttachment | null>
+    /** Envia um arquivo do disco como imagem, video, audio ou documento. */
+    sendMedia: (
+      chatJid: string,
+      input: { filePath: string; kind: MediaKind; fileName: string; mime: string; caption?: string }
+    ) => Promise<void>
+    /**
+     * Envia uma nota de voz gravada no app. Recebe o WebM/Opus do
+     * MediaRecorder em base64; o main converte para Ogg/Opus antes de enviar.
+     */
+    sendVoice: (chatJid: string, webmBase64: string, seconds: number) => Promise<void>
+    /** Baixa sob demanda o anexo de uma mensagem (video/documento). */
+    downloadMedia: (messageId: string) => Promise<Message | null>
+    /** Abre o anexo no programa padrao do sistema. */
+    openMedia: (messageId: string) => Promise<void>
+    /** Salva uma copia do anexo onde o usuario escolher. */
+    saveMediaAs: (messageId: string) => Promise<string | null>
+    /** Reconsulta conversas e fotos de perfil no WhatsApp. */
+    resync: () => Promise<void>
     /** Avisa que houve mudanca (nova mensagem, leitura, opt-out detectado). */
     onChanged: (cb: (p: { chatJid: string; optOut?: boolean }) => void) => () => void
   }
@@ -303,6 +375,9 @@ export interface DisparApi {
     setSendingDefaults: (v: SendingDefaults) => Promise<void>
     getAi: () => Promise<AiSettings>
     setAi: (provider: AiSettings['provider'], model: string, apiKey?: string) => Promise<void>
+    /** Comportamento em segundo plano (bandeja, iniciar com o sistema). */
+    getBackground: () => Promise<BackgroundSettings>
+    setBackground: (v: BackgroundSettings) => Promise<void>
   }
   updater: {
     getState: () => Promise<UpdateState>

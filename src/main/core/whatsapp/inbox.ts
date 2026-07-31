@@ -1,15 +1,45 @@
 import { EventEmitter } from 'node:events'
-import { upsertChat, incrementUnread, insertMessage } from '../../repos/chats'
+import {
+  upsertChat,
+  incrementUnread,
+  insertMessage,
+  advanceMessageStatus,
+  setMediaState,
+  getMessageRow
+} from '../../repos/chats'
 import { addOptOut } from '../../repos/optOuts'
 import { isOptOutRequest, jidToE164 } from './optOutDetect'
 import { scoped } from '../../logger'
 import { saveNow } from '../../db'
-import type { MessageDirection } from '@shared/types'
+import { saveMedia } from './mediaStore'
+import type { MediaKind, MessageDirection, MessageStatus } from '@shared/types'
 
 const log = scoped('inbox')
 
 /** Emite 'changed' com { chatJid, optOut? } para o IPC repassar ao renderer. */
 export const inboxEvents = new EventEmitter()
+
+/**
+ * Ponte para o Baileys, injetada pelo client.
+ *
+ * PORQUE INJETADA: este modulo trata a logica da inbox e precisa ser testavel,
+ * mas o `baileys` e ESM-only e so carrega por `import()` dinamico dentro do
+ * Electron. Importa-lo aqui arrastaria o pacote inteiro para dentro dos testes.
+ * Alem disso o client ja importa este modulo — importar de volta fecharia um
+ * ciclo.
+ */
+export interface MediaBridge {
+  /** Serializa a mensagem do Baileys para guardar no banco (protobuf/base64). */
+  encode: (msg: unknown) => string | null
+  /** Baixa o anexo a partir do que `encode` gravou. */
+  download: (raw: string) => Promise<{ data: Buffer; mime: string | null }>
+}
+
+let bridge: MediaBridge | null = null
+
+export function setMediaBridge(next: MediaBridge | null): void {
+  bridge = next
+}
 
 /** JIDs que nao sao conversa de pessoa e nao devem virar item da inbox. */
 function isIgnorableJid(jid: string | null | undefined): boolean {
@@ -22,50 +52,150 @@ function isIgnorableJid(jid: string | null | undefined): boolean {
   )
 }
 
-/**
- * Extrai o texto de uma mensagem do WhatsApp.
- *
- * Mensagens de midia nao tem texto proprio (so legenda). Na Fase 2 tratamos
- * apenas texto; midia entra como um marcador para o usuario saber que chegou
- * algo, em vez de a conversa parecer vazia.
- */
-function extractText(message: Record<string, unknown> | null | undefined): string | null {
-  if (!message) return null
-  const m = message as {
-    conversation?: string
-    extendedTextMessage?: { text?: string }
-    imageMessage?: { caption?: string }
-    videoMessage?: { caption?: string }
-    documentMessage?: { caption?: string; fileName?: string }
-    audioMessage?: unknown
-    stickerMessage?: unknown
-    ephemeralMessage?: { message?: Record<string, unknown> }
-    viewOnceMessage?: { message?: Record<string, unknown> }
-  }
+/* ── Leitura da mensagem do Baileys ──────────────────────────────────────── */
 
-  if (m.ephemeralMessage?.message) return extractText(m.ephemeralMessage.message)
-  if (m.viewOnceMessage?.message) return extractText(m.viewOnceMessage.message)
-
-  if (typeof m.conversation === 'string') return m.conversation
-  if (m.extendedTextMessage?.text) return m.extendedTextMessage.text
-  if (m.imageMessage) return m.imageMessage.caption || '[imagem]'
-  if (m.videoMessage) return m.videoMessage.caption || '[video]'
-  if (m.documentMessage)
-    return m.documentMessage.caption || `[documento: ${m.documentMessage.fileName ?? 'arquivo'}]`
-  if (m.audioMessage) return '[audio]'
-  if (m.stickerMessage) return '[sticker]'
-  return null
+interface WaMessageContent {
+  conversation?: string
+  extendedTextMessage?: { text?: string }
+  imageMessage?: WaMedia
+  videoMessage?: WaMedia
+  documentMessage?: WaMedia
+  audioMessage?: WaMedia
+  stickerMessage?: WaMedia
+  ephemeralMessage?: { message?: WaMessageContent }
+  viewOnceMessage?: { message?: WaMessageContent }
+  viewOnceMessageV2?: { message?: WaMessageContent }
+  documentWithCaptionMessage?: { message?: WaMessageContent }
 }
 
-interface WaMessageLike {
-  key?: { id?: string | null; remoteJid?: string | null; fromMe?: boolean | null }
-  message?: Record<string, unknown> | null
-  pushName?: string | null
-  messageTimestamp?: number | Long | null
+interface WaMedia {
+  caption?: string | null
+  mimetype?: string | null
+  fileName?: string | null
+  fileLength?: number | Long | null
+  seconds?: number | null
+  ptt?: boolean | null
 }
 
 interface Long {
   toNumber: () => number
+}
+
+function toNumber(value: number | Long | null | undefined): number | null {
+  if (value == null) return null
+  return typeof value === 'number' ? value : value.toNumber()
+}
+
+/**
+ * Remove os involucros que o WhatsApp usa para mensagens temporarias, de
+ * visualizacao unica e documento-com-legenda. Sem isso toda mensagem que passa
+ * por um desses modos apareceria vazia na conversa.
+ */
+function unwrap(message: WaMessageContent | null | undefined): WaMessageContent | null {
+  if (!message) return null
+  const inner =
+    message.ephemeralMessage?.message ??
+    message.viewOnceMessage?.message ??
+    message.viewOnceMessageV2?.message ??
+    message.documentWithCaptionMessage?.message
+  return inner ? unwrap(inner) : message
+}
+
+/** Texto proprio da mensagem (ou legenda da midia). null quando nao ha. */
+export function extractText(raw: WaMessageContent | null | undefined): string | null {
+  const m = unwrap(raw)
+  if (!m) return null
+  if (typeof m.conversation === 'string' && m.conversation) return m.conversation
+  if (m.extendedTextMessage?.text) return m.extendedTextMessage.text
+  return (
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    m.documentMessage?.caption ||
+    m.audioMessage?.caption ||
+    null
+  )
+}
+
+export interface MediaInfo {
+  kind: MediaKind
+  mime: string | null
+  name: string | null
+  size: number | null
+  seconds: number | null
+  ptt: boolean
+}
+
+/** Descreve o anexo da mensagem, ou null se for so texto. */
+export function describeMedia(raw: WaMessageContent | null | undefined): MediaInfo | null {
+  const m = unwrap(raw)
+  if (!m) return null
+
+  const found: [MediaKind, WaMedia | undefined][] = [
+    ['image', m.imageMessage],
+    ['video', m.videoMessage],
+    ['audio', m.audioMessage],
+    ['document', m.documentMessage],
+    ['sticker', m.stickerMessage]
+  ]
+
+  for (const [kind, media] of found) {
+    if (!media) continue
+    return {
+      kind,
+      mime: media.mimetype ?? null,
+      name: media.fileName ?? null,
+      size: toNumber(media.fileLength),
+      seconds: media.seconds ?? null,
+      ptt: media.ptt === true
+    }
+  }
+  return null
+}
+
+/** Rotulo curto para a previa da conversa na lista lateral. */
+export function previewLabel(media: MediaInfo | null, text: string | null): string | null {
+  if (text) return text
+  if (!media) return null
+  switch (media.kind) {
+    case 'image':
+      return '[imagem]'
+    case 'video':
+      return '[video]'
+    case 'audio':
+      return media.ptt ? '[audio]' : '[arquivo de audio]'
+    case 'sticker':
+      return '[figurinha]'
+    case 'document':
+      return `[documento: ${media.name ?? 'arquivo'}]`
+  }
+}
+
+/**
+ * Quais anexos baixamos sozinhos.
+ *
+ * Imagem, figurinha e audio sao pequenos e a conversa fica ilegivel sem eles.
+ * Video e documento podem ter dezenas de MB e nem sempre interessam — esses so
+ * baixam quando o usuario clica, para nao encher o disco de quem so queria ler
+ * a conversa.
+ */
+const AUTO_DOWNLOAD: ReadonlySet<MediaKind> = new Set<MediaKind>(['image', 'audio', 'sticker'])
+
+/** Teto de seguranca: nem um anexo "pequeno" deve baixar sozinho se vier enorme. */
+const AUTO_DOWNLOAD_MAX_BYTES = 16 * 1024 * 1024
+
+function shouldAutoDownload(media: MediaInfo): boolean {
+  if (!AUTO_DOWNLOAD.has(media.kind)) return false
+  return (media.size ?? 0) <= AUTO_DOWNLOAD_MAX_BYTES
+}
+
+/* ── Entrada de mensagens ────────────────────────────────────────────────── */
+
+interface WaMessageLike {
+  key?: { id?: string | null; remoteJid?: string | null; fromMe?: boolean | null }
+  message?: WaMessageContent | null
+  pushName?: string | null
+  messageTimestamp?: number | Long | null
+  status?: number | string | null
 }
 
 function toMillis(ts: WaMessageLike['messageTimestamp']): number {
@@ -75,61 +205,253 @@ function toMillis(ts: WaMessageLike['messageTimestamp']): number {
   return n < 1e12 ? n * 1000 : n
 }
 
+/** Enum de status do Baileys (WAMessageStatus) para o nosso vocabulario. */
+export function mapStatus(status: number | string | null | undefined): MessageStatus | null {
+  switch (status) {
+    case 0:
+    case 'ERROR':
+      return 'error'
+    case 1:
+    case 'PENDING':
+      return 'pending'
+    case 2:
+    case 'SERVER_ACK':
+      return 'sent'
+    case 3:
+    case 'DELIVERY_ACK':
+      return 'delivered'
+    case 4:
+    case 'READ':
+    case 5:
+    case 'PLAYED':
+      return 'read'
+    default:
+      return null
+  }
+}
+
+export interface UpsertOptions {
+  /**
+   * Mensagem vinda da sincronizacao de historico, nao ao vivo.
+   *
+   * Historico nao pode incrementar nao-lidas (o usuario ja leu no celular) nem
+   * disparar opt-out retroativo — um "SAIR" de meses atras seria processado
+   * como se tivesse acabado de chegar.
+   */
+  history?: boolean
+}
+
 /**
- * Processa mensagens vindas do evento `messages.upsert`.
+ * Processa mensagens vindas de `messages.upsert` (ao vivo) e da sincronizacao
+ * de historico.
  *
  * Idempotente: usa o id da mensagem como chave primaria, entao reemissao pelo
  * Baileys (comum apos reconexao) nao duplica nada.
  */
-export function handleUpsert(msgs: WaMessageLike[]): void {
+export function handleUpsert(msgs: WaMessageLike[], opts: UpsertOptions = {}): void {
   for (const msg of msgs) {
-    const jid = msg.key?.remoteJid
-    if (isIgnorableJid(jid)) continue
+    try {
+      handleOne(msg, opts)
+    } catch (e) {
+      log.error('falha ao processar mensagem', e)
+    }
+  }
+}
 
-    const id = msg.key?.id
-    if (!id || !jid) continue
+function handleOne(msg: WaMessageLike, opts: UpsertOptions): void {
+  const jid = msg.key?.remoteJid
+  if (isIgnorableJid(jid)) return
 
-    const body = extractText(msg.message)
-    // Sem texto e sem marcador (ex.: reacoes, protocolos) — nao vira mensagem.
-    if (body === null) continue
+  const id = msg.key?.id
+  if (!id || !jid) return
 
-    const direction: MessageDirection = msg.key?.fromMe ? 'out' : 'in'
-    const ts = toMillis(msg.messageTimestamp)
+  const text = extractText(msg.message)
+  const media = describeMedia(msg.message)
+  // Sem texto e sem midia (ex.: reacoes, protocolos) — nao vira mensagem.
+  if (text === null && !media) return
 
-    const inserted = insertMessage({
-      id,
-      chatJid: jid,
-      direction,
-      body,
-      ts,
-      waMessageId: id
-    })
-    if (!inserted) continue
+  const direction: MessageDirection = msg.key?.fromMe ? 'out' : 'in'
+  const ts = toMillis(msg.messageTimestamp)
+  const preview = previewLabel(media, text)
 
-    upsertChat(jid, {
-      name: direction === 'in' ? (msg.pushName ?? null) : null,
-      lastMessage: body,
-      lastTs: ts
-    })
+  const inserted = insertMessage({
+    id,
+    chatJid: jid,
+    direction,
+    body: text,
+    ts,
+    waMessageId: id,
+    status: mapStatus(msg.status),
+    mediaKind: media?.kind ?? null,
+    mediaMime: media?.mime ?? null,
+    mediaName: media?.name ?? null,
+    mediaSize: media?.size ?? null,
+    mediaSeconds: media?.seconds ?? null,
+    mediaPtt: media?.ptt ?? false,
+    mediaState: media ? 'pending' : null,
+    rawProto: media ? (bridge?.encode(msg) ?? null) : null
+  })
+  if (!inserted) return
 
-    let optOut = false
-    if (direction === 'in') {
-      incrementUnread(jid)
+  upsertChat(jid, {
+    name: direction === 'in' ? (msg.pushName ?? null) : null,
+    lastMessage: preview,
+    lastTs: ts
+  })
 
-      // Descadastro pedido pelo contato: respeitar e obrigacao (LGPD) e reduz
-      // muito o risco de denuncia. Grava no opt-out GLOBAL, valendo para todas
-      // as bases.
-      if (isOptOutRequest(body)) {
-        const phone = jidToE164(jid)
-        if (phone) {
-          addOptOut(phone, 'respondeu pedido de descadastro')
-          saveNow() // decisao de conformidade: nao pode se perder num crash
-          optOut = true
-          log.warn('opt-out registrado por mensagem do contato', { jid, phone, body })
-        }
+  let optOut = false
+  if (direction === 'in' && !opts.history) {
+    incrementUnread(jid)
+
+    // Descadastro pedido pelo contato: respeitar e obrigacao (LGPD) e reduz
+    // muito o risco de denuncia. Grava no opt-out GLOBAL, valendo para todas
+    // as bases.
+    if (text && isOptOutRequest(text)) {
+      const phone = jidToE164(jid)
+      if (phone) {
+        addOptOut(phone, 'respondeu pedido de descadastro')
+        saveNow() // decisao de conformidade: nao pode se perder num crash
+        optOut = true
+        log.warn('opt-out registrado por mensagem do contato', { jid, phone, body: text })
       }
     }
-
-    inboxEvents.emit('changed', { chatJid: jid, optOut })
   }
+
+  // No historico o evento sai uma vez so, no fim do lote: emitir por mensagem
+  // faria o renderer recarregar a lista centenas de vezes seguidas.
+  if (!opts.history) inboxEvents.emit('changed', { chatJid: jid, optOut })
+
+  if (media && shouldAutoDownload(media)) enqueueDownload(id)
+}
+
+/**
+ * Fila de downloads automaticos.
+ *
+ * PORQUE UMA FILA: a sincronizacao de historico entrega centenas de mensagens
+ * de uma vez. Disparar um download por mensagem abriria centenas de conexoes
+ * simultaneas e carregaria tudo na memoria ao mesmo tempo. Duas por vez mantem
+ * a conversa preenchendo rapido sem virar uma rajada.
+ */
+const DOWNLOAD_CONCURRENCY = 2
+const downloadQueue: string[] = []
+let downloadsInFlight = 0
+
+function enqueueDownload(messageId: string): void {
+  downloadQueue.push(messageId)
+  pumpDownloads()
+}
+
+function pumpDownloads(): void {
+  while (downloadsInFlight < DOWNLOAD_CONCURRENCY && downloadQueue.length > 0) {
+    const id = downloadQueue.shift()!
+    downloadsInFlight += 1
+    void downloadMedia(id).finally(() => {
+      downloadsInFlight -= 1
+      pumpDownloads()
+    })
+  }
+}
+
+/**
+ * Baixa (ou rebaixa) o anexo de uma mensagem.
+ *
+ * Seguro para chamar mais de uma vez: se ja esta baixado ou baixando, sai sem
+ * fazer nada — o clique do usuario e o download automatico podem coincidir.
+ */
+export async function downloadMedia(messageId: string): Promise<boolean> {
+  const row = getMessageRow(messageId)
+  if (!row || !row.mediaKind) return false
+  if (row.mediaState === 'done' && row.mediaPath) return true
+  if (row.mediaState === 'downloading') return false
+  if (!row.rawProto || !bridge) return false
+
+  setMediaState(messageId, 'downloading')
+  inboxEvents.emit('changed', { chatJid: row.chatJid })
+
+  try {
+    const { data, mime } = await bridge.download(row.rawProto)
+    const path = saveMedia(messageId, data, mime ?? row.mediaMime, row.mediaName)
+    setMediaState(messageId, 'done', { path, mime: mime ?? row.mediaMime, size: data.length })
+    log.info('anexo baixado', { messageId, kind: row.mediaKind, bytes: data.length })
+    return true
+  } catch (e) {
+    // O WhatsApp expira a URL da midia depois de alguns dias; nesse caso o
+    // download falha para sempre e insistir sozinho so gastaria rede.
+    setMediaState(messageId, 'error')
+    log.warn('falha ao baixar anexo', { messageId, erro: e instanceof Error ? e.message : e })
+    return false
+  } finally {
+    inboxEvents.emit('changed', { chatJid: row.chatJid })
+  }
+}
+
+/* ── Sincronizacao ───────────────────────────────────────────────────────── */
+
+/** Atualiza o status de entrega (enviado / entregue / lido). */
+export function handleMessagesUpdate(
+  updates: { key?: { id?: string | null; remoteJid?: string | null }; update?: unknown }[]
+): void {
+  for (const item of updates) {
+    const id = item.key?.id
+    if (!id) continue
+    const update = item.update as { status?: number | string | null } | undefined
+    const status = mapStatus(update?.status)
+    if (!status) continue
+    if (advanceMessageStatus(id, status) && item.key?.remoteJid) {
+      inboxEvents.emit('changed', { chatJid: item.key.remoteJid })
+    }
+  }
+}
+
+/** Nomes vindos de `contacts.upsert` / `contacts.update`. */
+export function handleContacts(
+  contacts: { id?: string | null; name?: string | null; notify?: string | null }[]
+): void {
+  for (const contact of contacts) {
+    const jid = contact.id
+    if (isIgnorableJid(jid) || !jid) continue
+    const name = contact.name || contact.notify
+    if (!name) continue
+    upsertChat(jid, { name })
+    inboxEvents.emit('changed', { chatJid: jid })
+  }
+}
+
+/**
+ * Sincronizacao de historico (`messaging-history.set`), que o WhatsApp manda
+ * logo apos o pareamento e em algumas reconexoes.
+ *
+ * E o que faz uma conversa antiga deixar de aparecer vazia no app.
+ */
+export function handleHistorySet(payload: {
+  chats?: {
+    id?: string | null
+    name?: string | null
+    conversationTimestamp?: number | Long | null
+  }[]
+  contacts?: { id?: string | null; name?: string | null; notify?: string | null }[]
+  messages?: WaMessageLike[]
+}): void {
+  for (const chat of payload.chats ?? []) {
+    const jid = chat.id
+    if (isIgnorableJid(jid) || !jid) continue
+    const ts = toNumber(chat.conversationTimestamp)
+    upsertChat(jid, {
+      name: chat.name ?? null,
+      ...(ts ? { lastTs: ts < 1e12 ? ts * 1000 : ts } : {})
+    })
+  }
+
+  handleContacts(payload.contacts ?? [])
+  handleUpsert(payload.messages ?? [], { history: true })
+
+  log.info('historico sincronizado', {
+    conversas: payload.chats?.length ?? 0,
+    contatos: payload.contacts?.length ?? 0,
+    mensagens: payload.messages?.length ?? 0
+  })
+
+  // Um evento so no fim: o historico chega em lote e emitir por mensagem faria
+  // o renderer recarregar a lista centenas de vezes seguidas.
+  inboxEvents.emit('changed', { chatJid: '*' })
 }
