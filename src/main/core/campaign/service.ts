@@ -10,6 +10,8 @@ import { whatsapp } from '../whatsapp/client'
 import { campaignRunner, type Sender } from './worker'
 import { renderFixed, renderRotate, renderParagraph, type RenderContext } from '../messages/render'
 import { scoped } from '../../logger'
+import { insertMessage, upsertChat } from '../../repos/chats'
+import { inboxEvents } from '../whatsapp/inbox'
 import type {
   MessageMode,
   SendingDefaults,
@@ -20,11 +22,40 @@ import type {
 
 const log = scoped('campaign')
 
+/**
+ * Grava na conversa uma mensagem enviada pela campanha.
+ *
+ * Sem isso as mensagens de disparo só apareciam na inbox quando o Baileys
+ * ecoava o próprio envio via `messages.upsert` — o que pode demorar ou não
+ * acontecer. A inserção é idempotente pelo id da mensagem, então quando o
+ * eco chegar ele não duplica nada.
+ */
+function recordCampaignOutgoing(jid: string, waId: string | null, text: string): void {
+  const now = Date.now()
+  const id = waId ?? `campaign-${now}-${Math.random().toString(36).slice(2, 8)}`
+  insertMessage({
+    id,
+    chatJid: jid,
+    direction: 'out',
+    body: text,
+    ts: now,
+    waMessageId: waId,
+    status: 'sent'
+  })
+  upsertChat(jid, { lastMessage: text, lastTs: now })
+  inboxEvents.emit('changed', { chatJid: jid })
+}
+
 /** Sender real, ligado ao Baileys. */
 const liveSender: Sender = {
   isReady: () => Boolean(whatsapp.socket),
   sendTyping: (jid, ms) => whatsapp.sendTyping(jid, ms),
-  sendText: (jid, text) => whatsapp.sendText(jid, text)
+  sendText: async (jid, text) => {
+    const waId = await whatsapp.sendText(jid, text)
+    // Registra na inbox na hora: o echo do Baileys pode demorar ou nao chegar.
+    recordCampaignOutgoing(jid, waId, text)
+    return waId
+  }
 }
 
 function parseExtras(extraJson: string | null): Record<string, string> {
