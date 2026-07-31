@@ -16,16 +16,11 @@ import {
   getAiSettings,
   setAiSettings,
   getCampaignDraft,
-<<<<<<< HEAD
-  setCampaignDraft
-} from './settings'
-=======
   setCampaignDraft,
   getBackgroundSettings,
   setBackgroundSettings
 } from './settings'
 import { applyLaunchAtLogin } from './tray'
->>>>>>> f4de36f
 import { whatsapp } from './core/whatsapp/client'
 import { join, basename } from 'node:path'
 import { statSync } from 'node:fs'
@@ -75,11 +70,8 @@ import type {
   MessageConfig,
   CampaignDraft,
   JobStatus,
-<<<<<<< HEAD
-=======
   MediaKind,
   BackgroundSettings,
->>>>>>> f4de36f
   UpdateState
 } from '@shared/types'
 
@@ -285,26 +277,12 @@ export function registerIpc(): void {
 
   ipcMain.handle(
     'campaign:jobs',
-<<<<<<< HEAD
-    (
-      _e,
-      campaignId: string,
-      opts?: { status?: JobStatus; limit?: number; offset?: number }
-    ) => jobsWithContacts(campaignId, opts ?? {})
-  )
-
-  ipcMain.handle('campaign:loadDraft', () => getCampaignDraft())
-  ipcMain.handle('campaign:saveDraft', (_e, draft: CampaignDraft | null) =>
-    setCampaignDraft(draft)
-  )
-=======
     (_e, campaignId: string, opts?: { status?: JobStatus; limit?: number; offset?: number }) =>
       jobsWithContacts(campaignId, opts ?? {})
   )
 
   ipcMain.handle('campaign:loadDraft', () => getCampaignDraft())
   ipcMain.handle('campaign:saveDraft', (_e, draft: CampaignDraft | null) => setCampaignDraft(draft))
->>>>>>> f4de36f
 
   /* ── Inbox ────────────────────────────────────────────────────────────── */
   inboxEvents.on('changed', (p: { chatJid: string; optOut?: boolean }) =>

@@ -2,11 +2,7 @@ import { safeStorage } from 'electron'
 import { eq } from 'drizzle-orm'
 import { getDb, scheduleSave } from './db'
 import { settings } from './db/schema'
-<<<<<<< HEAD
-import type { AiSettings, CampaignDraft, SendingDefaults } from '@shared/types'
-=======
 import type { AiSettings, BackgroundSettings, CampaignDraft, SendingDefaults } from '@shared/types'
->>>>>>> f4de36f
 
 const ENC_PREFIX = 'enc::'
 
