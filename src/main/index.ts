@@ -18,7 +18,7 @@ import {
   notifyMinimizedToTray
 } from './tray'
 import { getBackgroundSettings, shouldShowTrayNotice } from './settings'
-import { beginQuit, isQuitting } from './lifecycle'
+import { beginQuit, shouldHideOnClose } from './lifecycle'
 
 /**
  * Scheme proprio para o renderer exibir midia da inbox.
@@ -97,7 +97,7 @@ function createWindow(startHidden = false): BrowserWindow {
    * matava a campanha no meio.
    */
   win.on('close', (e) => {
-    if (isQuitting() || !getBackgroundSettings().closeToTray) return
+    if (!shouldHideOnClose(getBackgroundSettings().closeToTray)) return
     e.preventDefault()
     win.hide()
     if (shouldShowTrayNotice()) notifyMinimizedToTray()

@@ -143,6 +143,7 @@ export default function DisparoPage(): JSX.Element {
         setName(draft.name)
         setConfig(draft.config)
         setPacing(draft.pacing ?? defaults)
+        setSkipAlreadySent(draft.skipAlreadySent)
       } else {
         setPacing(defaults)
       }
@@ -155,10 +156,10 @@ export default function DisparoPage(): JSX.Element {
   useEffect(() => {
     if (!draftReady.current) return
     const t = setTimeout(() => {
-      void window.api.campaign.saveDraft({ listId, mode, name, config, pacing })
+      void window.api.campaign.saveDraft({ listId, mode, name, config, pacing, skipAlreadySent })
     }, 400)
     return () => clearTimeout(t)
-  }, [listId, mode, name, config, pacing])
+  }, [listId, mode, name, config, pacing, skipAlreadySent])
 
   // Progresso e parada chegam por evento do main.
   useEffect(() => {

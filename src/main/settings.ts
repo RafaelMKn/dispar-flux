@@ -120,8 +120,19 @@ export function shouldShowTrayNotice(): boolean {
 const CAMPAIGN_DRAFT_KEY = 'campaign.draft'
 
 /** Rascunho da tela Disparo. `null` quando nao ha nada salvo (ou foi limpo). */
+/**
+ * O rascunho no banco pode ter sido gravado por uma versao anterior do app, que
+ * nao conhecia `skipAlreadySent`. O tipo diz exatamente isso: so esse campo
+ * pode faltar.
+ */
+type SavedDraft = Omit<CampaignDraft, 'skipAlreadySent'> & { skipAlreadySent?: boolean }
+
 export function getCampaignDraft(): CampaignDraft | null {
-  return getJson<CampaignDraft | null>(CAMPAIGN_DRAFT_KEY, null)
+  const saved = getJson<SavedDraft | null>(CAMPAIGN_DRAFT_KEY, null)
+  if (!saved) return null
+  // O default vem daqui, e nao da tela, para as duas pontas concordarem sobre o
+  // que e um rascunho completo.
+  return { ...saved, skipAlreadySent: saved.skipAlreadySent ?? false }
 }
 
 export function setCampaignDraft(v: CampaignDraft | null): void {

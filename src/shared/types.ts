@@ -147,6 +147,12 @@ export interface CampaignDraft {
   name: string
   config: MessageConfig
   pacing: SendingDefaults | null
+  /**
+   * A opcao de nao reenviar entra no rascunho junto com o resto: ela some ao
+   * trocar de aba, o padrao e `false`, e reenviar para quem ja recebeu e
+   * exatamente o erro que ela existe para evitar.
+   */
+  skipAlreadySent: boolean
 }
 
 export interface CampaignPlan {

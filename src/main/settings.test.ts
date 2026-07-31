@@ -26,10 +26,36 @@ describe('rascunho de campanha', () => {
       mode: 'rotate',
       name: 'Campanha de teste',
       config: { messages: ['Oi [nome]', 'Ola [nome]'] },
-      pacing: { delayMinMs: 1, delayMaxMs: 2, restEveryN: 3, restDurationMs: 4, dailyCap: 5 }
+      pacing: { delayMinMs: 1, delayMaxMs: 2, restEveryN: 3, restDurationMs: 4, dailyCap: 5 },
+      skipAlreadySent: true
     }
     setCampaignDraft(draft)
     expect(getCampaignDraft()).toEqual(draft)
+  })
+
+  it('preserva a opcao de nao reenviar (perde-la reenviaria para quem ja recebeu)', () => {
+    setCampaignDraft({
+      listId: 'lista-3',
+      mode: 'fixed',
+      name: 'Com dedup',
+      config: { text: 'oi' },
+      pacing: null,
+      skipAlreadySent: true
+    })
+    expect(getCampaignDraft()?.skipAlreadySent).toBe(true)
+  })
+
+  it('assume nao-marcado no rascunho gravado antes da opcao existir', () => {
+    // Sem o default, o campo viria `undefined` e a caixa apareceria num estado
+    // indefinido em vez de desmarcada.
+    setJson('campaign.draft', {
+      listId: 'lista-4',
+      mode: 'fixed',
+      name: 'Versao antiga',
+      config: { text: 'oi' },
+      pacing: null
+    })
+    expect(getCampaignDraft()?.skipAlreadySent).toBe(false)
   })
 
   it('limpa o rascunho ao salvar null (ex.: depois de iniciar a campanha)', () => {
@@ -38,7 +64,8 @@ describe('rascunho de campanha', () => {
       mode: 'fixed',
       name: '',
       config: { text: 'oi' },
-      pacing: null
+      pacing: null,
+      skipAlreadySent: false
     })
     setCampaignDraft(null)
     expect(getCampaignDraft()).toBeNull()

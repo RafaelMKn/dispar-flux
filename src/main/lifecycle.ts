@@ -21,3 +21,14 @@ export function beginQuit(): void {
 export function isQuitting(): boolean {
   return quitting
 }
+
+/**
+ * O clique no X deve esconder a janela em vez de fechar?
+ *
+ * Vive aqui, separado do handler de `close`, para a regra ser testavel: os dois
+ * jeitos de errar sao caros — deixar passar mata um disparo em andamento, e
+ * segurar demais faz um app que nao fecha nunca.
+ */
+export function shouldHideOnClose(closeToTray: boolean): boolean {
+  return closeToTray && !quitting
+}
