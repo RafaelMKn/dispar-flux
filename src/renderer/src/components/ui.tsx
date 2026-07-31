@@ -185,7 +185,11 @@ export function Toggle({
   hint?: string
 }): JSX.Element {
   return (
-    <label className="flex cursor-pointer items-start gap-3">
+    // `relative` nao e decoracao: `sr-only` posiciona o input em absolute e,
+    // sem um ancestral posicionado, o bloco container dele vira o documento. Ai
+    // ele escapa do `overflow-y-auto` do <main>, estica o <html> ate a altura
+    // onde ficou e a tela ganha uma segunda barra de rolagem.
+    <label className="relative flex cursor-pointer items-start gap-3">
       <input
         type="checkbox"
         checked={checked}
