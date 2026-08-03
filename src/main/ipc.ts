@@ -18,7 +18,9 @@ import {
   getCampaignDraft,
   setCampaignDraft,
   getBackgroundSettings,
-  setBackgroundSettings
+  setBackgroundSettings,
+  getCrmSettings,
+  setCrmSettings
 } from './settings'
 import { applyLaunchAtLogin } from './tray'
 import { whatsapp } from './core/whatsapp/client'
@@ -51,6 +53,33 @@ import {
   getMessageRow,
   type InsertMessageInput
 } from './repos/chats'
+import {
+  board,
+  createStage,
+  moveLead,
+  moveStage,
+  removeLead,
+  removeStage,
+  renameStage,
+  setLeadNotes
+} from './repos/crm'
+import {
+  listAppointments,
+  createAppointment,
+  updateAppointment,
+  setAppointmentDone,
+  removeAppointment
+} from './repos/agenda'
+import {
+  listRules,
+  getRule,
+  createRule,
+  updateRule,
+  setRuleEnabled,
+  removeRule
+} from './repos/followups'
+import { crmEvents } from './core/crm/leads'
+import { previewRule, runRule, upcomingFollowUps } from './core/crm/scheduler'
 import { scoped } from './logger'
 import {
   updaterEvents,
@@ -72,7 +101,10 @@ import type {
   JobStatus,
   MediaKind,
   BackgroundSettings,
-  UpdateState
+  UpdateState,
+  CrmSettings,
+  CrmAppointmentInput,
+  FollowUpRuleInput
 } from '@shared/types'
 
 const log = scoped('whatsapp')
@@ -284,6 +316,71 @@ export function registerIpc(): void {
   ipcMain.handle('campaign:loadDraft', () => getCampaignDraft())
   ipcMain.handle('campaign:saveDraft', (_e, draft: CampaignDraft | null) => setCampaignDraft(draft))
 
+  /* ── CRM ──────────────────────────────────────────────────────────────── */
+  // Um evento sem payload: o kanban recarrega o quadro inteiro. Enviar o
+  // delta exigiria reconciliar no renderer para ganhar nada — o quadro tem
+  // dezenas de cartoes, nao milhares.
+  crmEvents.on('changed', () => broadcast('crm:changed', null))
+
+  ipcMain.handle('crm:board', () => board())
+  ipcMain.handle('crm:moveLead', (_e, leadId: string, stageId: string) => moveLead(leadId, stageId))
+  ipcMain.handle('crm:setLeadNotes', (_e, leadId: string, notes: string) =>
+    setLeadNotes(leadId, notes)
+  )
+  ipcMain.handle('crm:removeLead', (_e, leadId: string) => removeLead(leadId))
+  ipcMain.handle('crm:createStage', (_e, name: string) => createStage(name))
+  ipcMain.handle('crm:renameStage', (_e, id: string, name: string) => renameStage(id, name))
+  ipcMain.handle('crm:moveStage', (_e, id: string, direction: -1 | 1) => moveStage(id, direction))
+  ipcMain.handle('crm:removeStage', (_e, id: string, moveToId: string) => removeStage(id, moveToId))
+
+  /* ── Agenda ───────────────────────────────────────────────────────────── */
+  ipcMain.handle(
+    'agenda:list',
+    (_e, opts?: { from?: number; to?: number; includeDone?: boolean }) =>
+      listAppointments(opts ?? {})
+  )
+  ipcMain.handle('agenda:upcomingFollowUps', (_e, limit?: number) => upcomingFollowUps(limit))
+  ipcMain.handle('agenda:create', (_e, input: CrmAppointmentInput) => {
+    const created = createAppointment(input)
+    broadcast('crm:changed', null)
+    return created
+  })
+  ipcMain.handle('agenda:update', (_e, id: string, input: CrmAppointmentInput) => {
+    updateAppointment(id, input)
+    broadcast('crm:changed', null)
+  })
+  ipcMain.handle('agenda:setDone', (_e, id: string, done: boolean) => {
+    setAppointmentDone(id, done)
+    broadcast('crm:changed', null)
+  })
+  ipcMain.handle('agenda:remove', (_e, id: string) => {
+    removeAppointment(id)
+    broadcast('crm:changed', null)
+  })
+
+  /* ── Cron de follow-up ────────────────────────────────────────────────── */
+  ipcMain.handle('followups:list', () => listRules())
+  ipcMain.handle('followups:create', (_e, input: FollowUpRuleInput) => createRule(input))
+  ipcMain.handle('followups:update', (_e, id: string, input: FollowUpRuleInput) =>
+    updateRule(id, input)
+  )
+  ipcMain.handle('followups:setEnabled', (_e, id: string, enabled: boolean) =>
+    setRuleEnabled(id, enabled)
+  )
+  ipcMain.handle('followups:remove', (_e, id: string) => removeRule(id))
+  ipcMain.handle('followups:preview', (_e, id: string) => {
+    const rule = getRule(id)
+    if (!rule) throw new Error('Regra nao encontrada.')
+    return previewRule(rule)
+  })
+  ipcMain.handle('followups:runNow', (_e, id: string) => {
+    const rule = getRule(id)
+    if (!rule) throw new Error('Regra nao encontrada.')
+    // Clique explicito do usuario: ignora a janela de horario, mas nao os
+    // filtros de quem ja respondeu, ja bateu o teto ou pediu descadastro.
+    return runRule(rule, { ignoreWindow: true })
+  })
+
   /* ── Inbox ────────────────────────────────────────────────────────────── */
   inboxEvents.on('changed', (p: { chatJid: string; optOut?: boolean }) =>
     broadcast('inbox:changed', p)
@@ -440,6 +537,8 @@ export function registerIpc(): void {
   /* ── Configuracoes ────────────────────────────────────────────────────── */
   ipcMain.handle('settings:getSendingDefaults', () => getSendingDefaults())
   ipcMain.handle('settings:setSendingDefaults', (_e, v: SendingDefaults) => setSendingDefaults(v))
+  ipcMain.handle('settings:getCrm', () => getCrmSettings())
+  ipcMain.handle('settings:setCrm', (_e, v: CrmSettings) => setCrmSettings(v))
   ipcMain.handle('settings:getBackground', () => getBackgroundSettings())
   ipcMain.handle('settings:setBackground', (_e, v: BackgroundSettings) => {
     setBackgroundSettings(v)

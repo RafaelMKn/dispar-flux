@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Search,
   MessageCircle,
@@ -44,6 +45,7 @@ const ATTACH_OPTIONS = [
 
 export default function InboxPage(): JSX.Element {
   const wa = useWhatsapp()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [chats, setChats] = useState<Chat[]>([])
   const [active, setActive] = useState<string | null>(null)
   const [msgs, setMsgs] = useState<Message[]>([])
@@ -68,6 +70,17 @@ export default function InboxPage(): JSX.Element {
   useEffect(() => {
     void loadChats()
   }, [loadChats])
+
+  // O kanban abre a conversa de um lead por `/inbox?jid=...`. Roda uma vez por
+  // jid pedido para nao brigar com o usuario se ele trocar de conversa depois.
+  useEffect(() => {
+    const jid = searchParams.get('jid')
+    if (!jid) return
+    setActive(jid)
+    // Limpa o parametro: sem isso, voltar para a inbox por outro caminho
+    // reabriria a mesma conversa.
+    setSearchParams({}, { replace: true })
+  }, [searchParams, setSearchParams])
 
   // Atualiza quando o main avisa que algo mudou (mensagem nova, anexo baixado,
   // status de entrega, opt-out). '*' e o resumo de um lote de sincronizacao.

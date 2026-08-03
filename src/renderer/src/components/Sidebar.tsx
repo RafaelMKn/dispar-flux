@@ -1,5 +1,16 @@
 import { NavLink } from 'react-router-dom'
-import { MessageCircle, Send, Database, Settings, Moon, Sun, type LucideIcon } from 'lucide-react'
+import {
+  MessageCircle,
+  Send,
+  Database,
+  Settings,
+  Moon,
+  Sun,
+  Columns3,
+  CalendarDays,
+  Timer,
+  type LucideIcon
+} from 'lucide-react'
 import { StatusDot } from './ui'
 import type { Theme } from '../useTheme'
 
@@ -12,6 +23,9 @@ interface NavItem {
 const items: NavItem[] = [
   { to: '/inbox', label: 'Conversas', icon: MessageCircle },
   { to: '/disparo', label: 'Disparo', icon: Send },
+  { to: '/kanban', label: 'Kanban', icon: Columns3 },
+  { to: '/agenda', label: 'Agenda', icon: CalendarDays },
+  { to: '/cron', label: 'Cron', icon: Timer },
   { to: '/base', label: 'Base de Dados', icon: Database },
   { to: '/config', label: 'Configuracoes', icon: Settings }
 ]

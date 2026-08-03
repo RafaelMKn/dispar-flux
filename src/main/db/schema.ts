@@ -104,3 +104,95 @@ export const messages = sqliteTable('messages', {
    */
   rawProto: text('raw_proto')
 })
+
+/* ── CRM (Fase 4) ───────────────────────────────────────────────────────── */
+
+/**
+ * Colunas do kanban, editaveis pelo usuario.
+ *
+ * `role` e o que liga a automacao ao funil: a coluna 'entry' recebe o lead
+ * quando o disparo sai, e a coluna 'active' e para onde ele anda sozinho na
+ * primeira resposta. As demais colunas tem role NULL e so mudam na mao. Existe
+ * no maximo uma de cada role — quem garante isso e o repo, nao o banco, porque
+ * o SQLite nao tem indice unico parcial expressivo o bastante aqui sem
+ * complicar o bootstrap.
+ */
+export const crmStages = sqliteTable('crm_stages', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  position: integer('position').notNull(),
+  role: text('role'), // 'entry' | 'active' | null
+  createdAt: integer('created_at').notNull()
+})
+
+/**
+ * Um lead do CRM: alguem que recebeu (ou vai receber) um disparo.
+ *
+ * Chaveado por TELEFONE, nao por contato. O mesmo numero pode existir em varias
+ * bases — se o lead fosse por linha de `contacts`, a mesma pessoa apareceria
+ * duas vezes no kanban e responder numa nao moveria a outra. E a mesma decisao
+ * ja tomada em `opt_outs`.
+ */
+export const crmLeads = sqliteTable('crm_leads', {
+  id: text('id').primaryKey(),
+  phoneE164: text('phone_e164').notNull(),
+  /** Contato que originou o lead. Pode ficar orfao se a base for apagada. */
+  contactId: text('contact_id'),
+  /** JID confirmado pela API; e por ele que a mensagem recebida acha o lead. */
+  jid: text('jid'),
+  stageId: text('stage_id').notNull(),
+  /** Campanha que enviou a primeira mensagem. */
+  campaignId: text('campaign_id'),
+  /** Quando a PRIMEIRA mensagem do disparo saiu. Base da janela anti-automatica. */
+  firstSentAt: integer('first_sent_at'),
+  /** Primeira resposta considerada humana. null = nunca respondeu (alvo do cron). */
+  firstReplyAt: integer('first_reply_at'),
+  lastInboundAt: integer('last_inbound_at'),
+  lastOutboundAt: integer('last_outbound_at'),
+  /** Quantos follow-ups automaticos ja foram enviados para este lead. */
+  followUps: integer('follow_ups').notNull().default(0),
+  lastFollowUpAt: integer('last_follow_up_at'),
+  /** Respostas descartadas pela janela anti-automatica. So para diagnostico. */
+  ignoredAutoReplies: integer('ignored_auto_replies').notNull().default(0),
+  notes: text('notes'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull()
+})
+
+/** Compromisso da agenda: lembrete manual preso a um lead. */
+export const crmAppointments = sqliteTable('crm_appointments', {
+  id: text('id').primaryKey(),
+  leadId: text('lead_id'),
+  title: text('title').notNull(),
+  notes: text('notes'),
+  dueAt: integer('due_at').notNull(),
+  done: integer('done').notNull().default(0),
+  /** 1 depois de a notificacao do sistema ter sido mostrada (uma vez so). */
+  notified: integer('notified').notNull().default(0),
+  createdAt: integer('created_at').notNull()
+})
+
+/**
+ * Regra de follow-up automatico ("cron"): quem nao respondeu em N horas recebe
+ * outra mensagem, desde que dentro da janela de horario permitida.
+ */
+export const crmFollowups = sqliteTable('crm_followups', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  /** Base alvo; null = todas. */
+  listId: text('list_id'),
+  /** Horas sem resposta desde o ultimo envio para o lead. */
+  afterHours: integer('after_hours').notNull(),
+  mode: text('mode').notNull(), // fixed | rotate
+  configJson: text('config_json').notNull(),
+  /** Dias da semana permitidos, "0,1,2..." com 0 = domingo. */
+  weekdays: text('weekdays').notNull(),
+  /** Janela de horario, em minutos desde a meia-noite local. */
+  startMinute: integer('start_minute').notNull(),
+  endMinute: integer('end_minute').notNull(),
+  /** Teto de follow-ups por lead (permite 1o, 2o, 3o degrau). */
+  maxFollowUps: integer('max_follow_ups').notNull().default(1),
+  enabled: integer('enabled').notNull().default(1),
+  lastRunAt: integer('last_run_at'),
+  createdAt: integer('created_at').notNull()
+})

@@ -88,7 +88,8 @@ export function refreshTray(): void {
   )
 }
 
-function notify(title: string, body: string): void {
+/** Notificacao do sistema. Exportada para a agenda avisar dos compromissos. */
+export function notify(title: string, body: string): void {
   if (!Notification.isSupported()) return
   const notification = new Notification({ title, body, icon: trayIcon() })
   // Clicar na notificacao traz a janela: o usuario acabou de ser avisado de

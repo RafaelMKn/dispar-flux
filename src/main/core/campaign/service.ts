@@ -6,6 +6,7 @@ import {
   contactIdsAlreadySent
 } from '../../repos/campaigns'
 import { getOptOutSet } from '../../repos/optOuts'
+import { getContactsByIds } from '../../repos/contacts'
 import { whatsapp } from '../whatsapp/client'
 import { campaignRunner, type Sender } from './worker'
 import { renderFixed, renderRotate, renderParagraph, type RenderContext } from '../messages/render'
@@ -203,6 +204,65 @@ export function startCampaign(input: {
   // Roda em background: o IPC responde na hora e o progresso vai por evento.
   void campaignRunner.run(campaign.id, liveSender).catch((e: unknown) => {
     log.error('erro na execucao da campanha', e)
+  })
+
+  return { campaignId: campaign.id, queued }
+}
+
+/** O WhatsApp esta pronto para enviar? Usado pelo cron antes de montar a fila. */
+export function isSenderReady(): boolean {
+  return liveSender.isReady()
+}
+
+/**
+ * Cria e dispara uma campanha para uma lista explicita de contatos.
+ *
+ * Existe para o follow-up automatico: em vez de um motor de envio proprio, o
+ * cron monta a fila e entrega para o MESMO runner do disparo manual. Assim o
+ * follow-up herda de graca o pacing anti-ban, o teto diario, a reconferencia de
+ * opt-out no instante do envio, a retomada depois de um crash e a aparicao no
+ * historico de campanhas.
+ *
+ * Devolve null quando ninguem sobrou depois dos filtros — o chamador nao deve
+ * tratar isso como erro, e o caso normal de "todo mundo ja respondeu".
+ */
+export function startCampaignForContacts(input: {
+  name: string
+  listId: string
+  mode: MessageMode
+  config: MessageConfig
+  pacing: SendingDefaults
+  contactIds: string[]
+}): { campaignId: string; queued: number } | null {
+  const candidates = getContactsByIds(input.contactIds)
+  const optedOut = getOptOutSet(candidates.map((c) => c.phoneE164))
+  const targets = candidates.filter(
+    (c) => c.jid && c.optOut !== 1 && !optedOut.has(c.phoneE164) && c.waValid !== 0
+  )
+  if (targets.length === 0) return null
+
+  const campaign = createCampaign({
+    name: input.name,
+    listId: input.listId,
+    mode: input.mode,
+    config: input.config,
+    pacing: input.pacing
+  })
+
+  const jobs = targets.map((c, index) => ({
+    contactId: c.id,
+    renderedText: renderFor(input.mode, input.config, {
+      name: c.name,
+      extras: parseExtras(c.extraJson),
+      index
+    })
+  }))
+
+  const queued = enqueueJobs(campaign.id, jobs)
+  log.info('follow-up enfileirado', { campaignId: campaign.id, queued, nome: input.name })
+
+  void campaignRunner.run(campaign.id, liveSender).catch((e: unknown) => {
+    log.error('erro na execucao do follow-up', e)
   })
 
   return { campaignId: campaign.id, queued }

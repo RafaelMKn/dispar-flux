@@ -8,6 +8,7 @@ import {
   getMessageRow
 } from '../../repos/chats'
 import { addOptOut } from '../../repos/optOuts'
+import { handleInbound } from '../crm/leads'
 import { isOptOutRequest, jidToE164 } from './optOutDetect'
 import { scoped } from '../../logger'
 import { saveNow } from '../../db'
@@ -315,6 +316,18 @@ function handleOne(msg: WaMessageLike, opts: UpsertOptions): void {
         log.warn('opt-out registrado por mensagem do contato', { jid, phone, body: text })
       }
     }
+
+    // CRM: primeira resposta do cliente move o cartao para "em andamento".
+    //
+    // O instante passado e `Date.now()`, e nao o `ts` da mensagem: a janela
+    // anti-resposta-automatica mede milissegundos, e o timestamp do WhatsApp so
+    // tem resolucao de segundo e vem de outro relogio. Ver `crm/rules.ts`.
+    //
+    // So mensagem ao vivo: no historico, uma resposta de meses atras seria
+    // processada como se tivesse acabado de chegar — o mesmo motivo pelo qual o
+    // opt-out retroativo tambem nao vale aqui.
+    // O aviso para o renderer sai por `crmEvents`, dentro de handleInbound.
+    handleInbound(jid, Date.now())
   }
 
   // No historico o evento sai uma vez so, no fim do lote: emitir por mensagem

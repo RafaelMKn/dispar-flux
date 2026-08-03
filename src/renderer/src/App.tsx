@@ -5,6 +5,9 @@ import BasePage from './pages/BasePage'
 import DisparoPage from './pages/DisparoPage'
 import ConfigPage from './pages/ConfigPage'
 import InboxPage from './pages/InboxPage'
+import KanbanPage from './pages/KanbanPage'
+import AgendaPage from './pages/AgendaPage'
+import CronPage from './pages/CronPage'
 import { useCallback, useEffect, useState } from 'react'
 import { useTheme } from './useTheme'
 import { useWhatsapp } from './useWhatsapp'
@@ -47,6 +50,9 @@ export default function App(): JSX.Element {
             <Route path="/" element={<Navigate to="/disparo" replace />} />
             <Route path="/inbox" element={<InboxPage />} />
             <Route path="/disparo" element={<DisparoPage />} />
+            <Route path="/kanban" element={<KanbanPage />} />
+            <Route path="/agenda" element={<AgendaPage />} />
+            <Route path="/cron" element={<CronPage />} />
             <Route path="/base" element={<BasePage />} />
             <Route path="/config" element={<ConfigPage />} />
             <Route path="*" element={<Navigate to="/disparo" replace />} />

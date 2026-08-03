@@ -9,7 +9,10 @@ import type {
   CampaignDraft,
   JobStatus,
   BackgroundSettings,
-  UpdateState
+  UpdateState,
+  CrmSettings,
+  CrmAppointmentInput,
+  FollowUpRuleInput
 } from '@shared/types'
 
 /**
@@ -93,10 +96,48 @@ const api: DisparApi = {
     resync: () => ipcRenderer.invoke('inbox:resync'),
     onChanged: (cb) => subscribe('inbox:changed', cb)
   },
+  crm: {
+    board: () => ipcRenderer.invoke('crm:board'),
+    moveLead: (leadId: string, stageId: string) =>
+      ipcRenderer.invoke('crm:moveLead', leadId, stageId),
+    setLeadNotes: (leadId: string, notes: string) =>
+      ipcRenderer.invoke('crm:setLeadNotes', leadId, notes),
+    removeLead: (leadId: string) => ipcRenderer.invoke('crm:removeLead', leadId),
+    createStage: (name: string) => ipcRenderer.invoke('crm:createStage', name),
+    renameStage: (id: string, name: string) => ipcRenderer.invoke('crm:renameStage', id, name),
+    moveStage: (id: string, direction: -1 | 1) =>
+      ipcRenderer.invoke('crm:moveStage', id, direction),
+    removeStage: (id: string, moveToId: string) =>
+      ipcRenderer.invoke('crm:removeStage', id, moveToId),
+    onChanged: (cb: () => void) => subscribe('crm:changed', cb)
+  },
+  agenda: {
+    list: (opts?: { from?: number; to?: number; includeDone?: boolean }) =>
+      ipcRenderer.invoke('agenda:list', opts),
+    upcomingFollowUps: (limit?: number) => ipcRenderer.invoke('agenda:upcomingFollowUps', limit),
+    create: (input: CrmAppointmentInput) => ipcRenderer.invoke('agenda:create', input),
+    update: (id: string, input: CrmAppointmentInput) =>
+      ipcRenderer.invoke('agenda:update', id, input),
+    setDone: (id: string, done: boolean) => ipcRenderer.invoke('agenda:setDone', id, done),
+    remove: (id: string) => ipcRenderer.invoke('agenda:remove', id)
+  },
+  followups: {
+    list: () => ipcRenderer.invoke('followups:list'),
+    create: (input: FollowUpRuleInput) => ipcRenderer.invoke('followups:create', input),
+    update: (id: string, input: FollowUpRuleInput) =>
+      ipcRenderer.invoke('followups:update', id, input),
+    setEnabled: (id: string, enabled: boolean) =>
+      ipcRenderer.invoke('followups:setEnabled', id, enabled),
+    remove: (id: string) => ipcRenderer.invoke('followups:remove', id),
+    preview: (id: string) => ipcRenderer.invoke('followups:preview', id),
+    runNow: (id: string) => ipcRenderer.invoke('followups:runNow', id)
+  },
   settings: {
     getSendingDefaults: () => ipcRenderer.invoke('settings:getSendingDefaults'),
     setSendingDefaults: (v: SendingDefaults) =>
       ipcRenderer.invoke('settings:setSendingDefaults', v),
+    getCrm: () => ipcRenderer.invoke('settings:getCrm'),
+    setCrm: (v: CrmSettings) => ipcRenderer.invoke('settings:setCrm', v),
     getAi: () => ipcRenderer.invoke('settings:getAi'),
     setAi: (provider: AiSettings['provider'], model: string, apiKey?: string) =>
       ipcRenderer.invoke('settings:setAi', provider, model, apiKey),
