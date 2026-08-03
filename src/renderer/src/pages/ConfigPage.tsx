@@ -1,6 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Check, QrCode, Sparkles, Gauge, ScrollText, RefreshCw, PanelBottom } from 'lucide-react'
-import type { AiSettings, BackgroundSettings, SendingDefaults } from '@shared/types'
+import {
+  Check,
+  QrCode,
+  Sparkles,
+  Gauge,
+  ScrollText,
+  RefreshCw,
+  PanelBottom,
+  Columns3
+} from 'lucide-react'
+import type { AiSettings, BackgroundSettings, CrmSettings, SendingDefaults } from '@shared/types'
 import { AI_PROVIDERS } from '@shared/aiProviders'
 import { PageBody, PageHeader, Card, Button, Input, Select, Toggle } from '../components/ui'
 import WhatsappCard from '../components/WhatsappCard'
@@ -43,6 +52,7 @@ export default function ConfigPage(): JSX.Element {
   const [ai, setAi] = useState<AiSettings | null>(null)
   const [apiKey, setApiKey] = useState('')
   const [background, setBackground] = useState<BackgroundSettings | null>(null)
+  const [crm, setCrm] = useState<CrmSettings | null>(null)
   const [savedFlag, setSavedFlag] = useState('')
 
   useEffect(() => {
@@ -50,6 +60,7 @@ export default function ConfigPage(): JSX.Element {
       setSending(await window.api.settings.getSendingDefaults())
       setAi(await window.api.settings.getAi())
       setBackground(await window.api.settings.getBackground())
+      setCrm(await window.api.settings.getCrm())
     })()
   }, [])
 
@@ -70,6 +81,12 @@ export default function ConfigPage(): JSX.Element {
     setBackground(next)
     await window.api.settings.setBackground(next)
     flash('Preferencia salva')
+  }
+
+  async function saveCrm(): Promise<void> {
+    if (!crm) return
+    await window.api.settings.setCrm(crm)
+    flash('Configuracoes do CRM salvas')
   }
 
   async function saveAi(): Promise<void> {
@@ -198,6 +215,29 @@ export default function ConfigPage(): JSX.Element {
           <div className="mt-4">
             <Button onClick={saveSending}>Salvar parametros</Button>
           </div>
+        </Card>
+
+        <Card>
+          <SectionTitle icon={Columns3} title="CRM" />
+          {crm && (
+            <>
+              <Input
+                label="Janela de resposta automatica (ms)"
+                type="number"
+                min={0}
+                step={100}
+                className="max-w-48"
+                value={crm.autoReplyWindowMs}
+                onChange={(e) =>
+                  setCrm({ ...crm, autoReplyWindowMs: Math.max(0, Number(e.target.value) || 0) })
+                }
+                hint="Resposta que chega ate esse tempo depois do envio nao move o cartao no Kanban: e a mensagem automatica de ausencia do WhatsApp Business, nao o cliente. A mensagem continua aparecendo normalmente em Conversas. Use 0 para desligar a regra."
+              />
+              <div className="mt-4">
+                <Button onClick={saveCrm}>Salvar CRM</Button>
+              </div>
+            </>
+          )}
         </Card>
 
         <Card>

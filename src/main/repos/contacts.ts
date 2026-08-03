@@ -171,6 +171,44 @@ export function removeContact(id: string): void {
   scheduleSave()
 }
 
+/** Contatos por id, na ordem em que os ids foram pedidos. */
+export function getContactsByIds(ids: string[]): Contact[] {
+  if (ids.length === 0) return []
+  const rows: Contact[] = []
+  // Em lotes: o sql.js monta a query inteira em memoria e uma base grande
+  // estouraria o limite de parametros do SQLite.
+  const CHUNK = 400
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    rows.push(
+      ...getDb()
+        .select()
+        .from(contacts)
+        .where(inArray(contacts.id, ids.slice(i, i + CHUNK)))
+        .all()
+    )
+  }
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  return ids.map((id) => byId.get(id)).filter((c): c is Contact => c !== undefined)
+}
+
+/**
+ * O contato com este telefone em QUALQUER base.
+ *
+ * E o que responde "essa pessoa esta em alguma base de disparo?" quando chega
+ * uma mensagem — a pergunta que decide se ela entra no CRM ou e ignorada. Se o
+ * numero estiver em mais de uma base, devolve a linha que ja tem jid conhecido:
+ * e a que foi validada no WhatsApp.
+ */
+export function findContactByPhone(phoneE164: string): Contact | undefined {
+  const rows = getDb().select().from(contacts).where(eq(contacts.phoneE164, phoneE164)).all()
+  return rows.find((r) => r.jid) ?? rows[0]
+}
+
+/** O contato dono deste JID, quando a base ja foi validada no WhatsApp. */
+export function findContactByJid(jid: string): Contact | undefined {
+  return getDb().select().from(contacts).where(eq(contacts.jid, jid)).get()
+}
+
 /**
  * Sincroniza o flag por contato a partir do opt-out global. Mantem a UI
  * coerente: se um numero foi descadastrado em qualquer base, aparece

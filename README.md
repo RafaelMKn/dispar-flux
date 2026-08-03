@@ -43,12 +43,54 @@ Atualizações**. Seus dados (base de contatos, sessão do WhatsApp, configuraç
 
 1. **Conversas** — inbox para responder dentro do app: texto, emojis, imagens, vídeos,
    documentos e áudios (inclusive gravar nota de voz), com foto de perfil dos contatos e
-   confirmação de leitura sincronizada com o celular.
+   confirmação de leitura sincronizada com o celular. O histórico vem completo do
+   WhatsApp (ver abaixo).
 2. **Disparo** — configura a campanha: base, modo de mensagem (fixa, alternada, alternada
    por parágrafo, IA), intervalos e descanso.
-3. **Base de Dados** — cadastra bases de contatos, importa CSV (Fase 1), valida números.
-4. **Configurações** — conexão do WhatsApp (QR), provedor/modelo/chave de IA, parâmetros
-   padrão de envio e comportamento em segundo plano.
+3. **Kanban** — CRM do disparo. O lead entra em _Aguardando resposta_ quando a mensagem
+   sai e passa sozinho para _Em andamento_ quando o cliente responde. As colunas são
+   editáveis (criar, renomear, reordenar, apagar) e os cartões se arrastam entre elas.
+4. **Agenda** — calendário com os compromissos que você marca a partir do cartão do lead
+   e os follow-ups que o Cron ainda vai disparar. Avisa por notificação do sistema na
+   hora marcada, mesmo com o app minimizado na bandeja.
+5. **Cron** — regras de follow-up automático: "X horas sem resposta → manda a mensagem Y",
+   dentro dos dias e do horário que você permitir, com teto de envios por lead.
+6. **Base de Dados** — cadastra bases de contatos, importa CSV (Fase 1), valida números.
+7. **Configurações** — conexão do WhatsApp (QR), provedor/modelo/chave de IA, parâmetros
+   padrão de envio, janela anti-resposta-automática do CRM e comportamento em segundo
+   plano.
+
+### Sincronização do histórico
+
+A inbox espelha o WhatsApp, e não um recorte dele:
+
+- **No pareamento** o app pede o histórico **completo**. Numa conta antiga isso chega em
+  vários lotes e leva minutos — por isso a conversa mostra uma faixa com o progresso e a
+  contagem de mensagens em vez de parecer travada.
+- **Ao rolar a conversa para cima**, a janela cresce de 50 em 50. Quando o que está no
+  banco acaba, o app pede ao WhatsApp o que veio antes (`fetchMessageHistory`) — uma
+  requisição por vez, com intervalo, porque rajada de requisição é o padrão que faz o
+  número ser bloqueado. O botão **Sincronizar** faz o mesmo pedido para a conversa aberta.
+- **Anexo de mensagem antiga não baixa sozinho.** Com o histórico completo isso seriam
+  vários GB no primeiro pareamento; ele fica pendente e baixa quando você clica. Mensagem
+  nova continua baixando imagem, áudio e figurinha automaticamente.
+- **Grupos continuam fora da inbox**, por serem ruído numa ferramenta de prospecção.
+
+### Como o CRM decide que o cliente respondeu
+
+Duas regras evitam que o funil se encha de cartão que não é lead de verdade:
+
+- **Resposta automática não conta.** Mensagem que volta até 1 segundo depois do envio
+  (ajustável em **Configurações → CRM**; `0` desliga) é a mensagem de ausência do WhatsApp
+  Business, não a pessoa — o cartão não muda de coluna. A mensagem continua aparecendo
+  normalmente em **Conversas**.
+- **Só quem está numa base.** Mensagem de quem não está em nenhuma base de disparo é
+  ignorada pelo CRM. Sem isso o Kanban viraria um espelho da agenda do celular.
+
+O follow-up do Cron não tem motor de envio próprio: ele monta a fila e entrega para o
+**mesmo motor do disparo manual**, herdando o pacing anti-ban, o teto diário, a
+reconferência de opt-out no instante do envio e a retomada depois de um crash. Ele aparece
+no histórico de campanhas como uma campanha comum, com o nome `Follow-up: <regra>`.
 
 ## Rodar em segundo plano
 
@@ -125,6 +167,8 @@ download.
   (imagem/vídeo/documento/áudio), nota de voz, foto de perfil e sincronização de
   histórico e de leitura.
 - **Fase 3 — Extras** modo IA com pré-geração, métricas, code signing.
+- **Fase 4 — CRM** ✅ kanban com passagem automática para _em andamento_ na primeira
+  resposta, agenda de compromissos e cron de follow-up para quem não respondeu.
 
 ## Licença
 

@@ -97,6 +97,67 @@ const BOOTSTRAP_SQL = `
     status        TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_jid, ts);
+
+  -- CRM (Fase 4)
+  CREATE TABLE IF NOT EXISTS crm_stages (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    position   INTEGER NOT NULL,
+    role       TEXT,
+    created_at INTEGER NOT NULL
+  );
+
+  -- phone_e164 e UNIQUE de proposito: o lead e a pessoa, nao a linha da base.
+  -- O mesmo numero em duas bases tem de ser um cartao so no kanban.
+  CREATE TABLE IF NOT EXISTS crm_leads (
+    id                   TEXT PRIMARY KEY,
+    phone_e164           TEXT NOT NULL UNIQUE,
+    contact_id           TEXT,
+    jid                  TEXT,
+    stage_id             TEXT NOT NULL,
+    campaign_id          TEXT,
+    first_sent_at        INTEGER,
+    first_reply_at       INTEGER,
+    last_inbound_at      INTEGER,
+    last_outbound_at     INTEGER,
+    follow_ups           INTEGER NOT NULL DEFAULT 0,
+    last_follow_up_at    INTEGER,
+    ignored_auto_replies INTEGER NOT NULL DEFAULT 0,
+    notes                TEXT,
+    created_at           INTEGER NOT NULL,
+    updated_at           INTEGER NOT NULL
+  );
+  -- O caminho quente e "chegou mensagem deste jid, tem lead?", a cada mensagem.
+  CREATE INDEX IF NOT EXISTS idx_crm_leads_jid ON crm_leads(jid);
+  CREATE INDEX IF NOT EXISTS idx_crm_leads_stage ON crm_leads(stage_id);
+
+  CREATE TABLE IF NOT EXISTS crm_appointments (
+    id         TEXT PRIMARY KEY,
+    lead_id    TEXT,
+    title      TEXT NOT NULL,
+    notes      TEXT,
+    due_at     INTEGER NOT NULL,
+    done       INTEGER NOT NULL DEFAULT 0,
+    notified   INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_crm_appointments_due ON crm_appointments(due_at);
+
+  CREATE TABLE IF NOT EXISTS crm_followups (
+    id             TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    list_id        TEXT,
+    after_hours    INTEGER NOT NULL,
+    mode           TEXT NOT NULL,
+    config_json    TEXT NOT NULL,
+    weekdays       TEXT NOT NULL,
+    start_minute   INTEGER NOT NULL,
+    end_minute     INTEGER NOT NULL,
+    max_follow_ups INTEGER NOT NULL DEFAULT 1,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    last_run_at    INTEGER,
+    created_at     INTEGER NOT NULL
+  );
 `
 
 /**
