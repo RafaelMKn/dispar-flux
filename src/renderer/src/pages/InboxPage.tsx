@@ -15,7 +15,7 @@ import {
   Music,
   RefreshCw
 } from 'lucide-react'
-import type { Chat, HistorySyncState, Message } from '@shared/types'
+import type { Chat, ChatSyncState, HistorySyncState, Message } from '@shared/types'
 import { EmptyState, Button, StatusDot } from '../components/ui'
 import { Avatar } from '../components/Avatar'
 import { EmojiPicker } from '../components/EmojiPicker'
@@ -51,11 +51,45 @@ const ATTACH_OPTIONS = [
  */
 const PAGE_SIZE = 50
 
+/**
+ * Quantas conversas a lista carrega.
+ *
+ * O mesmo motivo do PAGE_SIZE, e mais um: esta lista e recarregada a cada
+ * evento da inbox. Com milhares de conversas, cada evento serializava alguns MB
+ * pelo IPC e remontava a lista inteira — era o principal travamento do app.
+ * Quem procura uma conversa fora das 100 mais recentes usa a busca, que filtra
+ * no banco.
+ */
+const CHAT_PAGE_SIZE = 100
+
+/** Janelas oferecidas no menu de sincronizacao de uma conversa. */
+const SYNC_RANGES: { label: string; days: number | null }[] = [
+  { label: 'Ultimos 7 dias', days: 7 },
+  { label: 'Ultimos 30 dias', days: 30 },
+  { label: 'Conversa completa', days: null }
+]
+
+function syncLabel(chat: Chat): string {
+  if (chat.syncedFull) return 'Conversa completa sincronizada'
+  if (chat.syncedFrom == null) return 'Conversa ainda nao sincronizada'
+  const dias = Math.max(0, Math.round((Date.now() - chat.syncedFrom) / 86_400_000))
+  if (dias === 0) return 'Sincronizada a partir de hoje'
+  return `Sincronizada desde ${new Date(chat.syncedFrom).toLocaleDateString('pt-BR')} (${dias} dia${dias === 1 ? '' : 's'})`
+}
+
 export default function InboxPage(): JSX.Element {
   const wa = useWhatsapp()
   const [searchParams, setSearchParams] = useSearchParams()
   const [chats, setChats] = useState<Chat[]>([])
   const [active, setActive] = useState<string | null>(null)
+  /**
+   * A conversa aberta vem do main, e nao da lista.
+   *
+   * A lista e limitada a 100 e pode estar filtrada pela base de leads — a
+   * conversa aberta pelo kanban (`/inbox?jid=...`) ou escondida pelo filtro
+   * ficaria sem cabecalho se dependesse dela.
+   */
+  const [activeChat, setActiveChat] = useState<Chat | null>(null)
   const [msgs, setMsgs] = useState<Message[]>([])
   const [draft, setDraft] = useState('')
   const [search, setSearch] = useState('')
@@ -63,6 +97,18 @@ export default function InboxPage(): JSX.Element {
   const [showEmoji, setShowEmoji] = useState(false)
   const [showAttach, setShowAttach] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [showSyncMenu, setShowSyncMenu] = useState(false)
+  const [syncNote, setSyncNote] = useState<string | null>(null)
+  /** Foco na base de leads: e o modo padrao da tela (ver comentario abaixo). */
+  const [onlyLeads, setOnlyLeads] = useState(true)
+  const [leadCount, setLeadCount] = useState(0)
+  const [leadSync, setLeadSync] = useState<ChatSyncState>({
+    running: false,
+    done: 0,
+    total: 0,
+    jid: null,
+    fetched: 0
+  })
   const [total, setTotal] = useState(0)
   const [loadingOlder, setLoadingOlder] = useState(false)
   /** Pedimos historico ao WhatsApp e ainda nao chegou. Trava novos pedidos. */
@@ -88,8 +134,27 @@ export default function InboxPage(): JSX.Element {
   const nearBottomRef = useRef(true)
   const recorder = useVoiceRecorder()
 
+  /**
+   * Filtro e busca vao para o BANCO, nao para o renderer.
+   *
+   * Em ref alem de state porque o recarregamento periodico e o disparado por
+   * evento precisam do valor atual sem virar dependencia dos efeitos — senao
+   * digitar na busca recriaria o intervalo a cada tecla.
+   */
+  const queryRef = useRef({ onlyLeads: true, search: '' })
+  useEffect(() => {
+    queryRef.current = { onlyLeads, search }
+  }, [onlyLeads, search])
+
   const loadChats = useCallback(async () => {
-    setChats(await window.api.inbox.chats())
+    const { onlyLeads: leads, search: term } = queryRef.current
+    setChats(
+      await window.api.inbox.chats({
+        limit: CHAT_PAGE_SIZE,
+        onlyLeads: leads,
+        search: term.trim() || undefined
+      })
+    )
   }, [])
 
   // Leitura pura do banco local: nunca fala com o WhatsApp. Roda a cada evento
@@ -105,9 +170,37 @@ export default function InboxPage(): JSX.Element {
     if (count > rows.length) setWaitingWhatsapp(false)
   }, [])
 
+  const loadActiveChat = useCallback(async (jid: string | null) => {
+    setActiveChat(jid ? await window.api.inbox.chat(jid) : null)
+  }, [])
+
   useEffect(() => {
-    void loadChats()
-  }, [loadChats])
+    void loadActiveChat(active)
+  }, [active, chats, loadActiveChat])
+
+  // Filtro/busca: recarrega com um respiro, para nao consultar o banco a cada
+  // tecla digitada.
+  useEffect(() => {
+    const t = setTimeout(() => void loadChats(), search ? 250 : 0)
+    return () => clearTimeout(t)
+  }, [loadChats, search, onlyLeads])
+
+  // Quantas conversas sao da base. Zero significa que o modo "base de leads"
+  // esconderia tudo — nesse caso a tela cai para "todas" sozinha.
+  useEffect(() => {
+    void window.api.inbox.leadCount().then((n) => {
+      setLeadCount(n)
+      if (n === 0) setOnlyLeads(false)
+    })
+  }, [])
+
+  useEffect(() => {
+    void window.api.inbox.leadSyncState().then(setLeadSync)
+    return window.api.inbox.onLeadSync((s) => {
+      setLeadSync(s)
+      if (!s.running) void window.api.inbox.leadCount().then(setLeadCount)
+    })
+  }, [])
 
   // O kanban abre a conversa de um lead por `/inbox?jid=...`. Roda uma vez por
   // jid pedido para nao brigar com o usuario se ele trocar de conversa depois.
@@ -120,23 +213,44 @@ export default function InboxPage(): JSX.Element {
     setSearchParams({}, { replace: true })
   }, [searchParams, setSearchParams])
 
-  // Atualiza quando o main avisa que algo mudou (mensagem nova, anexo baixado,
-  // status de entrega, opt-out). '*' e o resumo de um lote de sincronizacao.
+  /**
+   * Atualiza quando o main avisa que algo mudou (mensagem nova, anexo baixado,
+   * status de entrega, opt-out). '*' e o resumo de um lote de sincronizacao.
+   *
+   * Os eventos vem AOS MONTES durante a sincronizacao. Recarregar a cada um
+   * deles fazia a tela remontar a lista dezenas de vezes por segundo — entao
+   * eles sao agrupados numa recarga so a cada 400ms.
+   */
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let reloadThread = false
+
     const off = window.api.inbox.onChanged(({ chatJid }) => {
-      void loadChats()
-      if (active && (chatJid === active || chatJid === '*')) void loadMessages(active)
+      if (active && (chatJid === active || chatJid === '*')) reloadThread = true
+      if (timer) return
+      timer = setTimeout(() => {
+        timer = null
+        void loadChats()
+        if (reloadThread && active) {
+          reloadThread = false
+          void loadMessages(active)
+        }
+      }, 400)
     })
-    return off
+    return () => {
+      off()
+      if (timer) clearTimeout(timer)
+    }
   }, [active, loadChats, loadMessages])
 
   // Polling periódico: garante que a inbox se atualize mesmo que um evento
-  // `inbox:changed` se perca.
+  // `inbox:changed` se perca. Espacado, porque cada rodada e uma releitura da
+  // lista inteira — a atualizacao de verdade vem pelos eventos acima.
   useEffect(() => {
     const interval = setInterval(() => {
       void loadChats()
       if (active) void loadMessages(active)
-    }, 10_000)
+    }, 30_000)
     return () => clearInterval(interval)
   }, [active, loadChats, loadMessages])
 
@@ -173,9 +287,75 @@ export default function InboxPage(): JSX.Element {
     nearBottomRef.current = true
     restoreRef.current = null
     setWaitingWhatsapp(false)
+    setSyncNote(null)
+    setShowSyncMenu(false)
     await loadMessages(jid)
     await window.api.inbox.markRead(jid)
     await loadChats()
+
+    // Conversa pouco sincronizada abre praticamente vazia. O main decide se
+    // vale pedir historico (7 dias, 30 para numero da base) e faz isso uma vez
+    // por sessao; aqui so mostramos que esta acontecendo.
+    setSyncing(true)
+    try {
+      const r = await window.api.inbox.opened(jid)
+      if (r && r.fetched > 0) {
+        await loadMessages(jid)
+        await loadChats()
+      }
+      if (r?.noAnchor) {
+        setSyncNote('O WhatsApp ainda nao mandou nenhuma mensagem desta conversa.')
+      }
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  /**
+   * Sincronizacao pedida pelo usuario: 7 dias, 30 dias ou a conversa inteira.
+   *
+   * Demora — o main repete os pedidos ao WhatsApp no ritmo seguro ate alcancar
+   * a janela — entao a tela fica com o botao girando e o resultado aparece no
+   * fim, em vez de fingir que foi instantaneo.
+   */
+  async function handleSyncChat(days: number | null): Promise<void> {
+    const jid = active
+    setShowSyncMenu(false)
+    if (!jid || syncing) return
+
+    setSyncing(true)
+    setSyncNote(
+      days == null ? 'Sincronizando a conversa completa...' : `Sincronizando ${days} dias...`
+    )
+    try {
+      const r = await window.api.inbox.syncChat(jid, days)
+      await loadMessages(jid)
+      await loadChats()
+      setSyncNote(
+        r.offline
+          ? 'WhatsApp desconectado — reconecte para sincronizar.'
+          : r.noAnchor
+            ? 'O WhatsApp ainda nao mandou nenhuma mensagem desta conversa.'
+            : r.fetched > 0
+              ? `${r.fetched} mensagem(ns) trazida(s)${r.exhausted ? ' — conversa completa' : ''}.`
+              : r.exhausted
+                ? 'Nao ha mais historico anterior no WhatsApp.'
+                : 'Nada novo veio do WhatsApp desta vez.'
+      )
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  /** Sincroniza por inteiro as conversas de quem esta na base de leads. */
+  async function handleSyncLeads(): Promise<void> {
+    if (leadSync.running) {
+      await window.api.inbox.cancelLeadSync()
+      return
+    }
+    await window.api.inbox.syncLeads()
+    await loadChats()
+    if (active) await loadMessages(active)
   }
 
   /**
@@ -283,21 +463,16 @@ export default function InboxPage(): JSX.Element {
   }
 
   /**
-   * Botao de sincronizar.
+   * Botao de atualizar da lista: fotos de perfil e releitura.
    *
-   * Antes ele so reconsultava foto de perfil, o que fazia o usuario clicar
-   * esperando trazer mensagem e nao receber nenhuma. Agora tambem pede o
-   * historico anterior da conversa aberta — uma conversa por clique, que e o
-   * ritmo combinado para nao rajar o servidor do WhatsApp.
+   * Buscar mensagem NAO e trabalho dele — isso agora tem lugar proprio (o menu
+   * de sincronizacao da conversa e o "Sincronizar base"), onde da para escolher
+   * o periodo em vez de torcer para vir alguma coisa.
    */
   async function handleResync(): Promise<void> {
     setSyncing(true)
     try {
       await window.api.inbox.resync()
-      if (active) {
-        const requested = await window.api.inbox.requestOlder(active)
-        setWaitingWhatsapp(requested)
-      }
       await loadChats()
       if (active) await loadMessages(active)
     } finally {
@@ -305,18 +480,9 @@ export default function InboxPage(): JSX.Element {
     }
   }
 
-  const filtered = search.trim()
-    ? chats.filter((c) => {
-        const t = search.trim().toLowerCase()
-        return (
-          (c.name ?? '').toLowerCase().includes(t) ||
-          c.jid.includes(t.replace(/\D/g, '')) ||
-          (c.lastMessage ?? '').toLowerCase().includes(t)
-        )
-      })
-    : chats
-
-  const activeChat = chats.find((c) => c.jid === active) ?? null
+  // A filtragem acontece no banco (ver `loadChats`): filtrar aqui obrigaria a
+  // trazer a inbox inteira pelo IPC, que e justamente o que travava a tela.
+  const filtered = chats
   const connected = wa.status === 'connected'
   const busy = sending || recorder.recording
 
@@ -335,8 +501,8 @@ export default function InboxPage(): JSX.Element {
           <button
             onClick={handleResync}
             disabled={!connected || syncing}
-            aria-label="Sincronizar conversas"
-            title="Sincronizar fotos de perfil e buscar o historico anterior da conversa aberta"
+            aria-label="Atualizar lista de conversas"
+            title="Atualizar a lista e as fotos de perfil"
             className="rounded p-1.5 text-ink-secondary transition-colors duration-120 hover:bg-accent-wash disabled:opacity-40"
           >
             <RefreshCw size={15} className={syncing ? 'animate-spin' : ''} />
@@ -344,7 +510,7 @@ export default function InboxPage(): JSX.Element {
           <StatusDot tone={connected ? 'success' : 'idle'} />
         </div>
 
-        <div className="px-4 py-3">
+        <div className="space-y-2 px-4 py-3">
           <div className="flex items-center gap-2 rounded border border-line bg-surface-raised px-3 py-2">
             <Search size={16} className="flex-none text-ink-tertiary" />
             <input
@@ -354,14 +520,62 @@ export default function InboxPage(): JSX.Element {
               className="w-full bg-transparent text-sm text-ink outline-none placeholder:text-ink-tertiary"
             />
           </div>
+
+          {/*
+            Foco na base de leads.
+
+            A inbox de quem prospecta tem milhares de conversas que nao
+            interessam; as que interessam sao os numeros da base. Por isso este
+            e o modo padrao — e so ele recebe sincronizacao da conversa inteira.
+          */}
+          <div className="flex items-center gap-1.5">
+            {[
+              { label: `Base de leads${leadCount > 0 ? ` (${leadCount})` : ''}`, value: true },
+              { label: 'Todas', value: false }
+            ].map((opt) => (
+              <button
+                key={String(opt.value)}
+                onClick={() => setOnlyLeads(opt.value)}
+                aria-pressed={onlyLeads === opt.value}
+                className={[
+                  'rounded-full border px-2.5 py-1 text-[11px] transition-colors duration-120',
+                  onlyLeads === opt.value
+                    ? 'border-accent-strong bg-accent-wash text-accent-text'
+                    : 'border-line text-ink-secondary hover:bg-accent-wash'
+                ].join(' ')}
+              >
+                {opt.label}
+              </button>
+            ))}
+            <div className="flex-1" />
+            <button
+              onClick={handleSyncLeads}
+              disabled={!connected}
+              title="Sincroniza a conversa COMPLETA de cada numero da base de leads, uma por vez"
+              className="rounded border border-line px-2 py-1 text-[11px] text-ink-secondary transition-colors duration-120 hover:bg-accent-wash disabled:opacity-40"
+            >
+              {leadSync.running ? 'Parar' : 'Sincronizar base'}
+            </button>
+          </div>
+
+          {leadSync.running && (
+            <p className="text-[11px] text-ink-tertiary">
+              Sincronizando base: {leadSync.done}/{leadSync.total} conversas
+              {leadSync.fetched > 0 ? ` — ${leadSync.fetched} mensagens` : ''}
+            </p>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto">
           {filtered.length === 0 ? (
             <p className="px-6 py-8 text-center text-xs text-ink-tertiary [text-wrap:pretty]">
-              {connected
-                ? 'Nenhuma conversa ainda. Quando alguem te mandar mensagem, ela aparece aqui.'
-                : 'Conecte o WhatsApp em Configuracoes para ver suas conversas.'}
+              {!connected
+                ? 'Conecte o WhatsApp em Configuracoes para ver suas conversas.'
+                : search.trim()
+                  ? 'Nenhuma conversa encontrada para esta busca.'
+                  : onlyLeads
+                    ? 'Nenhuma conversa com numero da base de leads. Importe uma base ou veja "Todas".'
+                    : 'Nenhuma conversa ainda. Quando alguem te mandar mensagem, ela aparece aqui.'}
             </p>
           ) : (
             filtered.map((c) => (
@@ -379,13 +593,23 @@ export default function InboxPage(): JSX.Element {
                     <span className="truncate text-sm font-medium">
                       {c.name || formatJid(c.jid)}
                     </span>
+                    {c.isLead && !onlyLeads && (
+                      <span className="flex-none rounded-full bg-accent-wash px-1.5 text-[10px] text-accent-text">
+                        base
+                      </span>
+                    )}
                     <div className="flex-1" />
+                    {/* Sem data quando nao ha mensagem: melhor vazio do que a
+                        data de hoje, que era o que dava a impressao de que todo
+                        numero sincronizado tinha acabado de falar. */}
                     <span className="tnum flex-none text-[11px] text-ink-tertiary">
                       {timeLabel(c.lastTs)}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="truncate text-xs text-ink-meta">{c.lastMessage ?? ''}</span>
+                    <span className="truncate text-xs text-ink-meta">
+                      {c.lastMessage ?? (c.lastTs == null ? 'Sem historico sincronizado' : '')}
+                    </span>
                     {c.unread > 0 && (
                       <span className="tnum ml-auto flex-none rounded-full bg-btn px-1.5 text-[10px] font-semibold text-btn-ink">
                         {c.unread}
@@ -422,12 +646,61 @@ export default function InboxPage(): JSX.Element {
                 size={34}
               />
               <div className="min-w-0">
-                <div className="truncate text-sm font-medium">
-                  {activeChat.name || formatJid(activeChat.jid)}
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-medium">
+                    {activeChat.name || formatJid(activeChat.jid)}
+                  </span>
+                  {activeChat.isLead && (
+                    <span className="flex-none rounded-full bg-accent-wash px-1.5 text-[10px] text-accent-text">
+                      base de leads
+                    </span>
+                  )}
                 </div>
-                <div className="tnum text-[11px] text-ink-meta">{formatJid(activeChat.jid)}</div>
+                <div className="tnum text-[11px] text-ink-meta">
+                  {formatJid(activeChat.jid)} — {syncLabel(activeChat)}
+                </div>
+              </div>
+
+              <div className="flex-1" />
+
+              {/*
+                Sincronizacao desta conversa: 7 dias, 30 dias ou tudo.
+
+                Fica aqui, e nao no topo da lista, porque cada pedido e uma ida
+                ao servidor do WhatsApp para UMA conversa — e a conversa em
+                questao e sempre a que esta aberta.
+              */}
+              <div className="relative flex-none">
+                {showSyncMenu && (
+                  <div className="absolute right-0 top-full z-30 mt-2 w-56 overflow-hidden rounded-lg border border-line bg-surface-raised shadow-float">
+                    {SYNC_RANGES.map((r) => (
+                      <button
+                        key={r.label}
+                        onClick={() => void handleSyncChat(r.days)}
+                        className="block w-full px-3 py-2.5 text-left text-sm hover:bg-accent-wash"
+                      >
+                        {r.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <button
+                  onClick={() => setShowSyncMenu((v) => !v)}
+                  disabled={!connected || syncing}
+                  aria-label="Sincronizar esta conversa"
+                  title="Sincronizar esta conversa (7 dias, 30 dias ou completa)"
+                  className="rounded p-1.5 text-ink-secondary transition-colors duration-120 hover:bg-accent-wash disabled:opacity-40"
+                >
+                  <RefreshCw size={15} className={syncing ? 'animate-spin' : ''} />
+                </button>
               </div>
             </div>
+
+            {syncNote && (
+              <div className="border-b border-line bg-surface-sunken px-4 py-1.5 text-[11px] text-ink-meta">
+                {syncNote}
+              </div>
+            )}
 
             {historySync.running && (
               <div className="flex items-center gap-2 border-b border-line bg-accent-wash px-4 py-2 text-xs text-accent-text">

@@ -56,6 +56,12 @@ export interface Chat {
   unread: number
   /** URL interna (`disparmedia://`) da foto de perfil cacheada, se houver. */
   avatarUrl: string | null
+  /** O numero esta em alguma base de leads (ou e um lead do CRM). */
+  isLead: boolean
+  /** Instante da mensagem mais antiga ja trazida; null = nada sincronizado. */
+  syncedFrom: number | null
+  /** O WhatsApp ja disse que nao ha mais passado antes do que temos. */
+  syncedFull: boolean
 }
 
 export interface Message {
@@ -87,6 +93,33 @@ export interface HistorySyncState {
   percent: number | null
   /** Mensagens gravadas desde que o app conectou. */
   messages: number
+}
+
+/** Resultado de um pedido de historico sob demanda de UMA conversa. */
+export interface ChatSyncResult {
+  jid: string
+  /** Mensagens novas gravadas nesta sincronizacao. */
+  fetched: number
+  /** Chegou ate a janela pedida (7/30 dias). */
+  reachedTarget: boolean
+  /** O WhatsApp nao tem mais passado desta conversa. */
+  exhausted: boolean
+  /** Nao ha nenhuma mensagem local para servir de ancora ao pedido. */
+  noAnchor: boolean
+  /** O WhatsApp nao estava conectado. */
+  offline: boolean
+}
+
+/** Andamento da sincronizacao completa das conversas da base de leads. */
+export interface ChatSyncState {
+  running: boolean
+  /** Conversas ja concluidas. */
+  done: number
+  total: number
+  /** Conversa sendo sincronizada agora. */
+  jid: string | null
+  /** Mensagens novas gravadas na rodada. */
+  fetched: number
 }
 
 /** Arquivo escolhido pelo usuario para enviar. */
@@ -478,7 +511,18 @@ export interface DisparApi {
     onStopped: (cb: (p: { campaignId: string; reason: string }) => void) => () => void
   }
   inbox: {
-    chats: () => Promise<Chat[]>
+    /**
+     * Conversas da inbox, ja filtradas e limitadas no main.
+     *
+     * O teto padrao (100) existe porque esta lista atravessa o IPC a cada
+     * evento da inbox: mandar milhares de conversas por evento era o que
+     * travava a tela.
+     */
+    chats: (opts?: { limit?: number; onlyLeads?: boolean; search?: string }) => Promise<Chat[]>
+    /** Uma conversa so — a aberta pode estar fora da lista limitada/filtrada. */
+    chat: (chatJid: string) => Promise<Chat | null>
+    /** Quantas conversas tem numero na base de leads. */
+    leadCount: () => Promise<number>
     totalUnread: () => Promise<number>
     /** Ultimas `limit` mensagens da conversa, em ordem cronologica. So banco local. */
     messages: (chatJid: string, limit?: number) => Promise<Message[]>
@@ -492,6 +536,27 @@ export interface DisparApi {
      * mensagens chegam depois, por `onChanged` — nao no retorno.
      */
     requestOlder: (chatJid: string) => Promise<boolean>
+    /**
+     * Puxa o historico desta conversa ate `days` atras (null = conversa toda).
+     *
+     * Diferente de `requestOlder`, que dispara UM pedido e volta: aqui o main
+     * repete os pedidos, no ritmo seguro, ate alcancar a janela pedida ou ate o
+     * WhatsApp nao ter mais passado. Por isso a promessa demora.
+     */
+    syncChat: (chatJid: string, days: number | null) => Promise<ChatSyncResult>
+    /**
+     * Avisa que a conversa foi aberta na tela.
+     *
+     * O main decide se ela precisa de historico (7 dias, ou 30 para numero da
+     * base de leads) e puxa sozinho, uma vez por sessao. `null` = nao precisou.
+     */
+    opened: (chatJid: string) => Promise<ChatSyncResult | null>
+    /** Sincroniza por inteiro as conversas de quem esta na base de leads. */
+    syncLeads: (maxChats?: number) => Promise<ChatSyncState>
+    /** Interrompe a sincronizacao da base em andamento. */
+    cancelLeadSync: () => Promise<void>
+    leadSyncState: () => Promise<ChatSyncState>
+    onLeadSync: (cb: (s: ChatSyncState) => void) => () => void
     /** Andamento da sincronizacao de historico. */
     syncState: () => Promise<HistorySyncState>
     onSyncProgress: (cb: (s: HistorySyncState) => void) => () => void

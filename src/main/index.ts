@@ -19,7 +19,8 @@ import {
   notify
 } from './tray'
 import { startScheduler } from './core/crm/scheduler'
-import { getBackgroundSettings, shouldShowTrayNotice } from './settings'
+import { repairChatTimestamps, clearPhantomChatDates, refreshLeadFlags } from './repos/chats'
+import { getBackgroundSettings, shouldShowTrayNotice, getJson, setJson } from './settings'
 import { beginQuit, shouldHideOnClose } from './lifecycle'
 
 /**
@@ -150,6 +151,18 @@ async function bootstrap(): Promise<void> {
   const ambiguos = reconcileStuckJobs()
   if (ambiguos > 0) log.warn(`${ambiguos} envio(s) com entrega indeterminada apos encerramento`)
   reconcileRunningCampaign()
+
+  // Inbox: conserta as datas erradas herdadas de versoes anteriores (conversa
+  // carimbada com "agora" no lugar da data da mensagem) e marca quem esta na
+  // base de leads, que e o foco da tela.
+  const redatadas = repairChatTimestamps()
+  if (redatadas > 0) log.info(`${redatadas} conversa(s) tiveram a data corrigida`)
+  if (!getJson('inbox.phantomDatesCleared', false)) {
+    const fantasmas = clearPhantomChatDates()
+    setJson('inbox.phantomDatesCleared', true)
+    if (fantasmas > 0) log.info(`${fantasmas} conversa(s) sem mensagem perderam a data inventada`)
+  }
+  log.info(`${refreshLeadFlags()} conversa(s) na base de leads`)
 
   // Sem isso o Windows nao mostra as notificacoes do app (ele as associa ao
   // executavel do Electron em vez do nosso).

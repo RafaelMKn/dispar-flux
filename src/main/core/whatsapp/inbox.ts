@@ -2,16 +2,20 @@ import { EventEmitter } from 'node:events'
 import {
   upsertChat,
   incrementUnread,
-  insertMessage,
+  insertMessages,
   advanceMessageStatus,
   setMediaState,
-  getMessageRow
+  getMessageRow,
+  oldestMessage,
+  setChatSync,
+  refreshLeadFlags,
+  type InsertMessageInput
 } from '../../repos/chats'
 import { addOptOut } from '../../repos/optOuts'
 import { handleInbound } from '../crm/leads'
 import { isOptOutRequest, jidToE164 } from './optOutDetect'
 import { scoped } from '../../logger'
-import { saveNow } from '../../db'
+import { saveNow, withBulkWrite } from '../../db'
 import { saveMedia } from './mediaStore'
 import type { MediaKind, MessageDirection, MessageStatus } from '@shared/types'
 
@@ -250,52 +254,97 @@ export interface UpsertOptions {
  * Baileys (comum apos reconexao) nao duplica nada.
  */
 export function handleUpsert(msgs: WaMessageLike[], opts: UpsertOptions = {}): void {
-  for (const msg of msgs) {
-    try {
-      handleOne(msg, opts)
-    } catch (e) {
-      log.error('falha ao processar mensagem', e)
+  // Uma so gravacao em disco para o lote inteiro: o `saveNow` exporta o banco
+  // completo, e faze-lo por mensagem era o que travava a sincronizacao.
+  withBulkWrite(() => {
+    const parsed: ParsedMessage[] = []
+    for (const msg of msgs) {
+      try {
+        const one = parseOne(msg)
+        if (one) parsed.push(one)
+      } catch (e) {
+        log.error('falha ao processar mensagem', e)
+      }
     }
-  }
+    if (parsed.length === 0) return
+
+    const byId = new Map(parsed.map((p) => [p.input.id, p]))
+    const inserted = insertMessages(parsed.map((p) => p.input))
+
+    for (const row of inserted) {
+      const one = byId.get(row.id)
+      if (!one) continue
+      try {
+        afterInsert(one, opts)
+      } catch (e) {
+        log.error('falha ao processar mensagem', e)
+      }
+    }
+  })
 }
 
-function handleOne(msg: WaMessageLike, opts: UpsertOptions): void {
+interface ParsedMessage {
+  input: InsertMessageInput
+  jid: string
+  direction: MessageDirection
+  ts: number
+  text: string | null
+  preview: string | null
+  pushName: string | null
+  hasMedia: boolean
+  autoDownload: boolean
+}
+
+function parseOne(msg: WaMessageLike): ParsedMessage | null {
   const jid = msg.key?.remoteJid
-  if (isIgnorableJid(jid)) return
+  if (isIgnorableJid(jid)) return null
 
   const id = msg.key?.id
-  if (!id || !jid) return
+  if (!id || !jid) return null
 
   const text = extractText(msg.message)
   const media = describeMedia(msg.message)
   // Sem texto e sem midia (ex.: reacoes, protocolos) — nao vira mensagem.
-  if (text === null && !media) return
+  if (text === null && !media) return null
 
   const direction: MessageDirection = msg.key?.fromMe ? 'out' : 'in'
   const ts = toMillis(msg.messageTimestamp)
-  const preview = previewLabel(media, text)
 
-  const inserted = insertMessage({
-    id,
-    chatJid: jid,
+  return {
+    input: {
+      id,
+      chatJid: jid,
+      direction,
+      body: text,
+      ts,
+      waMessageId: id,
+      status: mapStatus(msg.status),
+      mediaKind: media?.kind ?? null,
+      mediaMime: media?.mime ?? null,
+      mediaName: media?.name ?? null,
+      mediaSize: media?.size ?? null,
+      mediaSeconds: media?.seconds ?? null,
+      mediaPtt: media?.ptt ?? false,
+      mediaState: media ? 'pending' : null,
+      rawProto: media ? (bridge?.encode(msg) ?? null) : null
+    },
+    jid,
     direction,
-    body: text,
     ts,
-    waMessageId: id,
-    status: mapStatus(msg.status),
-    mediaKind: media?.kind ?? null,
-    mediaMime: media?.mime ?? null,
-    mediaName: media?.name ?? null,
-    mediaSize: media?.size ?? null,
-    mediaSeconds: media?.seconds ?? null,
-    mediaPtt: media?.ptt ?? false,
-    mediaState: media ? 'pending' : null,
-    rawProto: media ? (bridge?.encode(msg) ?? null) : null
-  })
-  if (!inserted) return
+    text,
+    preview: previewLabel(media, text),
+    pushName: msg.pushName ?? null,
+    hasMedia: Boolean(media),
+    autoDownload: Boolean(media && shouldAutoDownload(media))
+  }
+}
+
+function afterInsert(one: ParsedMessage, opts: UpsertOptions): void {
+  const { jid, direction, ts, text, preview } = one
+  const id = one.input.id
 
   upsertChat(jid, {
-    name: direction === 'in' ? (msg.pushName ?? null) : null,
+    name: direction === 'in' ? one.pushName : null,
     lastMessage: preview,
     lastTs: ts
   })
@@ -340,7 +389,7 @@ function handleOne(msg: WaMessageLike, opts: UpsertOptions): void {
   // de mensagens de uma vez — baixar cada imagem e audio delas seriam varios GB
   // e horas de rede logo no pareamento. O anexo antigo fica em 'pending' e baixa
   // quando o usuario clica, igual video e documento sempre fizeram.
-  if (!opts.history && media && shouldAutoDownload(media)) enqueueDownload(id)
+  if (!opts.history && one.autoDownload) enqueueDownload(id)
 }
 
 /**
@@ -422,18 +471,32 @@ export function handleMessagesUpdate(
   }
 }
 
-/** Nomes vindos de `contacts.upsert` / `contacts.update`. */
+/**
+ * Nomes vindos de `contacts.upsert` / `contacts.update`.
+ *
+ * NAO cria conversa. Isto aqui e a agenda do celular: milhares de numeros que
+ * nunca trocaram mensagem. Criar um item de inbox para cada um enchia a lista
+ * de conversas vazias — e todas datadas de hoje, porque nao havia mensagem
+ * nenhuma para dar a data. Nome sem conversa so serve quando a conversa existe.
+ */
 export function handleContacts(
   contacts: { id?: string | null; name?: string | null; notify?: string | null }[]
 ): void {
-  for (const contact of contacts) {
-    const jid = contact.id
-    if (isIgnorableJid(jid) || !jid) continue
-    const name = contact.name || contact.notify
-    if (!name) continue
-    upsertChat(jid, { name })
-    inboxEvents.emit('changed', { chatJid: jid })
-  }
+  withBulkWrite(() => {
+    let touched = false
+    for (const contact of contacts) {
+      const jid = contact.id
+      if (isIgnorableJid(jid) || !jid) continue
+      const name = contact.name || contact.notify
+      if (!name) continue
+      upsertChat(jid, { name }, { create: false })
+      touched = true
+    }
+    // Um evento so para o lote: a agenda chega com milhares de entradas de uma
+    // vez, e um evento por contato faria o renderer recarregar a lista inteira
+    // milhares de vezes seguidas.
+    if (touched) inboxEvents.emit('changed', { chatJid: '*' })
+  })
 }
 
 /**
@@ -455,18 +518,31 @@ export function handleHistorySet(payload: {
   /** true no ultimo lote da sincronizacao inicial. */
   isLatest?: boolean
 }): void {
-  for (const chat of payload.chats ?? []) {
-    const jid = chat.id
-    if (isIgnorableJid(jid) || !jid) continue
-    const ts = toNumber(chat.conversationTimestamp)
-    upsertChat(jid, {
-      name: chat.name ?? null,
-      ...(ts ? { lastTs: ts < 1e12 ? ts * 1000 : ts } : {})
-    })
-  }
+  withBulkWrite(() => {
+    for (const chat of payload.chats ?? []) {
+      const jid = chat.id
+      if (isIgnorableJid(jid) || !jid) continue
+      const ts = toNumber(chat.conversationTimestamp)
+      upsertChat(jid, {
+        name: chat.name ?? null,
+        ...(ts ? { lastTs: ts < 1e12 ? ts * 1000 : ts } : {})
+      })
+    }
 
-  handleContacts(payload.contacts ?? [])
-  handleUpsert(payload.messages ?? [], { history: true })
+    handleContacts(payload.contacts ?? [])
+    handleUpsert(payload.messages ?? [], { history: true })
+
+    // Marca ate onde o passado de cada conversa ja foi puxado. E o que permite
+    // a tela dizer "sincronizada desde tal data" e o botao de 7/30 dias saber
+    // se ainda precisa pedir algo ao WhatsApp.
+    for (const jid of new Set(
+      (payload.messages ?? []).map((m) => m.key?.remoteJid).filter((j): j is string => Boolean(j))
+    )) {
+      if (isIgnorableJid(jid)) continue
+      const oldest = oldestMessage(jid)
+      if (oldest) setChatSync(jid, { syncedFrom: oldest.ts })
+    }
+  })
 
   const mensagens = payload.messages?.length ?? 0
   log.info('historico sincronizado', {
@@ -480,6 +556,10 @@ export function handleHistorySet(payload: {
   // O historico completo chega em VARIOS lotes. Sem repassar o progresso, a
   // tela ficaria minutos parecendo que nada acontece — e o usuario concluiria
   // (de novo) que o app nao sincroniza.
+  // Fim da sincronizacao inicial: reavalia quem esta na base de leads, agora
+  // que as conversas existem. E o flag que a tela usa para focar na base.
+  if (payload.isLatest === true) refreshLeadFlags()
+
   historyState = {
     running: payload.isLatest !== true,
     percent: typeof payload.progress === 'number' ? Math.round(payload.progress) : null,

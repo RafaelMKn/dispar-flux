@@ -387,4 +387,39 @@ describe('handleContacts', () => {
     handleContacts([{ id: jid, name: 'Maria Souza' }])
     expect(getChat(jid)?.name).toBe('Maria Souza')
   })
+
+  it('nao cria conversa para numero da agenda que nunca escreveu', () => {
+    // A agenda do celular tem milhares de numeros. Criar um item de inbox para
+    // cada um enchia a lista de conversas vazias — todas datadas de hoje, que e
+    // o que fazia "numero sincronizado" aparecer com a data errada.
+    const jid = freshJid()
+    handleContacts([{ id: jid, name: 'Contato sem conversa' }])
+    expect(getChat(jid)).toBeUndefined()
+  })
+})
+
+describe('datas vindas do historico', () => {
+  it('conversa sem conversationTimestamp fica sem data, e nao com a de hoje', () => {
+    const jid = freshJid()
+    handleHistorySet({ chats: [{ id: jid, name: 'Antiga' }] } as never)
+
+    const chat = getChat(jid)
+    expect(chat?.name).toBe('Antiga')
+    expect(chat?.lastTs).toBeNull()
+  })
+
+  it('a data da conversa e a da mensagem que veio no lote', () => {
+    const jid = freshJid()
+    const ts = 1_700_000_000_000
+
+    handleHistorySet({
+      chats: [{ id: jid }],
+      messages: [incoming(jid, { conversation: 'ola' })]
+    } as never)
+
+    expect(getChat(jid)?.lastTs).toBe(ts)
+    // E registra ate onde o passado ja foi puxado, para o botao de 7/30 dias
+    // saber se ainda precisa pedir algo.
+    expect(getChat(jid)?.syncedFrom).toBe(ts)
+  })
 })
