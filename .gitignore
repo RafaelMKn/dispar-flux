@@ -14,3 +14,12 @@ dist/
 *.sqlite-shm
 *.sqlite-wal
 wa-auth/
+
+# Design & Prompt files
+docs/design-prompt.md
+design-prompt.md
+
+# Archives
+Dispar Flux Design System.zip
+*.zip
+
