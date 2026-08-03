@@ -51,15 +51,15 @@ sessao autenticada.
 Vale calcular, porque muita gente evita a API oficial por um custo que na pratica e menor do
 que perder o numero principal.
 
-| | API Oficial (Cloud API) | Nao oficial (Baileys e afins) |
-|---|---|---|
-| Risco de ban | Suspensao por qualidade, com aviso e apelacao | Banimento permanente, sem aviso, sem recurso |
-| Custo por mensagem | Marketing R$ 0,40-0,55; Utility R$ 0,06-0,09; Auth R$ 0,03-0,05; Service (resposta em 24h) gratis | Zero |
-| Custo fixo | Mensalidade de BSP, tipicamente R$ 97-997 | Chip + servidor |
-| Franquia | 1.000 conversas gratis/mes | - |
-| Limite diario | Tiers de 1.000 / 10.000 / 100.000 conversas, sobe conforme Quality Rating | Nao documentado, definido pela heuristica |
-| Template | Aprovacao previa obrigatoria | Texto livre |
-| Legalidade | Dentro dos Termos | Viola os Termos |
+|                    | API Oficial (Cloud API)                                                                           | Nao oficial (Baileys e afins)                |
+| ------------------ | ------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Risco de ban       | Suspensao por qualidade, com aviso e apelacao                                                     | Banimento permanente, sem aviso, sem recurso |
+| Custo por mensagem | Marketing R$ 0,40-0,55; Utility R$ 0,06-0,09; Auth R$ 0,03-0,05; Service (resposta em 24h) gratis | Zero                                         |
+| Custo fixo         | Mensalidade de BSP, tipicamente R$ 97-997                                                         | Chip + servidor                              |
+| Franquia           | 1.000 conversas gratis/mes                                                                        | -                                            |
+| Limite diario      | Tiers de 1.000 / 10.000 / 100.000 conversas, sobe conforme Quality Rating                         | Nao documentado, definido pela heuristica    |
+| Template           | Aprovacao previa obrigatoria                                                                      | Texto livre                                  |
+| Legalidade         | Dentro dos Termos                                                                                 | Viola os Termos                              |
 
 O ponto de corte pratico:
 
@@ -149,12 +149,12 @@ dailyCap: 300            // teto diario
 Esse perfil e razoavel para um numero **maduro**. Para chip novo, ele e agressivo demais.
 Perfis sugeridos:
 
-| Fase | delayMin/Max | restEveryN | restDuration | dailyCap |
-|---|---|---|---|---|
-| Chip novo (dias 1-10) | 45s / 120s | 15 | 15 min | 40 |
-| Aquecendo (dias 11-25) | 20s / 60s | 25 | 10 min | 120 |
-| Maduro (30+ dias, sem incidente) | 8s / 20s | 40 | 5 min | 300 |
-| Maduro e conservador | 15s / 45s | 30 | 8 min | 200 |
+| Fase                             | delayMin/Max | restEveryN | restDuration | dailyCap |
+| -------------------------------- | ------------ | ---------- | ------------ | -------- |
+| Chip novo (dias 1-10)            | 45s / 120s   | 15         | 15 min       | 40       |
+| Aquecendo (dias 11-25)           | 20s / 60s    | 25         | 10 min       | 120      |
+| Maduro (30+ dias, sem incidente) | 8s / 20s     | 40         | 5 min        | 300      |
+| Maduro e conservador             | 15s / 45s    | 30         | 8 min        | 200      |
 
 Regras de cadencia que valem em qualquer fase:
 
@@ -253,18 +253,21 @@ faca o post-mortem: qual campanha, qual lista, qual cadencia.
 ## 9. Checklist antes de cada campanha
 
 **Lista**
+
 - [ ] Todos os contatos tem opt-in registrado e datado
 - [ ] Base com mais de 6 meses passou por double opt-in
 - [ ] Opt-outs anteriores foram aplicados
 - [ ] Numeros validados no WhatsApp (sem `waValid = 0` na fila)
 
 **Numero**
+
 - [ ] Aquecimento concluido para a fase (7-14 dias se novo)
 - [ ] Perfil com foto, nome e descricao
 - [ ] Nenhum incidente nos ultimos 7 dias
 - [ ] Nao e o numero principal de atendimento
 
 **Mensagem**
+
 - [ ] 3+ variacoes por paragrafo no spintax
 - [ ] Personalizacao com pelo menos um campo real
 - [ ] Sem link na primeira mensagem
@@ -272,12 +275,14 @@ faca o post-mortem: qual campanha, qual lista, qual cadencia.
 - [ ] Linha de opt-out
 
 **Cadencia**
+
 - [ ] Perfil de delay compativel com a maturidade do numero
 - [ ] `delayMin != delayMax`
 - [ ] Teto diario definido e abaixo do limite da fase
 - [ ] Janela horaria entre 9h e 20h
 
 **Operacao**
+
 - [ ] Alguem acompanhando os primeiros 30 envios
 - [ ] Numero reserva aquecido e disponivel
 - [ ] Criterio de parada combinado com a equipe
@@ -286,17 +291,17 @@ faca o post-mortem: qual campanha, qual lista, qual cadencia.
 
 ## 10. Onde configurar cada coisa no Dispar Flux
 
-| Pratica | Onde |
-|---|---|
-| Intervalo aleatorio min/max | Configuracoes -> Envio (`delayMinMs` / `delayMaxMs`) |
-| Descanso periodico | `restEveryN` / `restDurationMs` |
-| Teto diario (conta todas as campanhas do dia) | `dailyCap` |
-| Variacao de texto | Editor de mensagem, modo paragrafo (spintax) |
-| Opt-out | Reconferido no momento do envio pelo worker |
-| Validacao de numero | `waValid` / `jid` devolvidos pela API |
-| "Digitando" antes do envio | Automatico, 900-2500ms aleatorios |
-| Pausar sem esperar o intervalo | Botao pausar (sleep interrompivel) |
-| Retomar sem reenviar | Fila persistente em `campaign_jobs` |
+| Pratica                                       | Onde                                                 |
+| --------------------------------------------- | ---------------------------------------------------- |
+| Intervalo aleatorio min/max                   | Configuracoes -> Envio (`delayMinMs` / `delayMaxMs`) |
+| Descanso periodico                            | `restEveryN` / `restDurationMs`                      |
+| Teto diario (conta todas as campanhas do dia) | `dailyCap`                                           |
+| Variacao de texto                             | Editor de mensagem, modo paragrafo (spintax)         |
+| Opt-out                                       | Reconferido no momento do envio pelo worker          |
+| Validacao de numero                           | `waValid` / `jid` devolvidos pela API                |
+| "Digitando" antes do envio                    | Automatico, 900-2500ms aleatorios                    |
+| Pausar sem esperar o intervalo                | Botao pausar (sleep interrompivel)                   |
+| Retomar sem reenviar                          | Fila persistente em `campaign_jobs`                  |
 
 Duas lacunas que valeria implementar, se o objetivo e reduzir ban de forma estrutural:
 
