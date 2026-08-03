@@ -30,7 +30,13 @@ import { writeFile, copyFile } from 'node:fs/promises'
 import { buildPreview, importCsv, guessMapping, buildExportCsv } from './core/contacts/import'
 import { buildTemplateCsv, TEMPLATE_FILENAME } from './core/contacts/template'
 import { validateList } from './core/contacts/validate'
-import { inboxEvents, downloadMedia, previewLabel } from './core/whatsapp/inbox'
+import {
+  inboxEvents,
+  downloadMedia,
+  previewLabel,
+  getHistorySyncState,
+  type HistorySyncState
+} from './core/whatsapp/inbox'
 import { copyIntoMedia, kindForMime, mimeForPath, saveMedia } from './core/whatsapp/mediaStore'
 import {
   planCampaign,
@@ -45,6 +51,8 @@ import { listCampaigns, jobsWithContacts } from './repos/campaigns'
 import {
   listChats,
   listMessages,
+  countMessages,
+  oldestMessage,
   markRead,
   insertMessage,
   upsertChat,
@@ -385,10 +393,31 @@ export function registerIpc(): void {
   inboxEvents.on('changed', (p: { chatJid: string; optOut?: boolean }) =>
     broadcast('inbox:changed', p)
   )
+  // Progresso do historico: sem isso o pareamento de uma conta antiga fica
+  // minutos sem sinal de vida na tela.
+  inboxEvents.on('syncProgress', (s: HistorySyncState) => broadcast('inbox:syncProgress', s))
 
   ipcMain.handle('inbox:chats', () => listChats())
   ipcMain.handle('inbox:totalUnread', () => totalUnread())
-  ipcMain.handle('inbox:messages', (_e, chatJid: string) => listMessages(chatJid))
+  ipcMain.handle('inbox:messages', (_e, chatJid: string, limit?: number) =>
+    listMessages(chatJid, limit ?? 50)
+  )
+
+  ipcMain.handle('inbox:count', (_e, chatJid: string) => countMessages(chatJid))
+  ipcMain.handle('inbox:syncState', () => getHistorySyncState())
+
+  /**
+   * Pede ao WhatsApp o historico anterior ao que ja temos.
+   *
+   * A tela so chama isto quando o banco local acabou. O `fetchOlderMessages`
+   * ainda aplica um cooldown proprio: duas defesas, porque rajada de requisicao
+   * ao servidor do WhatsApp e o padrao que faz o numero ser bloqueado.
+   */
+  ipcMain.handle('inbox:requestOlder', async (_e, chatJid: string) => {
+    const oldest = oldestMessage(chatJid)
+    if (!oldest) return false
+    return whatsapp.fetchOlderMessages(oldest)
+  })
   ipcMain.handle('inbox:markRead', async (_e, chatJid: string) => {
     markRead(chatJid)
     // Avisa o renderer para o badge de nao lidas zerar na hora.

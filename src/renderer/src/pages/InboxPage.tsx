@@ -15,7 +15,7 @@ import {
   Music,
   RefreshCw
 } from 'lucide-react'
-import type { Chat, Message } from '@shared/types'
+import type { Chat, HistorySyncState, Message } from '@shared/types'
 import { EmptyState, Button, StatusDot } from '../components/ui'
 import { Avatar } from '../components/Avatar'
 import { EmojiPicker } from '../components/EmojiPicker'
@@ -43,6 +43,14 @@ const ATTACH_OPTIONS = [
   { kind: 'audio' as const, icon: Music, label: 'Arquivo de audio' }
 ]
 
+/**
+ * Quantas mensagens a conversa mostra por vez.
+ *
+ * Abrir uma conversa com anos de historico nao pode montar milhares de bolhas
+ * de uma vez. A janela cresce de 50 em 50 conforme o usuario rola para cima.
+ */
+const PAGE_SIZE = 50
+
 export default function InboxPage(): JSX.Element {
   const wa = useWhatsapp()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -55,16 +63,46 @@ export default function InboxPage(): JSX.Element {
   const [showEmoji, setShowEmoji] = useState(false)
   const [showAttach, setShowAttach] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [total, setTotal] = useState(0)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  /** Pedimos historico ao WhatsApp e ainda nao chegou. Trava novos pedidos. */
+  const [waitingWhatsapp, setWaitingWhatsapp] = useState(false)
+  const [historySync, setHistorySync] = useState<HistorySyncState>({
+    running: false,
+    percent: null,
+    messages: 0
+  })
   const threadRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  /**
+   * Quantas mensagens a conversa aberta esta mostrando.
+   *
+   * Em ref, e nao so em state, porque o recarregamento periodico precisa do
+   * valor atual sem virar dependencia do efeito — senao cada "carregar mais"
+   * recriaria o intervalo.
+   */
+  const limitRef = useRef(PAGE_SIZE)
+  /** Altura da thread antes de crescer para cima, para nao perder a leitura. */
+  const restoreRef = useRef<number | null>(null)
+  /** O usuario esta no fim da conversa? So ai o refresh rola sozinho. */
+  const nearBottomRef = useRef(true)
   const recorder = useVoiceRecorder()
 
   const loadChats = useCallback(async () => {
     setChats(await window.api.inbox.chats())
   }, [])
 
+  // Leitura pura do banco local: nunca fala com o WhatsApp. Roda a cada evento
+  // e a cada 10s, entao pedir historico daqui viraria rajada de requisicao.
   const loadMessages = useCallback(async (jid: string) => {
-    setMsgs(await window.api.inbox.messages(jid))
+    const [rows, count] = await Promise.all([
+      window.api.inbox.messages(jid, limitRef.current),
+      window.api.inbox.count(jid)
+    ])
+    setMsgs(rows)
+    setTotal(count)
+    // Chegou mensagem alem da janela: o pedido ao WhatsApp foi atendido.
+    if (count > rows.length) setWaitingWhatsapp(false)
   }, [])
 
   useEffect(() => {
@@ -102,17 +140,77 @@ export default function InboxPage(): JSX.Element {
     return () => clearInterval(interval)
   }, [active, loadChats, loadMessages])
 
-  // Rola para a ultima mensagem sempre que a thread muda.
+  // Andamento da sincronizacao de historico, para a faixa no topo da conversa.
+  useEffect(() => {
+    void window.api.inbox.syncState().then(setHistorySync)
+    return window.api.inbox.onSyncProgress(setHistorySync)
+  }, [])
+
+  /**
+   * Posicao da thread depois de cada mudanca.
+   *
+   * Tres casos distintos: cresceu para cima (mantem a mensagem que o usuario
+   * estava lendo no lugar), o usuario esta no fim (acompanha a conversa) ou ele
+   * esta lendo mais acima (nao mexe — puxar a tela para baixo no meio da
+   * leitura e o que mais irrita).
+   */
   useEffect(() => {
     const el = threadRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    const before = restoreRef.current
+    if (before != null) {
+      el.scrollTop += el.scrollHeight - before
+      restoreRef.current = null
+      return
+    }
+    if (nearBottomRef.current) el.scrollTop = el.scrollHeight
   }, [msgs])
 
   async function openChat(jid: string): Promise<void> {
     setActive(jid)
+    // Cada conversa comeca pela janela mais recente; o historico cresce ao rolar.
+    limitRef.current = PAGE_SIZE
+    nearBottomRef.current = true
+    restoreRef.current = null
+    setWaitingWhatsapp(false)
     await loadMessages(jid)
     await window.api.inbox.markRead(jid)
     await loadChats()
+  }
+
+  /**
+   * Chamado quando a rolagem chega perto do topo.
+   *
+   * Serve primeiro o que ja esta no banco. So quando ele acaba e que pede ao
+   * WhatsApp — e ai trava novos pedidos ate a resposta chegar, para rolar rapido
+   * nao virar uma sequencia de requisicoes.
+   */
+  const loadOlder = useCallback(async () => {
+    const jid = active
+    const el = threadRef.current
+    if (!jid || !el || loadingOlder) return
+
+    const hasMoreLocal = total > msgs.length
+    if (!hasMoreLocal && waitingWhatsapp) return
+
+    setLoadingOlder(true)
+    try {
+      if (hasMoreLocal) {
+        restoreRef.current = el.scrollHeight
+        limitRef.current += PAGE_SIZE
+        await loadMessages(jid)
+        return
+      }
+      const requested = await window.api.inbox.requestOlder(jid)
+      setWaitingWhatsapp(requested)
+    } finally {
+      setLoadingOlder(false)
+    }
+  }, [active, loadingOlder, loadMessages, msgs.length, total, waitingWhatsapp])
+
+  function handleThreadScroll(el: HTMLDivElement): void {
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+    if (el.scrollTop <= 40) void loadOlder()
   }
 
   async function handleSend(): Promise<void> {
@@ -184,10 +282,22 @@ export default function InboxPage(): JSX.Element {
     })
   }
 
+  /**
+   * Botao de sincronizar.
+   *
+   * Antes ele so reconsultava foto de perfil, o que fazia o usuario clicar
+   * esperando trazer mensagem e nao receber nenhuma. Agora tambem pede o
+   * historico anterior da conversa aberta — uma conversa por clique, que e o
+   * ritmo combinado para nao rajar o servidor do WhatsApp.
+   */
   async function handleResync(): Promise<void> {
     setSyncing(true)
     try {
       await window.api.inbox.resync()
+      if (active) {
+        const requested = await window.api.inbox.requestOlder(active)
+        setWaitingWhatsapp(requested)
+      }
       await loadChats()
       if (active) await loadMessages(active)
     } finally {
@@ -225,8 +335,8 @@ export default function InboxPage(): JSX.Element {
           <button
             onClick={handleResync}
             disabled={!connected || syncing}
-            aria-label="Sincronizar conversas e fotos"
-            title="Sincronizar conversas e fotos de perfil"
+            aria-label="Sincronizar conversas"
+            title="Sincronizar fotos de perfil e buscar o historico anterior da conversa aberta"
             className="rounded p-1.5 text-ink-secondary transition-colors duration-120 hover:bg-accent-wash disabled:opacity-40"
           >
             <RefreshCw size={15} className={syncing ? 'animate-spin' : ''} />
@@ -319,7 +429,34 @@ export default function InboxPage(): JSX.Element {
               </div>
             </div>
 
-            <div ref={threadRef} className="flex-1 space-y-2 overflow-y-auto px-4 py-4">
+            {historySync.running && (
+              <div className="flex items-center gap-2 border-b border-line bg-accent-wash px-4 py-2 text-xs text-accent-text">
+                <RefreshCw size={13} className="flex-none animate-[dfspin_1s_linear_infinite]" />
+                <span>
+                  Sincronizando o historico do WhatsApp
+                  {historySync.percent != null ? ` — ${historySync.percent}%` : ''}
+                  {historySync.messages > 0 ? ` (${historySync.messages} mensagens)` : ''}
+                </span>
+              </div>
+            )}
+
+            <div
+              ref={threadRef}
+              onScroll={(e) => handleThreadScroll(e.currentTarget)}
+              className="flex-1 space-y-2 overflow-y-auto px-4 py-4"
+            >
+              {/* Topo da thread: diz se ainda ha passado para carregar. */}
+              {msgs.length > 0 && (
+                <p className="pb-2 text-center text-[11px] text-ink-tertiary">
+                  {loadingOlder
+                    ? 'Carregando mensagens anteriores...'
+                    : total > msgs.length
+                      ? `Role para cima para ver as ${total - msgs.length} mensagens anteriores`
+                      : waitingWhatsapp
+                        ? 'Buscando mais historico no WhatsApp...'
+                        : 'Inicio da conversa'}
+                </p>
+              )}
               {msgs.map((m) => (
                 <MessageBubble
                   key={m.id}

@@ -43,7 +43,8 @@ Atualizações**. Seus dados (base de contatos, sessão do WhatsApp, configuraç
 
 1. **Conversas** — inbox para responder dentro do app: texto, emojis, imagens, vídeos,
    documentos e áudios (inclusive gravar nota de voz), com foto de perfil dos contatos e
-   confirmação de leitura sincronizada com o celular.
+   confirmação de leitura sincronizada com o celular. O histórico vem completo do
+   WhatsApp (ver abaixo).
 2. **Disparo** — configura a campanha: base, modo de mensagem (fixa, alternada, alternada
    por parágrafo, IA), intervalos e descanso.
 3. **Kanban** — CRM do disparo. O lead entra em _Aguardando resposta_ quando a mensagem
@@ -58,6 +59,22 @@ Atualizações**. Seus dados (base de contatos, sessão do WhatsApp, configuraç
 7. **Configurações** — conexão do WhatsApp (QR), provedor/modelo/chave de IA, parâmetros
    padrão de envio, janela anti-resposta-automática do CRM e comportamento em segundo
    plano.
+
+### Sincronização do histórico
+
+A inbox espelha o WhatsApp, e não um recorte dele:
+
+- **No pareamento** o app pede o histórico **completo**. Numa conta antiga isso chega em
+  vários lotes e leva minutos — por isso a conversa mostra uma faixa com o progresso e a
+  contagem de mensagens em vez de parecer travada.
+- **Ao rolar a conversa para cima**, a janela cresce de 50 em 50. Quando o que está no
+  banco acaba, o app pede ao WhatsApp o que veio antes (`fetchMessageHistory`) — uma
+  requisição por vez, com intervalo, porque rajada de requisição é o padrão que faz o
+  número ser bloqueado. O botão **Sincronizar** faz o mesmo pedido para a conversa aberta.
+- **Anexo de mensagem antiga não baixa sozinho.** Com o histórico completo isso seriam
+  vários GB no primeiro pareamento; ele fica pendente e baixa quando você clica. Mensagem
+  nova continua baixando imagem, áudio e figurinha automaticamente.
+- **Grupos continuam fora da inbox**, por serem ruído numa ferramenta de prospecção.
 
 ### Como o CRM decide que o cliente respondeu
 

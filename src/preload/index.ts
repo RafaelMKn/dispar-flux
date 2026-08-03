@@ -12,7 +12,8 @@ import type {
   UpdateState,
   CrmSettings,
   CrmAppointmentInput,
-  FollowUpRuleInput
+  FollowUpRuleInput,
+  HistorySyncState
 } from '@shared/types'
 
 /**
@@ -82,7 +83,12 @@ const api: DisparApi = {
   inbox: {
     chats: () => ipcRenderer.invoke('inbox:chats'),
     totalUnread: () => ipcRenderer.invoke('inbox:totalUnread'),
-    messages: (chatJid: string) => ipcRenderer.invoke('inbox:messages', chatJid),
+    messages: (chatJid: string, limit?: number) =>
+      ipcRenderer.invoke('inbox:messages', chatJid, limit),
+    count: (chatJid: string) => ipcRenderer.invoke('inbox:count', chatJid),
+    requestOlder: (chatJid: string) => ipcRenderer.invoke('inbox:requestOlder', chatJid),
+    syncState: () => ipcRenderer.invoke('inbox:syncState'),
+    onSyncProgress: (cb: (s: HistorySyncState) => void) => subscribe('inbox:syncProgress', cb),
     send: (chatJid: string, text: string) => ipcRenderer.invoke('inbox:send', chatJid, text),
     markRead: (chatJid: string) => ipcRenderer.invoke('inbox:markRead', chatJid),
     pickAttachment: (kind: 'media' | 'document' | 'audio') =>

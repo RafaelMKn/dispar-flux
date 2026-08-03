@@ -79,6 +79,16 @@ export interface Message {
   mediaPtt: boolean
 }
 
+/** Andamento da sincronizacao de historico com o WhatsApp. */
+export interface HistorySyncState {
+  /** Ha lotes de historico chegando agora. */
+  running: boolean
+  /** 0..100 quando o WhatsApp informa; null nos pedidos sob demanda. */
+  percent: number | null
+  /** Mensagens gravadas desde que o app conectou. */
+  messages: number
+}
+
 /** Arquivo escolhido pelo usuario para enviar. */
 export interface PickedAttachment {
   filePath: string
@@ -470,7 +480,21 @@ export interface DisparApi {
   inbox: {
     chats: () => Promise<Chat[]>
     totalUnread: () => Promise<number>
-    messages: (chatJid: string) => Promise<Message[]>
+    /** Ultimas `limit` mensagens da conversa, em ordem cronologica. So banco local. */
+    messages: (chatJid: string, limit?: number) => Promise<Message[]>
+    /** Quantas mensagens a conversa tem no banco. Diz se ainda ha o que mostrar. */
+    count: (chatJid: string) => Promise<number>
+    /**
+     * Pede ao WhatsApp o historico anterior a mensagem mais antiga que temos.
+     *
+     * Chamar SO quando o banco local acabou: e requisicao de rede ao servidor
+     * do WhatsApp, e rajada dela e o que faz o numero ser bloqueado. As
+     * mensagens chegam depois, por `onChanged` — nao no retorno.
+     */
+    requestOlder: (chatJid: string) => Promise<boolean>
+    /** Andamento da sincronizacao de historico. */
+    syncState: () => Promise<HistorySyncState>
+    onSyncProgress: (cb: (s: HistorySyncState) => void) => () => void
     send: (chatJid: string, text: string) => Promise<void>
     markRead: (chatJid: string) => Promise<void>
     /** Abre o seletor de arquivo. `kind` filtra as extensoes oferecidas. */

@@ -334,7 +334,13 @@ function handleOne(msg: WaMessageLike, opts: UpsertOptions): void {
   // faria o renderer recarregar a lista centenas de vezes seguidas.
   if (!opts.history) inboxEvents.emit('changed', { chatJid: jid, optOut })
 
-  if (media && shouldAutoDownload(media)) enqueueDownload(id)
+  // Anexo de mensagem ANTIGA nao baixa sozinho.
+  //
+  // Com o historico completo ligado, uma conta antiga traz dezenas de milhares
+  // de mensagens de uma vez — baixar cada imagem e audio delas seriam varios GB
+  // e horas de rede logo no pareamento. O anexo antigo fica em 'pending' e baixa
+  // quando o usuario clica, igual video e documento sempre fizeram.
+  if (!opts.history && media && shouldAutoDownload(media)) enqueueDownload(id)
 }
 
 /**
@@ -444,6 +450,10 @@ export function handleHistorySet(payload: {
   }[]
   contacts?: { id?: string | null; name?: string | null; notify?: string | null }[]
   messages?: WaMessageLike[]
+  /** 0..100 informado pelo WhatsApp; null nos lotes sob demanda. */
+  progress?: number | null
+  /** true no ultimo lote da sincronizacao inicial. */
+  isLatest?: boolean
 }): void {
   for (const chat of payload.chats ?? []) {
     const jid = chat.id
@@ -458,13 +468,49 @@ export function handleHistorySet(payload: {
   handleContacts(payload.contacts ?? [])
   handleUpsert(payload.messages ?? [], { history: true })
 
+  const mensagens = payload.messages?.length ?? 0
   log.info('historico sincronizado', {
     conversas: payload.chats?.length ?? 0,
     contatos: payload.contacts?.length ?? 0,
-    mensagens: payload.messages?.length ?? 0
+    mensagens,
+    progresso: payload.progress ?? null,
+    ultimoLote: payload.isLatest ?? false
   })
+
+  // O historico completo chega em VARIOS lotes. Sem repassar o progresso, a
+  // tela ficaria minutos parecendo que nada acontece — e o usuario concluiria
+  // (de novo) que o app nao sincroniza.
+  historyState = {
+    running: payload.isLatest !== true,
+    percent: typeof payload.progress === 'number' ? Math.round(payload.progress) : null,
+    messages: historyState.messages + mensagens
+  }
+  inboxEvents.emit('syncProgress', historyState)
 
   // Um evento so no fim: o historico chega em lote e emitir por mensagem faria
   // o renderer recarregar a lista centenas de vezes seguidas.
   inboxEvents.emit('changed', { chatJid: '*' })
+}
+
+/* ── Estado da sincronizacao de historico ────────────────────────────────── */
+
+export interface HistorySyncState {
+  /** Ha lotes de historico chegando agora. */
+  running: boolean
+  /** 0..100 quando o WhatsApp informa; null nos pedidos sob demanda. */
+  percent: number | null
+  /** Mensagens gravadas nesta sessao do app, para a tela mostrar avanco real. */
+  messages: number
+}
+
+let historyState: HistorySyncState = { running: false, percent: null, messages: 0 }
+
+export function getHistorySyncState(): HistorySyncState {
+  return historyState
+}
+
+/** Chamado ao (re)conectar: o contador vale por sessao de sincronizacao. */
+export function resetHistorySyncState(): void {
+  historyState = { running: false, percent: null, messages: 0 }
+  inboxEvents.emit('syncProgress', historyState)
 }
