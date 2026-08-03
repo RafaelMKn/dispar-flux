@@ -463,7 +463,7 @@ export function registerIpc(): void {
   ipcMain.handle('inbox:requestOlder', async (_e, chatJid: string) => {
     const oldest = oldestMessage(chatJid)
     if (!oldest) return false
-    return whatsapp.fetchOlderMessages(oldest)
+    return (await whatsapp.fetchOlderMessages(oldest)) !== null
   })
   ipcMain.handle('inbox:markRead', async (_e, chatJid: string) => {
     markRead(chatJid)

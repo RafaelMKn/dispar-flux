@@ -108,6 +108,15 @@ export interface ChatSyncResult {
   noAnchor: boolean
   /** O WhatsApp nao estava conectado. */
   offline: boolean
+  /**
+   * O celular nao respondeu ao pedido dentro do prazo.
+   *
+   * Quem responde pedido de historico antigo e o APARELHO pareado, nao o
+   * servidor: se ele esta desligado, sem internet ou com o WhatsApp fechado, o
+   * pedido fica sem resposta. Nao confundir com `exhausted` — aqui nao sabemos
+   * se ha mais historico, so que ninguem respondeu.
+   */
+  timedOut: boolean
 }
 
 /** Andamento da sincronizacao completa das conversas da base de leads. */
@@ -120,6 +129,8 @@ export interface ChatSyncState {
   jid: string | null
   /** Mensagens novas gravadas na rodada. */
   fetched: number
+  /** A fila parou porque o celular deixou de responder. */
+  stalled: boolean
 }
 
 /** Arquivo escolhido pelo usuario para enviar. */

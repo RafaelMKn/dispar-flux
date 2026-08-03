@@ -70,6 +70,11 @@ A inbox espelha o WhatsApp, e não um recorte dele — mas com **foco na base de
   conversa. Para achar o que está fora dessa janela, use a busca — ela filtra no banco,
   não na tela. Sem esses tetos, cada evento de sincronização mandava a inbox inteira para
   a tela e o app travava.
+- **Quem responde por histórico antigo é o seu celular, não o servidor do WhatsApp.** O
+  pedido sai como uma operação endereçada ao aparelho pareado, então ele precisa estar
+  ligado, com internet e com o WhatsApp aberto. É por isso que buscar histórico é lento
+  (podem ser vários minutos por conversa) e por isso o app avisa quando o celular não
+  responde, em vez de concluir que a conversa acabou.
 - **"Sincronizar base"** puxa a conversa **completa** de cada número da base, uma por vez.
   É o único caminho que busca 100% do histórico, justamente porque é o que importa.
 - **Botão de sincronizar da conversa aberta**: últimos 7 dias, últimos 30 dias ou conversa

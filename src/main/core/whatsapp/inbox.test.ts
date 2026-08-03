@@ -398,6 +398,37 @@ describe('handleContacts', () => {
   })
 })
 
+describe('aviso de resposta do historico', () => {
+  it('anuncia o lote recebido com o id do pedido e o que entrou', () => {
+    const jid = freshJid()
+    const lotes: unknown[] = []
+    inboxEvents.on('historyBatch', (b) => lotes.push(b))
+
+    handleHistorySet({
+      chats: [{ id: jid }],
+      messages: [incoming(jid, { conversation: 'antiga' })],
+      peerDataRequestSessionId: 'PDO-123'
+    } as never)
+
+    // Sem este evento, quem pediu historico so poderia esperar um tempo e
+    // chutar "acabou" — que e o que marcava conversa vazia como completa.
+    expect(lotes).toEqual([{ requestId: 'PDO-123', inserted: { [jid]: 1 }, jids: [jid] }])
+  })
+
+  it('avisa mesmo quando o lote nao trouxe nada de novo', () => {
+    const jid = freshJid()
+    handleHistorySet({ messages: [incoming(jid, { conversation: 'ja tinha' })] } as never)
+
+    const lotes: { inserted: Record<string, number> }[] = []
+    inboxEvents.on('historyBatch', (b) => lotes.push(b))
+    // Mesmo lote de novo: nada entra, mas a resposta existiu.
+    handleHistorySet({ chats: [{ id: jid }] } as never)
+
+    expect(lotes).toHaveLength(1)
+    expect(lotes[0].inserted).toEqual({})
+  })
+})
+
 describe('datas vindas do historico', () => {
   it('conversa sem conversationTimestamp fica sem data, e nao com a de hoje', () => {
     const jid = freshJid()

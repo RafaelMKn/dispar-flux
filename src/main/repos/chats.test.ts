@@ -11,6 +11,7 @@ import {
   countLeadChats,
   repairChatTimestamps,
   clearPhantomChatDates,
+  clearUnprovenFullSync,
   setChatSync,
   getChatView,
   leadChatsNeedingFullSync
@@ -161,6 +162,18 @@ describe('conserto das datas herdadas', () => {
     expect(getChat(jid)?.lastTs).toBe(real)
     // Idempotente: rodar de novo nao acha mais nada.
     expect(repairChatTimestamps()).toBe(0)
+  })
+
+  it('devolve para a fila as conversas marcadas como completas sem prova', () => {
+    // A versao anterior tratava silencio do celular como fim do historico e
+    // marcava a conversa como completa — muitas vezes com zero mensagens.
+    const jid = freshJid()
+    upsertChat(jid, { lastMessage: 'oi', lastTs: Date.now() })
+    setChatSync(jid, { syncedFull: true })
+
+    expect(clearUnprovenFullSync()).toBeGreaterThan(0)
+    expect(getChat(jid)?.syncedFull).toBe(0)
+    expect(clearUnprovenFullSync()).toBe(0)
   })
 
   it('apaga a data inventada de conversa que nunca teve mensagem', () => {

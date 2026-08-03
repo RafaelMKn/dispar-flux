@@ -37,13 +37,19 @@ const MAX_ROUNDS = 40
  * Tempos da espera por uma rodada.
  *
  * Ficam num objeto, e nao em constantes soltas, para o teste poder encurta-los:
- * o caminho "o WhatsApp nao respondeu nada" so termina depois do timeout, e
- * esperar 25s de verdade em teste nao prova nada alem de paciencia.
+ * o caminho "o celular nao respondeu" so termina depois do timeout, e esperar
+ * 45s de verdade em teste nao prova nada alem de paciencia.
  */
 export const timings = {
-  /** Quanto esperamos a resposta de uma rodada antes de desistir dela. */
-  roundTimeoutMs: 25_000,
-  pollMs: 500,
+  /**
+   * Quanto esperamos o CELULAR responder um pedido de historico.
+   *
+   * Nao e o servidor do WhatsApp que responde: e o aparelho pareado, que pode
+   * estar com a tela apagada, em rede ruim ou com o app fechado. 45s e
+   * generoso de proposito — desistir cedo demais era o que produzia o
+   * diagnostico errado de "essa conversa acabou".
+   */
+  roundTimeoutMs: 45_000,
   /** Espera quando outro pedido de historico esta no cooldown. */
   retryMs: 2_000
 }
@@ -72,7 +78,8 @@ export async function syncChatHistory(jid: string, days: number | null): Promise
     reachedTarget: false,
     exhausted: false,
     noAnchor: false,
-    offline: false
+    offline: false,
+    timedOut: false
   }
 
   if (!whatsapp.socket) {
@@ -100,51 +107,88 @@ export async function syncChatHistory(jid: string, days: number | null): Promise
       break
     }
 
-    const requested = await whatsapp.fetchOlderMessages(anchor, BATCH)
-    if (!requested) {
+    const requestId = await whatsapp.fetchOlderMessages(anchor, BATCH)
+    if (requestId === null) {
       // Cooldown de outro pedido em andamento: espera e tenta a mesma rodada.
       await sleep(timings.retryMs)
       continue
     }
 
-    const moved = await waitForOlder(jid, anchor.ts)
-    if (!moved) {
-      // O servidor respondeu (ou calou) sem nada anterior: acabou o passado.
+    const answered = await waitForAnswer(jid, requestId)
+    if (!answered) {
+      /**
+       * O celular nao respondeu dentro do prazo.
+       *
+       * Isto NAO significa que a conversa acabou — significa que o aparelho
+       * esta offline, com o WhatsApp fechado ou em rede ruim. Tratar como fim
+       * do historico (o que o codigo fazia antes) marcava a conversa como
+       * "completa" com zero mensagens e a tirava da fila para sempre.
+       */
+      result.timedOut = true
+      log.warn('o celular nao respondeu ao pedido de historico', { jid, requestId })
+      break
+    }
+
+    const oldest = oldestMessage(jid)
+    if (!oldest || oldest.ts >= anchor.ts) {
+      // Respondeu, mas sem nada anterior ao que ja tinhamos: acabou o passado.
       result.exhausted = true
       break
     }
-    anchor = moved
+    anchor = oldest
   }
 
   result.fetched = countMessages(jid) - before
   setChatSync(jid, {
     syncedFrom: anchor.ts,
-    // "Completa" so quando o WhatsApp deixou de ter passado — atingir a janela
-    // de 7 ou 30 dias nao significa que a conversa acabou.
+    // "Completa" so quando o celular RESPONDEU e nao tinha mais passado. Nem
+    // alcancar a janela de 7/30 dias nem um silencio do aparelho valem como
+    // fim da conversa.
     syncedFull: result.exhausted
   })
   log.info('conversa sincronizada', {
     jid,
     dias: days ?? 'tudo',
     novas: result.fetched,
-    ateOFim: result.exhausted
+    ateOFim: result.exhausted,
+    semResposta: result.timedOut
   })
   inboxEvents.emit('changed', { chatJid: jid })
   return result
 }
 
-/** Espera a mensagem mais antiga da conversa recuar. null = nao recuou. */
-async function waitForOlder(
-  jid: string,
-  previousTs: number
-): Promise<{ id: string; remoteJid: string; fromMe: boolean; ts: number } | null> {
-  const deadline = Date.now() + timings.roundTimeoutMs
-  while (Date.now() < deadline) {
-    await sleep(timings.pollMs)
-    const oldest = oldestMessage(jid)
-    if (oldest && oldest.ts < previousTs) return oldest
-  }
-  return null
+interface HistoryBatch {
+  requestId: string | null
+  inserted: Record<string, number>
+  jids: string[]
+}
+
+/**
+ * Espera o lote de historico que responde a ESTE pedido.
+ *
+ * O casamento e pelo `peerDataRequestSessionId` que o WhatsApp devolve no lote
+ * (`requestId` aqui). Como nem toda versao preenche esse campo, aceitamos
+ * tambem um lote que fale da mesma conversa — mas nunca o mero passar do tempo:
+ * era exatamente isso que fazia o app concluir "acabou o historico" quando na
+ * verdade o celular estava offline.
+ */
+function waitForAnswer(jid: string, requestId: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const done = (answered: boolean): void => {
+      clearTimeout(timer)
+      inboxEvents.off('historyBatch', onBatch)
+      resolve(answered)
+    }
+
+    const onBatch = (batch: HistoryBatch): void => {
+      const meu = requestId && batch.requestId === requestId
+      const mesmaConversa = batch.jids.includes(jid) || batch.inserted[jid] > 0
+      if (meu || mesmaConversa) done(true)
+    }
+
+    const timer = setTimeout(() => done(false), timings.roundTimeoutMs)
+    inboxEvents.on('historyBatch', onBatch)
+  })
 }
 
 /* ── Fila da base de leads ───────────────────────────────────────────────── */
@@ -159,7 +203,14 @@ async function waitForOlder(
  *
  * Roda em segundo plano, uma conversa por vez, e pode ser interrompida.
  */
-let leadSync: ChatSyncState = { running: false, done: 0, total: 0, jid: null, fetched: 0 }
+let leadSync: ChatSyncState = {
+  running: false,
+  done: 0,
+  total: 0,
+  jid: null,
+  fetched: 0,
+  stalled: false
+}
 let cancelRequested = false
 
 export function getLeadSyncState(): ChatSyncState {
@@ -180,7 +231,7 @@ export async function syncLeadChats(maxChats = 50): Promise<ChatSyncState> {
   refreshLeadFlags()
   const jids = leadChatsNeedingFullSync(maxChats)
   cancelRequested = false
-  leadSync = { running: true, done: 0, total: jids.length, jid: null, fetched: 0 }
+  leadSync = { running: true, done: 0, total: jids.length, jid: null, fetched: 0, stalled: false }
   emitLeadSync()
 
   try {
@@ -191,6 +242,12 @@ export async function syncLeadChats(maxChats = 50): Promise<ChatSyncState> {
 
       const r = await syncChatHistory(jid, null)
       if (r.offline) break
+      // Celular sem responder: parar a fila. Insistir nas outras 40 conversas
+      // so gastaria meia hora repetindo o mesmo silencio.
+      if (r.timedOut) {
+        leadSync = { ...leadSync, stalled: true }
+        break
+      }
       // Conversa sem ancora nao adianta reprocessar a cada clique: marcamos
       // como resolvida para a fila andar, e ela volta quando tiver mensagem.
       if (r.noAnchor) setChatSync(jid, { syncedFull: true })
@@ -229,7 +286,11 @@ export async function autoSyncOnOpen(jid: string): Promise<ChatSyncResult | null
   if (chat.syncedFrom != null && chat.syncedFrom <= Date.now() - days * DAY_MS) return null
 
   autoSynced.add(jid)
-  return syncChatHistory(jid, days)
+  const r = await syncChatHistory(jid, days)
+  // Sem resposta do celular (ou sem conexao) nao conta como tentativa gasta: o
+  // aparelho pode voltar em um minuto e a proxima abertura deve tentar de novo.
+  if (r.timedOut || r.offline) autoSynced.delete(jid)
+  return r
 }
 
 /** Usado no (re)conectar: a sessao de sincronizacao recomeca. */

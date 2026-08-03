@@ -328,6 +328,34 @@ export function repairChatTimestamps(): number {
 }
 
 /**
+ * Desmarca as conversas que foram dadas como "completas" sem prova disso.
+ *
+ * A primeira versao da sincronizacao sob demanda tratava SILENCIO como fim do
+ * historico: se o celular nao respondesse no prazo (desligado, sem internet, com
+ * o WhatsApp fechado), a conversa era marcada como completa — muitas vezes com
+ * zero mensagens — e saia da fila para sempre. Hoje so o celular respondendo
+ * "nao ha mais nada" marca isso, mas os registros errados ja gravados precisam
+ * ser desfeitos; no maximo o app pergunta de novo.
+ *
+ * Devolve quantas foram desmarcadas.
+ */
+export function clearUnprovenFullSync(): number {
+  const db = getDb()
+  const marcadas =
+    db
+      .select({ n: sql<number>`count(*)` })
+      .from(chats)
+      .where(eq(chats.syncedFull, 1))
+      .get()?.n ?? 0
+  if (marcadas === 0) return 0
+
+  withBulkWrite(() => {
+    db.run(sql`UPDATE chats SET synced_full = 0 WHERE synced_full = 1`)
+  })
+  return marcadas
+}
+
+/**
  * Apaga a data inventada das conversas que nunca tiveram mensagem.
  *
  * Versoes anteriores criavam a conversa com `last_ts = Date.now()` — inclusive

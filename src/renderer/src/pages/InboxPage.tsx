@@ -15,7 +15,7 @@ import {
   Music,
   RefreshCw
 } from 'lucide-react'
-import type { Chat, ChatSyncState, HistorySyncState, Message } from '@shared/types'
+import type { Chat, ChatSyncResult, ChatSyncState, HistorySyncState, Message } from '@shared/types'
 import { EmptyState, Button, StatusDot } from '../components/ui'
 import { Avatar } from '../components/Avatar'
 import { EmojiPicker } from '../components/EmojiPicker'
@@ -69,6 +69,32 @@ const SYNC_RANGES: { label: string; days: number | null }[] = [
   { label: 'Conversa completa', days: null }
 ]
 
+/**
+ * O QUE O USUARIO PRECISA SABER ANTES DE PEDIR HISTORICO.
+ *
+ * Quem responde pedido de mensagem antiga e o CELULAR pareado, nao o servidor
+ * do WhatsApp: com o aparelho desligado, sem internet ou com o app fechado, o
+ * pedido simplesmente fica sem resposta. E lento por natureza — nao ha o que
+ * otimizar aqui, so o que avisar.
+ */
+const SYNC_WARNING =
+  'O historico antigo vem do seu celular: mantenha-o ligado, com internet e o WhatsApp aberto. Pode levar varios minutos.'
+
+function describeSync(r: ChatSyncResult): string {
+  if (r.offline) return 'WhatsApp desconectado — reconecte para sincronizar.'
+  if (r.noAnchor)
+    return 'Esta conversa ainda nao tem nenhuma mensagem para servir de ponto de partida. Ela chega quando o WhatsApp mandar ou quando alguem escrever.'
+  if (r.timedOut) {
+    return r.fetched > 0
+      ? `${r.fetched} mensagem(ns) trazida(s), mas o celular parou de responder. Confira se ele esta ligado, com internet e o WhatsApp aberto, e tente de novo.`
+      : 'O celular nao respondeu. Confira se ele esta ligado, com internet e o WhatsApp aberto, e tente de novo.'
+  }
+  if (r.fetched > 0) {
+    return `${r.fetched} mensagem(ns) trazida(s)${r.exhausted ? ' — conversa completa' : ''}.`
+  }
+  return r.exhausted ? 'Nao ha mais historico anterior no WhatsApp.' : 'Nada novo veio desta vez.'
+}
+
 function syncLabel(chat: Chat): string {
   if (chat.syncedFull) return 'Conversa completa sincronizada'
   if (chat.syncedFrom == null) return 'Conversa ainda nao sincronizada'
@@ -107,7 +133,8 @@ export default function InboxPage(): JSX.Element {
     done: 0,
     total: 0,
     jid: null,
-    fetched: 0
+    fetched: 0,
+    stalled: false
   })
   const [total, setTotal] = useState(0)
   const [loadingOlder, setLoadingOlder] = useState(false)
@@ -303,9 +330,9 @@ export default function InboxPage(): JSX.Element {
         await loadMessages(jid)
         await loadChats()
       }
-      if (r?.noAnchor) {
-        setSyncNote('O WhatsApp ainda nao mandou nenhuma mensagem desta conversa.')
-      }
+      // So avisa quando ha algo a dizer: abrir conversa ja sincronizada nao
+      // pode encher a tela de recado.
+      if (r && (r.noAnchor || r.timedOut || r.fetched > 0)) setSyncNote(describeSync(r))
     } finally {
       setSyncing(false)
     }
@@ -331,17 +358,7 @@ export default function InboxPage(): JSX.Element {
       const r = await window.api.inbox.syncChat(jid, days)
       await loadMessages(jid)
       await loadChats()
-      setSyncNote(
-        r.offline
-          ? 'WhatsApp desconectado — reconecte para sincronizar.'
-          : r.noAnchor
-            ? 'O WhatsApp ainda nao mandou nenhuma mensagem desta conversa.'
-            : r.fetched > 0
-              ? `${r.fetched} mensagem(ns) trazida(s)${r.exhausted ? ' — conversa completa' : ''}.`
-              : r.exhausted
-                ? 'Nao ha mais historico anterior no WhatsApp.'
-                : 'Nada novo veio do WhatsApp desta vez.'
-      )
+      setSyncNote(describeSync(r))
     } finally {
       setSyncing(false)
     }
@@ -559,9 +576,15 @@ export default function InboxPage(): JSX.Element {
           </div>
 
           {leadSync.running && (
-            <p className="text-[11px] text-ink-tertiary">
+            <p className="text-[11px] text-ink-tertiary [text-wrap:pretty]">
               Sincronizando base: {leadSync.done}/{leadSync.total} conversas
-              {leadSync.fetched > 0 ? ` — ${leadSync.fetched} mensagens` : ''}
+              {leadSync.fetched > 0 ? ` — ${leadSync.fetched} mensagens` : ''}. {SYNC_WARNING}
+            </p>
+          )}
+          {!leadSync.running && leadSync.stalled && (
+            <p className="text-[11px] text-state-warningText [text-wrap:pretty]">
+              A sincronizacao parou: o celular deixou de responder. Confira se ele esta ligado, com
+              internet e o WhatsApp aberto, e clique de novo.
             </p>
           )}
         </div>
@@ -672,7 +695,10 @@ export default function InboxPage(): JSX.Element {
               */}
               <div className="relative flex-none">
                 {showSyncMenu && (
-                  <div className="absolute right-0 top-full z-30 mt-2 w-56 overflow-hidden rounded-lg border border-line bg-surface-raised shadow-float">
+                  <div className="absolute right-0 top-full z-30 mt-2 w-72 overflow-hidden rounded-lg border border-line bg-surface-raised shadow-float">
+                    <p className="border-b border-line-subtle px-3 py-2 text-[11px] leading-snug text-ink-meta [text-wrap:pretty]">
+                      {SYNC_WARNING}
+                    </p>
                     {SYNC_RANGES.map((r) => (
                       <button
                         key={r.label}

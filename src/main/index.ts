@@ -19,7 +19,12 @@ import {
   notify
 } from './tray'
 import { startScheduler } from './core/crm/scheduler'
-import { repairChatTimestamps, clearPhantomChatDates, refreshLeadFlags } from './repos/chats'
+import {
+  repairChatTimestamps,
+  clearPhantomChatDates,
+  clearUnprovenFullSync,
+  refreshLeadFlags
+} from './repos/chats'
 import { getBackgroundSettings, shouldShowTrayNotice, getJson, setJson } from './settings'
 import { beginQuit, shouldHideOnClose } from './lifecycle'
 
@@ -161,6 +166,15 @@ async function bootstrap(): Promise<void> {
     const fantasmas = clearPhantomChatDates()
     setJson('inbox.phantomDatesCleared', true)
     if (fantasmas > 0) log.info(`${fantasmas} conversa(s) sem mensagem perderam a data inventada`)
+  }
+  // Conversas dadas como "historico completo" so porque o celular nao respondeu
+  // a tempo: volta todas para a fila (ver clearUnprovenFullSync).
+  if (!getJson('inbox.unprovenFullSyncCleared', false)) {
+    const desmarcadas = clearUnprovenFullSync()
+    setJson('inbox.unprovenFullSyncCleared', true)
+    if (desmarcadas > 0) {
+      log.info(`${desmarcadas} conversa(s) voltaram para a fila de sincronizacao`)
+    }
   }
   log.info(`${refreshLeadFlags()} conversa(s) na base de leads`)
 

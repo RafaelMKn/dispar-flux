@@ -349,6 +349,10 @@ function afterInsert(one: ParsedMessage, opts: UpsertOptions): void {
     lastTs: ts
   })
 
+  // Mensagem que entrou de verdade no banco (nao um reenvio do que ja tinhamos).
+  // E o unico sinal confiavel de que um pedido de historico trouxe conteudo.
+  inboxEvents.emit('inserted', { chatJid: jid, ts })
+
   let optOut = false
   if (direction === 'in' && !opts.history) {
     incrementUnread(jid)
@@ -517,6 +521,81 @@ export function handleHistorySet(payload: {
   progress?: number | null
   /** true no ultimo lote da sincronizacao inicial. */
   isLatest?: boolean
+  /** Id do pedido sob demanda que gerou este lote (ver `fetchOlderMessages`). */
+  peerDataRequestSessionId?: string | null
+}): void {
+  /** Quantas mensagens realmente entraram, por conversa. */
+  const gravadas = new Map<string, number>()
+  const contarGravadas = (p: { chatJid: string }): void => {
+    gravadas.set(p.chatJid, (gravadas.get(p.chatJid) ?? 0) + 1)
+  }
+  inboxEvents.on('inserted', contarGravadas)
+
+  try {
+    applyHistorySet(payload)
+  } finally {
+    inboxEvents.off('inserted', contarGravadas)
+  }
+
+  const mensagens = payload.messages?.length ?? 0
+  log.info('historico recebido', {
+    conversas: payload.chats?.length ?? 0,
+    contatos: payload.contacts?.length ?? 0,
+    mensagens,
+    novas: [...gravadas.values()].reduce((a, b) => a + b, 0),
+    progresso: payload.progress ?? null,
+    ultimoLote: payload.isLatest ?? false,
+    respostaDoPedido: payload.peerDataRequestSessionId ?? null
+  })
+
+  /**
+   * O celular RESPONDEU.
+   *
+   * Quem pediu historico antigo espera por este evento: sem ele so restava
+   * esperar um tempo e concluir "acabou o historico" — conclusao errada quando
+   * o celular esta offline, e que fazia a conversa ser marcada como completa
+   * tendo zero mensagens.
+   */
+  inboxEvents.emit('historyBatch', {
+    requestId: payload.peerDataRequestSessionId ?? null,
+    // Conversas citadas no lote, com quantas mensagens novas cada uma trouxe.
+    inserted: Object.fromEntries(gravadas),
+    jids: [
+      ...new Set(
+        (payload.messages ?? [])
+          .map((m) => m.key?.remoteJid)
+          .filter((j): j is string => Boolean(j) && !isIgnorableJid(j))
+      )
+    ]
+  })
+
+  // O historico completo chega em VARIOS lotes. Sem repassar o progresso, a
+  // tela ficaria minutos parecendo que nada acontece — e o usuario concluiria
+  // (de novo) que o app nao sincroniza.
+  // Fim da sincronizacao inicial: reavalia quem esta na base de leads, agora
+  // que as conversas existem. E o flag que a tela usa para focar na base.
+  if (payload.isLatest === true) refreshLeadFlags()
+
+  historyState = {
+    running: payload.isLatest !== true,
+    percent: typeof payload.progress === 'number' ? Math.round(payload.progress) : null,
+    messages: historyState.messages + mensagens
+  }
+  inboxEvents.emit('syncProgress', historyState)
+
+  // Um evento so no fim: o historico chega em lote e emitir por mensagem faria
+  // o renderer recarregar a lista centenas de vezes seguidas.
+  inboxEvents.emit('changed', { chatJid: '*' })
+}
+
+function applyHistorySet(payload: {
+  chats?: {
+    id?: string | null
+    name?: string | null
+    conversationTimestamp?: number | Long | null
+  }[]
+  contacts?: { id?: string | null; name?: string | null; notify?: string | null }[]
+  messages?: WaMessageLike[]
 }): void {
   withBulkWrite(() => {
     for (const chat of payload.chats ?? []) {
@@ -543,33 +622,6 @@ export function handleHistorySet(payload: {
       if (oldest) setChatSync(jid, { syncedFrom: oldest.ts })
     }
   })
-
-  const mensagens = payload.messages?.length ?? 0
-  log.info('historico sincronizado', {
-    conversas: payload.chats?.length ?? 0,
-    contatos: payload.contacts?.length ?? 0,
-    mensagens,
-    progresso: payload.progress ?? null,
-    ultimoLote: payload.isLatest ?? false
-  })
-
-  // O historico completo chega em VARIOS lotes. Sem repassar o progresso, a
-  // tela ficaria minutos parecendo que nada acontece — e o usuario concluiria
-  // (de novo) que o app nao sincroniza.
-  // Fim da sincronizacao inicial: reavalia quem esta na base de leads, agora
-  // que as conversas existem. E o flag que a tela usa para focar na base.
-  if (payload.isLatest === true) refreshLeadFlags()
-
-  historyState = {
-    running: payload.isLatest !== true,
-    percent: typeof payload.progress === 'number' ? Math.round(payload.progress) : null,
-    messages: historyState.messages + mensagens
-  }
-  inboxEvents.emit('syncProgress', historyState)
-
-  // Um evento so no fim: o historico chega em lote e emitir por mensagem faria
-  // o renderer recarregar a lista centenas de vezes seguidas.
-  inboxEvents.emit('changed', { chatJid: '*' })
 }
 
 /* ── Estado da sincronizacao de historico ────────────────────────────────── */
