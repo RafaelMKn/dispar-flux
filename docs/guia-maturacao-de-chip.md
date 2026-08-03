@@ -1,8 +1,9 @@
 # Como maturar um chip de WhatsApp (tutorial dia a dia)
 
+> [!NOTA]
 > Pesquisa de campo: Reddit, Hacker News, GitHub e web, janela de 04/07/2026 a 03/08/2026.
-> Complemento do [Guia de disparo em massa sem API oficial](./guia-disparo-seguro.md): aquele
-> cobre a operacao inteira, este cobre so a fase que vem antes dela — transformar um numero
+> Complemento de [Disparo em massa sem tomar ban](app:/docs/disparo-seguro): aquele cobre a
+> operacao inteira, este cobre so a fase que vem antes dela — transformar um numero
 > recem-registrado em um numero que aguenta campanha.
 
 ## Antes de comecar: o que maturar resolve e o que nao resolve
@@ -85,13 +86,13 @@ O chip nem sabe que e ferramenta de trabalho.
 
 Aqui entra o envio ativo, com escada.
 
-| Dias  | Volume/dia                      | Tipo de contato                | Ferramenta                 |
-| ----- | ------------------------------- | ------------------------------ | -------------------------- |
-| 10-12 | 20 a 30                         | Reativacao de clientes antigos | Manual ou campanha pequena |
-| 13-15 | 50 a 80                         | Base morna com opt-in          | Campanha, cadencia lenta   |
-| 16-18 | 80 a 120                        | Base com opt-in                | Campanha                   |
-| 19-21 | 120 a 200                       | Base com opt-in                | Campanha                   |
-| 22+   | ate o dailyCap do perfil maduro | Operacao normal                | Campanha                   |
+| Dias  | Volume/dia                         | Tipo de contato                | Ferramenta                 |
+| ----- | ---------------------------------- | ------------------------------ | -------------------------- |
+| 10-12 | 20 a 30                            | Reativacao de clientes antigos | Manual ou campanha pequena |
+| 13-15 | 50 a 80                            | Base morna com opt-in          | Campanha, cadencia lenta   |
+| 16-18 | 80 a 120                           | Base com opt-in                | Campanha                   |
+| 19-21 | 120 a 200                          | Base com opt-in                | Campanha                   |
+| 22+   | ate o teto diario do perfil maduro | Operacao normal                | Campanha                   |
 
 Durante toda a fase 3, **mantenha o ruido de fundo**: as conversas humanas das fases 1 e 2 nao
 podem parar. O que derruba chip nesta etapa nao e o volume, e o perfil "so envia, nunca
@@ -163,32 +164,34 @@ Ordenados por frequencia nos relatos:
 
 ## 6. Configuracao no Dispar Flux por fase
 
-Os padroes de `src/main/settings.ts` (`delayMinMs: 8000`, `delayMaxMs: 20000`, `restEveryN: 40`,
-`restDurationMs: 300000`, `dailyCap: 300`) sao perfil de numero **maduro**. Para chip em
-aquecimento, ajuste em Configuracoes -> Envio:
+Os padroes de fabrica (8s / 20s, descanso a cada 40, 5 min de descanso, teto de 300) sao
+perfil de numero **maduro**. Para chip em aquecimento, ajuste em
+[Configuracoes -> Envio](app:/config):
 
-| Fase                        | delayMin/Max | restEveryN | restDuration | dailyCap |
-| --------------------------- | ------------ | ---------- | ------------ | -------- |
-| Dias 1-9 (nao dispara)      | —            | —          | —            | 0        |
-| Dias 10-12                  | 60s / 150s   | 10         | 20 min       | 30       |
-| Dias 13-15                  | 45s / 120s   | 15         | 15 min       | 80       |
-| Dias 16-18                  | 30s / 90s    | 20         | 12 min       | 120      |
-| Dias 19-21                  | 20s / 60s    | 25         | 10 min       | 200      |
-| Maduro (22+, sem incidente) | 8s / 20s     | 40         | 5 min        | 300      |
+| Fase                        | Intervalo min/max | Descansar a cada | Duracao do descanso | Teto diario |
+| --------------------------- | ----------------- | ---------------- | ------------------- | ----------- |
+| Dias 1-9 (nao dispara)      | —                 | —                | —                   | 0           |
+| Dias 10-12                  | 60s / 150s        | 10               | 20 min              | 30          |
+| Dias 13-15                  | 45s / 120s        | 15               | 15 min              | 80          |
+| Dias 16-18                  | 30s / 90s         | 20               | 12 min              | 120         |
+| Dias 19-21                  | 20s / 60s         | 25               | 10 min              | 200         |
+| Maduro (22+, sem incidente) | 8s / 20s          | 40               | 5 min               | 300         |
+
+Os campos sao em milissegundos: 60s = 60000, 20 min = 1200000.
 
 Complementos que ja existem no app e importam mais em chip novo:
 
-- **Spintax por paragrafo** (editor de mensagem, modo paragrafo) — obrigatorio desde a primeira
-  campanha do dia 10.
-- **"Digitando" antes do envio** — automatico, 900-2500ms aleatorios.
-- **Validacao de numero** (`waValid` / `jid`) — disparar para numero inexistente e desperdicio
-  de reputacao; limpe a base antes.
-- **Fila persistente** (`campaign_jobs`) — permite pausar no meio sem reenviar, que e o que
-  voce vai querer fazer ao primeiro sinal ruim.
+- **Alternada por paragrafo** — o modo de mensagem do passo 2 em [Disparo](app:/disparo).
+  Obrigatorio desde a primeira campanha do dia 10.
+- **"Digitando" antes do envio** — automatico, de 0,9 a 2,5 segundos aleatorios.
+- **Validacao de numero** — o botao **Validar no WhatsApp** em [Base de Dados](app:/base).
+  Disparar para numero inexistente e desperdicio de reputacao; limpe a base antes.
+- **Pausar e retomar** — a fila fica salva, entao da para parar no meio sem reenviar depois.
+  E o que voce vai querer fazer ao primeiro sinal ruim.
 
-Duas lacunas que afetam especificamente o aquecimento: nao ha **janela horaria** (nada impede
-um disparo as 3h) nem **rotacao entre numeros**. Enquanto isso, controle o horario manualmente
-e nao deixe campanha longa terminar de madrugada.
+Duas coisas que o app ainda nao faz e que pesam justamente no aquecimento: nao ha **janela
+horaria** (nada impede um disparo as 3h) nem **rotacao entre numeros**. Enquanto isso,
+controle o horario na mao e nao deixe campanha longa terminar de madrugada.
 
 ---
 

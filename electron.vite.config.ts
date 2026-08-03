@@ -24,9 +24,14 @@ export default defineConfig({
     resolve: {
       alias: {
         '@': resolve(__dirname, 'src/renderer/src'),
-        '@shared': resolve(__dirname, 'src/shared')
+        '@shared': resolve(__dirname, 'src/shared'),
+        // Os guias da tela de Documentacao sao importados crus (`?raw`) de
+        // `docs/`, que fica fora do root do renderer.
+        '@docs': resolve(__dirname, 'docs')
       }
     },
+    // Sem isto o dev server recusa servir arquivos fora de `src/renderer`.
+    server: { fs: { allow: [resolve(__dirname, '.')] } },
     plugins: [react()],
     build: {
       rollupOptions: {

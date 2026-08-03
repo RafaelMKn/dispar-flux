@@ -1,8 +1,10 @@
 # Guia de disparo em massa sem API oficial (e sem tomar ban)
 
+> [!NOTA]
 > Pesquisa de campo: Reddit, Hacker News, GitHub e web, janela de 04/07/2026 a 03/08/2026.
 > Escrito para o Dispar Flux (Baileys embutido), mas o conteudo vale para Evolution API,
-> whatsapp-web.js, WPPConnect e qualquer solucao nao oficial.
+> whatsapp-web.js, WPPConnect e qualquer solucao nao oficial. Se voce ainda nao rodou uma
+> campanha, comece por [Seu primeiro disparo](app:/docs/primeiro-disparo).
 
 ## Aviso que precisa vir antes de tudo
 
@@ -97,9 +99,10 @@ Regras nao negociaveis:
 5. **Limpe numeros invalidos antes de enfileirar.** Enviar para numero que nao existe no
    WhatsApp e sinal de lista comprada.
 
-No Dispar Flux, os itens 4 e 5 ja sao aplicados pelo motor: o worker reconfere o opt-out no
-momento do envio (nao no momento em que a fila foi montada), pula contato com `waValid = 0`
-e so usa o `jid` devolvido pela API, nunca um numero montado a mao com nono digito.
+No Dispar Flux, os itens 4 e 5 ja sao aplicados sozinhos: o descadastro e reconferido no
+momento do envio (e nao no momento em que a fila foi montada), contato marcado como "nao
+existe" fica de fora, e o destino usado e sempre o que o proprio WhatsApp devolveu na
+validacao — nunca um numero montado a mao com nono digito.
 
 ---
 
@@ -135,37 +138,37 @@ Outros pontos de higiene:
 
 ## 5. Cadencia e volume
 
-Aqui e onde o Dispar Flux ja te da os controles certos. Os padroes atuais
-(`src/main/settings.ts`) sao:
+Aqui e onde o Dispar Flux ja te da os controles certos, em
+[Configuracoes -> Envio](app:/config). Os padroes de fabrica sao:
 
-```ts
-delayMinMs: 8000,        // 8s
-delayMaxMs: 20000,       // 20s
-restEveryN: 40,          // descanso a cada 40 envios
-restDurationMs: 300000,  // 5 min de descanso
-dailyCap: 300            // teto diario
-```
+| Campo                     | Padrao            |
+| ------------------------- | ----------------- |
+| Intervalo minimo          | 8000 ms (8s)      |
+| Intervalo maximo          | 20000 ms (20s)    |
+| Descansar a cada N envios | 40                |
+| Duracao do descanso       | 300000 ms (5 min) |
+| Teto diario               | 300               |
 
 Esse perfil e razoavel para um numero **maduro**. Para chip novo, ele e agressivo demais.
 Perfis sugeridos:
 
-| Fase                             | delayMin/Max | restEveryN | restDuration | dailyCap |
-| -------------------------------- | ------------ | ---------- | ------------ | -------- |
-| Chip novo (dias 1-10)            | 45s / 120s   | 15         | 15 min       | 40       |
-| Aquecendo (dias 11-25)           | 20s / 60s    | 25         | 10 min       | 120      |
-| Maduro (30+ dias, sem incidente) | 8s / 20s     | 40         | 5 min        | 300      |
-| Maduro e conservador             | 15s / 45s    | 30         | 8 min        | 200      |
+| Fase                             | Intervalo min/max | Descansar a cada | Duracao do descanso | Teto diario |
+| -------------------------------- | ----------------- | ---------------- | ------------------- | ----------- |
+| Chip novo (dias 1-10)            | 45s / 120s        | 15               | 15 min              | 40          |
+| Aquecendo (dias 11-25)           | 20s / 60s         | 25               | 10 min              | 120         |
+| Maduro (30+ dias, sem incidente) | 8s / 20s          | 40               | 5 min               | 300         |
+| Maduro e conservador             | 15s / 45s         | 30               | 8 min               | 200         |
 
 Regras de cadencia que valem em qualquer fase:
 
-- **Intervalo fixo e assinatura de bot.** O motor ja sorteia entre min e max justamente por
-  isso; nunca configure `delayMin == delayMax`.
+- **Intervalo fixo e assinatura de bot.** O app ja sorteia um valor entre o minimo e o
+  maximo justamente por isso; nunca deixe os dois campos com o mesmo valor.
 - **Respeite janela horaria humana.** Disparo as 3h da manha nao tem explicacao legitima.
   Fique entre 9h e 20h, horario local do destinatario.
 - **Nao dispare todo dia no mesmo horario com o mesmo volume.** Variacao de dia para dia
   importa tanto quanto variacao entre mensagens.
-- **"Digitando" antes de enviar** deixa o envio menos mecanico — ja implementado no worker
-  (`sendTyping` com 900-2500ms aleatorios).
+- **"Digitando" antes de enviar** deixa o envio menos mecanico — o app ja faz isso sozinho,
+  por um tempo aleatorio de 0,9 a 2,5 segundos antes de cada mensagem.
 - **Fim de semana e feriado**: volume menor ou zero.
 
 ---
@@ -175,8 +178,9 @@ Regras de cadencia que valem em qualquer fase:
 Mensagens identicas em sequencia sao o gatilho citado nominalmente nas issues do Evolution
 API. Combater isso tem tres camadas:
 
-**1. Spintax por paragrafo.** O Dispar Flux ja suporta (`src/main/core/messages/render.ts`,
-modo paragrafo: sorteia uma variacao de cada bloco e concatena). Escreva 3 a 4 variacoes de
+**1. Spintax por paragrafo.** O Dispar Flux ja suporta: no passo 2 da tela de
+[Disparo](app:/disparo), escolha o modo **Alternada por paragrafo** — o app sorteia uma
+variacao de cada bloco e monta a mensagem. Escreva 3 a 4 variacoes de
 cada paragrafo — com 4 paragrafos de 3 variacoes voce tem 81 mensagens distintas, o
 suficiente para uma campanha de algumas centenas nao repetir texto.
 
@@ -257,7 +261,7 @@ faca o post-mortem: qual campanha, qual lista, qual cadencia.
 - [ ] Todos os contatos tem opt-in registrado e datado
 - [ ] Base com mais de 6 meses passou por double opt-in
 - [ ] Opt-outs anteriores foram aplicados
-- [ ] Numeros validados no WhatsApp (sem `waValid = 0` na fila)
+- [ ] Numeros validados no WhatsApp (nenhum contato "nao verificado" na base)
 
 **Numero**
 
@@ -277,7 +281,7 @@ faca o post-mortem: qual campanha, qual lista, qual cadencia.
 **Cadencia**
 
 - [ ] Perfil de delay compativel com a maturidade do numero
-- [ ] `delayMin != delayMax`
+- [ ] Intervalo minimo diferente do maximo
 - [ ] Teto diario definido e abaixo do limite da fase
 - [ ] Janela horaria entre 9h e 20h
 
@@ -291,24 +295,31 @@ faca o post-mortem: qual campanha, qual lista, qual cadencia.
 
 ## 10. Onde configurar cada coisa no Dispar Flux
 
-| Pratica                                       | Onde                                                 |
-| --------------------------------------------- | ---------------------------------------------------- |
-| Intervalo aleatorio min/max                   | Configuracoes -> Envio (`delayMinMs` / `delayMaxMs`) |
-| Descanso periodico                            | `restEveryN` / `restDurationMs`                      |
-| Teto diario (conta todas as campanhas do dia) | `dailyCap`                                           |
-| Variacao de texto                             | Editor de mensagem, modo paragrafo (spintax)         |
-| Opt-out                                       | Reconferido no momento do envio pelo worker          |
-| Validacao de numero                           | `waValid` / `jid` devolvidos pela API                |
-| "Digitando" antes do envio                    | Automatico, 900-2500ms aleatorios                    |
-| Pausar sem esperar o intervalo                | Botao pausar (sleep interrompivel)                   |
-| Retomar sem reenviar                          | Fila persistente em `campaign_jobs`                  |
+| Pratica                                       | Onde                                                                                    |
+| --------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Intervalo aleatorio min/max                   | [Configuracoes](app:/config) -> Envio: **Intervalo minimo** e **Intervalo maximo (ms)** |
+| Descanso periodico                            | Mesma secao: **Descansar a cada N envios** e **Duracao do descanso (ms)**               |
+| Teto diario (conta todas as campanhas do dia) | Mesma secao: **Teto diario**                                                            |
+| Ritmo so para uma campanha                    | [Disparo](app:/disparo), passo 4 (**Ritmo**) — nao altera o padrao                      |
+| Variacao de texto                             | [Disparo](app:/disparo), passo 2: modo **Alternada por paragrafo**                      |
+| Opt-out                                       | Automatico na resposta, e manual em [Base de Dados](app:/base). Reconferido no envio    |
+| Validacao de numero                           | [Base de Dados](app:/base) -> **Validar no WhatsApp**                                   |
+| "Digitando" antes do envio                    | Automatico, 900-2500ms aleatorios                                                       |
+| Pausar sem esperar o intervalo                | Botao **Pausar** no cartao de progresso — interrompe na hora                            |
+| Retomar sem reenviar                          | Botao **Retomar**; a fila e persistente e sabe quem ja recebeu                          |
 
-Duas lacunas que valeria implementar, se o objetivo e reduzir ban de forma estrutural:
+### Limitacoes de hoje, e como contornar
 
-1. **Janela horaria** — hoje nao ha bloqueio de envio fora do horario comercial. Um campo
-   `sendWindowStart` / `sendWindowEnd` no worker resolveria.
-2. **Rotacao entre numeros** — a arquitetura de multiplos chips descrita na secao 7 hoje e
-   manual. Distribuir a fila entre sessoes seria a mudanca de maior impacto no risco.
+Duas coisas o app ainda nao faz por voce. Nenhuma impede a operacao, mas as duas exigem
+disciplina manual:
+
+1. **Nao ha janela horaria.** Nada bloqueia um envio as 3h da manha, que e um dos sinais
+   mais faceis de detectar. Enquanto isso, controle o horario na mao: nao inicie campanha
+   longa no fim do dia e acompanhe o teto diario para ela nao terminar de madrugada.
+2. **Nao ha rotacao entre numeros.** A arquitetura de multiplos chips da secao 7 e manual:
+   uma base por numero, uma campanha por vez, trocando a conexao em
+   [Configuracoes](app:/config). Da trabalho, mas e o que mais reduz risco quando o volume
+   cresce.
 
 ---
 

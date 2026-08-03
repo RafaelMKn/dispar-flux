@@ -5,6 +5,7 @@ import BasePage from './pages/BasePage'
 import DisparoPage from './pages/DisparoPage'
 import ConfigPage from './pages/ConfigPage'
 import InboxPage from './pages/InboxPage'
+import DocsPage from './pages/DocsPage'
 import { useCallback, useEffect, useState } from 'react'
 import { useTheme } from './useTheme'
 import { useWhatsapp } from './useWhatsapp'
@@ -49,6 +50,8 @@ export default function App(): JSX.Element {
             <Route path="/disparo" element={<DisparoPage />} />
             <Route path="/base" element={<BasePage />} />
             <Route path="/config" element={<ConfigPage />} />
+            <Route path="/docs" element={<DocsPage />} />
+            <Route path="/docs/:slug" element={<DocsPage />} />
             <Route path="*" element={<Navigate to="/disparo" replace />} />
           </Routes>
         </main>

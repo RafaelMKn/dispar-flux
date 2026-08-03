@@ -49,6 +49,9 @@ Atualizações**. Seus dados (base de contatos, sessão do WhatsApp, configuraç
 3. **Base de Dados** — cadastra bases de contatos, importa CSV (Fase 1), valida números.
 4. **Configurações** — conexão do WhatsApp (QR), provedor/modelo/chave de IA, parâmetros
    padrão de envio e comportamento em segundo plano.
+5. **Documentação** — tutoriais de uso e os guias de risco, lidos dentro do próprio app.
+   O conteúdo vem dos arquivos em [`docs/`](docs), renderizados com sumário navegável,
+   busca e links que levam direto para a tela citada no texto.
 
 ## Rodar em segundo plano
 

@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Check, QrCode, Sparkles, Gauge, ScrollText, RefreshCw, PanelBottom } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import {
+  BookOpen,
+  Check,
+  QrCode,
+  Sparkles,
+  Gauge,
+  ScrollText,
+  RefreshCw,
+  PanelBottom
+} from 'lucide-react'
 import type { AiSettings, BackgroundSettings, SendingDefaults } from '@shared/types'
 import { AI_PROVIDERS } from '@shared/aiProviders'
 import { PageBody, PageHeader, Card, Button, Input, Select, Toggle } from '../components/ui'
@@ -195,8 +205,13 @@ export default function ConfigPage(): JSX.Element {
               />
             </div>
           )}
-          <div className="mt-4">
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             <Button onClick={saveSending}>Salvar parametros</Button>
+            <Link to="/docs/maturacao-de-chip">
+              <Button variant="ghost">
+                <BookOpen size={15} /> Que valores usar em cada fase do chip
+              </Button>
+            </Link>
           </div>
         </Card>
 
