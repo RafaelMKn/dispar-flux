@@ -59,6 +59,9 @@ Atualizações**. Seus dados (base de contatos, sessão do WhatsApp, configuraç
 7. **Configurações** — conexão do WhatsApp (QR), provedor/modelo/chave de IA, parâmetros
    padrão de envio, janela anti-resposta-automática do CRM e comportamento em segundo
    plano.
+8. **Documentação** — tutoriais de uso e os guias de risco, lidos dentro do próprio app.
+   O conteúdo vem dos arquivos em [`docs/`](docs), renderizados com sumário navegável,
+   busca e links que levam direto para a tela citada no texto.
 
 ### Sincronização do histórico
 

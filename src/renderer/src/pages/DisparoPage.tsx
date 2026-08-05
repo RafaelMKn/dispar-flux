@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
+  BookOpen,
   Type,
   Layers,
   Shuffle,
@@ -716,6 +718,13 @@ export default function DisparoPage(): JSX.Element {
                 <p className="mt-3 text-xs text-ink-tertiary">
                   Os valores padrao vem de Configuracoes. Alterar aqui vale so para esta campanha.
                 </p>
+                <div className="mt-3">
+                  <Link to="/docs/disparo-seguro">
+                    <Button variant="ghost" className="px-0">
+                      <BookOpen size={15} /> Que ritmo usar sem tomar ban
+                    </Button>
+                  </Link>
+                </div>
               </>
             )}
           </Card>

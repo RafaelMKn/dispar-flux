@@ -4,6 +4,7 @@ import {
   Send,
   Database,
   Settings,
+  BookOpen,
   Moon,
   Sun,
   Columns3,
@@ -27,7 +28,8 @@ const items: NavItem[] = [
   { to: '/agenda', label: 'Agenda', icon: CalendarDays },
   { to: '/cron', label: 'Cron', icon: Timer },
   { to: '/base', label: 'Base de Dados', icon: Database },
-  { to: '/config', label: 'Configuracoes', icon: Settings }
+  { to: '/config', label: 'Configuracoes', icon: Settings },
+  { to: '/docs', label: 'Documentacao', icon: BookOpen }
 ]
 
 export default function Sidebar({

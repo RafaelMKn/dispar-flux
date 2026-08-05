@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
+  BookOpen,
   Check,
   QrCode,
   Sparkles,
@@ -212,8 +214,13 @@ export default function ConfigPage(): JSX.Element {
               />
             </div>
           )}
-          <div className="mt-4">
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             <Button onClick={saveSending}>Salvar parametros</Button>
+            <Link to="/docs/maturacao-de-chip">
+              <Button variant="ghost">
+                <BookOpen size={15} /> Que valores usar em cada fase do chip
+              </Button>
+            </Link>
           </div>
         </Card>
 
