@@ -387,4 +387,70 @@ describe('handleContacts', () => {
     handleContacts([{ id: jid, name: 'Maria Souza' }])
     expect(getChat(jid)?.name).toBe('Maria Souza')
   })
+
+  it('nao cria conversa para numero da agenda que nunca escreveu', () => {
+    // A agenda do celular tem milhares de numeros. Criar um item de inbox para
+    // cada um enchia a lista de conversas vazias — todas datadas de hoje, que e
+    // o que fazia "numero sincronizado" aparecer com a data errada.
+    const jid = freshJid()
+    handleContacts([{ id: jid, name: 'Contato sem conversa' }])
+    expect(getChat(jid)).toBeUndefined()
+  })
+})
+
+describe('aviso de resposta do historico', () => {
+  it('anuncia o lote recebido com o id do pedido e o que entrou', () => {
+    const jid = freshJid()
+    const lotes: unknown[] = []
+    inboxEvents.on('historyBatch', (b) => lotes.push(b))
+
+    handleHistorySet({
+      chats: [{ id: jid }],
+      messages: [incoming(jid, { conversation: 'antiga' })],
+      peerDataRequestSessionId: 'PDO-123'
+    } as never)
+
+    // Sem este evento, quem pediu historico so poderia esperar um tempo e
+    // chutar "acabou" — que e o que marcava conversa vazia como completa.
+    expect(lotes).toEqual([{ requestId: 'PDO-123', inserted: { [jid]: 1 }, jids: [jid] }])
+  })
+
+  it('avisa mesmo quando o lote nao trouxe nada de novo', () => {
+    const jid = freshJid()
+    handleHistorySet({ messages: [incoming(jid, { conversation: 'ja tinha' })] } as never)
+
+    const lotes: { inserted: Record<string, number> }[] = []
+    inboxEvents.on('historyBatch', (b) => lotes.push(b))
+    // Mesmo lote de novo: nada entra, mas a resposta existiu.
+    handleHistorySet({ chats: [{ id: jid }] } as never)
+
+    expect(lotes).toHaveLength(1)
+    expect(lotes[0].inserted).toEqual({})
+  })
+})
+
+describe('datas vindas do historico', () => {
+  it('conversa sem conversationTimestamp fica sem data, e nao com a de hoje', () => {
+    const jid = freshJid()
+    handleHistorySet({ chats: [{ id: jid, name: 'Antiga' }] } as never)
+
+    const chat = getChat(jid)
+    expect(chat?.name).toBe('Antiga')
+    expect(chat?.lastTs).toBeNull()
+  })
+
+  it('a data da conversa e a da mensagem que veio no lote', () => {
+    const jid = freshJid()
+    const ts = 1_700_000_000_000
+
+    handleHistorySet({
+      chats: [{ id: jid }],
+      messages: [incoming(jid, { conversation: 'ola' })]
+    } as never)
+
+    expect(getChat(jid)?.lastTs).toBe(ts)
+    // E registra ate onde o passado ja foi puxado, para o botao de 7/30 dias
+    // saber se ainda precisa pedir algo.
+    expect(getChat(jid)?.syncedFrom).toBe(ts)
+  })
 })

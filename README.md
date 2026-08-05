@@ -62,15 +62,37 @@ Atualizações**. Seus dados (base de contatos, sessão do WhatsApp, configuraç
 
 ### Sincronização do histórico
 
-A inbox espelha o WhatsApp, e não um recorte dele:
+A inbox espelha o WhatsApp, e não um recorte dele — mas com **foco na base de leads**, que
+é quem interessa numa ferramenta de prospecção:
 
+- **A lista abre filtrada pela base de leads** (os números que existem em alguma base
+  importada ou no CRM), e mostra **100 conversas** por vez com **50 mensagens** por
+  conversa. Para achar o que está fora dessa janela, use a busca — ela filtra no banco,
+  não na tela. Sem esses tetos, cada evento de sincronização mandava a inbox inteira para
+  a tela e o app travava.
+- **Quem responde por histórico antigo é o seu celular, não o servidor do WhatsApp.** O
+  pedido sai como uma operação endereçada ao aparelho pareado, então ele precisa estar
+  ligado, com internet e com o WhatsApp aberto. É por isso que buscar histórico é lento
+  (podem ser vários minutos por conversa) e por isso o app avisa quando o celular não
+  responde, em vez de concluir que a conversa acabou.
+- **"Sincronizar base"** puxa a conversa **completa** de cada número da base, uma por vez.
+  É o único caminho que busca 100% do histórico, justamente porque é o que importa.
+- **Botão de sincronizar da conversa aberta**: últimos 7 dias, últimos 30 dias ou conversa
+  completa. O app repete os pedidos ao WhatsApp até alcançar a janela pedida ou até o
+  servidor não ter mais passado.
+- **Ao abrir uma conversa pouco sincronizada**, o app puxa sozinho os últimos 7 dias
+  (30 se o número está na base), uma vez por sessão.
 - **No pareamento** o app pede o histórico **completo**. Numa conta antiga isso chega em
   vários lotes e leva minutos — por isso a conversa mostra uma faixa com o progresso e a
   contagem de mensagens em vez de parecer travada.
 - **Ao rolar a conversa para cima**, a janela cresce de 50 em 50. Quando o que está no
   banco acaba, o app pede ao WhatsApp o que veio antes (`fetchMessageHistory`) — uma
   requisição por vez, com intervalo, porque rajada de requisição é o padrão que faz o
-  número ser bloqueado. O botão **Sincronizar** faz o mesmo pedido para a conversa aberta.
+  número ser bloqueado.
+- **A data da conversa é sempre a da mensagem**, nunca "agora". Número da agenda do
+  celular que nunca trocou mensagem não vira conversa na inbox, e conversa ainda sem
+  histórico aparece sem data em vez de fingir que falou hoje. Bancos criados por versões
+  anteriores são corrigidos na primeira abertura.
 - **Anexo de mensagem antiga não baixa sozinho.** Com o histórico completo isso seriam
   vários GB no primeiro pareamento; ele fica pendente e baixa quando você clica. Mensagem
   nova continua baixando imagem, áudio e figurinha automaticamente.

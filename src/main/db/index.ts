@@ -185,7 +185,26 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   { table: 'messages', column: 'media_seconds', ddl: 'media_seconds INTEGER' },
   { table: 'messages', column: 'media_ptt', ddl: 'media_ptt INTEGER' },
   { table: 'messages', column: 'media_state', ddl: 'media_state TEXT' },
-  { table: 'messages', column: 'raw_proto', ddl: 'raw_proto TEXT' }
+  { table: 'messages', column: 'raw_proto', ddl: 'raw_proto TEXT' },
+  // Inbox: 1 quando o numero da conversa esta em alguma base de leads.
+  { table: 'chats', column: 'is_lead', ddl: 'is_lead INTEGER NOT NULL DEFAULT 0' },
+  // Ate onde (em ms) o historico desta conversa ja foi puxado do WhatsApp.
+  { table: 'chats', column: 'synced_from', ddl: 'synced_from INTEGER' },
+  // 1 quando a conversa ja foi sincronizada por inteiro (nao ha mais passado).
+  { table: 'chats', column: 'synced_full', ddl: 'synced_full INTEGER NOT NULL DEFAULT 0' }
+]
+
+/**
+ * Indices criados depois da primeira versao do schema.
+ *
+ * Mesma razao do ADDED_COLUMNS: o bootstrap nao roda de novo no banco de quem
+ * ja usava o app. Ordenar a lista de conversas por `last_ts` sem indice varre a
+ * tabela inteira a cada leitura — e a lista e relida a cada evento da inbox.
+ */
+const ADDED_INDEXES: string[] = [
+  'CREATE INDEX IF NOT EXISTS idx_chats_last_ts ON chats(last_ts)',
+  'CREATE INDEX IF NOT EXISTS idx_chats_lead ON chats(is_lead, last_ts)',
+  'CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_jid, ts)'
 ]
 
 /** Acrescenta as colunas de `ADDED_COLUMNS` que ainda nao existem. Idempotente. */
@@ -208,6 +227,8 @@ export function migrateColumns(sql: SqlJsDb): void {
     sql.run(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
     existing.add(column)
   }
+
+  for (const ddl of ADDED_INDEXES) sql.run(ddl)
 }
 
 export async function initDb(): Promise<SQLJsDatabase<typeof schema>> {
@@ -246,8 +267,37 @@ export function saveNow(): void {
 
 // Salva de forma debounced apos mutacoes (evita reescrever o arquivo a cada linha).
 export function scheduleSave(): void {
+  // Dentro de um lote, gravar so no fim: o `saveNow` exporta o BANCO INTEIRO
+  // para o disco, e fazer isso no meio de milhares de inserts e o que travava
+  // o app durante a sincronizacao de historico.
+  if (_bulkDepth > 0) {
+    _bulkDirty = true
+    return
+  }
   if (_saveTimer) clearTimeout(_saveTimer)
   _saveTimer = setTimeout(saveNow, 250)
+}
+
+let _bulkDepth = 0
+let _bulkDirty = false
+
+/**
+ * Roda `fn` em modo lote: nenhuma gravacao em disco no meio, uma so no fim.
+ *
+ * Usado pelos caminhos que escrevem muitas linhas de uma vez (sincronizacao de
+ * historico, importacao). Reentrante — so o lote mais externo grava.
+ */
+export function withBulkWrite<T>(fn: () => T): T {
+  _bulkDepth += 1
+  try {
+    return fn()
+  } finally {
+    _bulkDepth -= 1
+    if (_bulkDepth === 0 && _bulkDirty) {
+      _bulkDirty = false
+      scheduleSave()
+    }
+  }
 }
 
 export { schema }

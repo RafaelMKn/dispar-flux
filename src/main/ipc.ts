@@ -59,8 +59,19 @@ import {
   totalUnread,
   getMessage,
   getMessageRow,
+  countLeadChats,
+  refreshLeadFlags,
+  getChatView,
   type InsertMessageInput
 } from './repos/chats'
+import {
+  syncChatHistory,
+  syncLeadChats,
+  cancelLeadSync,
+  getLeadSyncState,
+  autoSyncOnOpen,
+  resetAutoSync
+} from './core/whatsapp/historySync'
 import {
   board,
   createStage,
@@ -112,7 +123,8 @@ import type {
   UpdateState,
   CrmSettings,
   CrmAppointmentInput,
-  FollowUpRuleInput
+  FollowUpRuleInput,
+  ChatSyncState
 } from '@shared/types'
 
 const log = scoped('whatsapp')
@@ -171,6 +183,10 @@ export function registerIpc(): void {
       me: state.me?.id,
       erro: state.lastError ?? undefined
     })
+    // A sincronizacao automatica ao abrir conversa vale por conexao: numa nova
+    // sessao vale a pena pedir de novo o que o WhatsApp talvez nao tenha
+    // mandado antes.
+    if (state.status === 'connected') resetAutoSync()
     broadcast('whatsapp:state', state)
   })
 
@@ -230,6 +246,9 @@ export function registerIpc(): void {
     async (_e, listId: string, preview: CsvPreview, mapping: CsvMapping) => {
       const report = await importCsv(listId, preview, mapping)
       syncOptOutFlags(listId)
+      // A base mudou: as conversas desses numeros passam a contar como base de
+      // leads na inbox (e sao as que ganham sincronizacao completa).
+      refreshLeadFlags()
       return report
     }
   )
@@ -396,8 +415,14 @@ export function registerIpc(): void {
   // Progresso do historico: sem isso o pareamento de uma conta antiga fica
   // minutos sem sinal de vida na tela.
   inboxEvents.on('syncProgress', (s: HistorySyncState) => broadcast('inbox:syncProgress', s))
+  inboxEvents.on('leadSync', (s: ChatSyncState) => broadcast('inbox:leadSync', s))
 
-  ipcMain.handle('inbox:chats', () => listChats())
+  ipcMain.handle(
+    'inbox:chats',
+    (_e, opts?: { limit?: number; onlyLeads?: boolean; search?: string }) => listChats(opts ?? {})
+  )
+  ipcMain.handle('inbox:chat', (_e, chatJid: string) => getChatView(chatJid))
+  ipcMain.handle('inbox:leadCount', () => countLeadChats())
   ipcMain.handle('inbox:totalUnread', () => totalUnread())
   ipcMain.handle('inbox:messages', (_e, chatJid: string, limit?: number) =>
     listMessages(chatJid, limit ?? 50)
@@ -405,6 +430,28 @@ export function registerIpc(): void {
 
   ipcMain.handle('inbox:count', (_e, chatJid: string) => countMessages(chatJid))
   ipcMain.handle('inbox:syncState', () => getHistorySyncState())
+
+  /**
+   * Sincronizacao sob demanda de UMA conversa (botoes de 7 / 30 dias / tudo).
+   *
+   * Demora de proposito: o main repete os pedidos ao WhatsApp, no ritmo seguro,
+   * ate alcancar a janela pedida. O renderer mostra o estado enquanto isso.
+   */
+  ipcMain.handle('inbox:syncChat', (_e, chatJid: string, days: number | null) =>
+    syncChatHistory(chatJid, days)
+  )
+  ipcMain.handle('inbox:syncLeads', (_e, maxChats?: number) => syncLeadChats(maxChats ?? 50))
+  ipcMain.handle('inbox:cancelLeadSync', () => cancelLeadSync())
+  ipcMain.handle('inbox:leadSyncState', () => getLeadSyncState())
+
+  /**
+   * Conversa aberta na tela.
+   *
+   * Uma conversa pouco sincronizada abre praticamente vazia, e mandar o usuario
+   * rolar ate o topo para descobrir isso e ruim. Aqui ela puxa sozinha os
+   * ultimos 7 dias (30 se o numero esta na base de leads), uma vez por sessao.
+   */
+  ipcMain.handle('inbox:opened', (_e, chatJid: string) => autoSyncOnOpen(chatJid))
 
   /**
    * Pede ao WhatsApp o historico anterior ao que ja temos.
@@ -416,7 +463,7 @@ export function registerIpc(): void {
   ipcMain.handle('inbox:requestOlder', async (_e, chatJid: string) => {
     const oldest = oldestMessage(chatJid)
     if (!oldest) return false
-    return whatsapp.fetchOlderMessages(oldest)
+    return (await whatsapp.fetchOlderMessages(oldest)) !== null
   })
   ipcMain.handle('inbox:markRead', async (_e, chatJid: string) => {
     markRead(chatJid)

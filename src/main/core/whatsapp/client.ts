@@ -675,42 +675,60 @@ class WhatsappService extends EventEmitter {
   }
 
   /**
-   * Pede ao WhatsApp as mensagens ANTERIORES a mais antiga que temos.
+   * Pede as mensagens ANTERIORES a mais antiga que temos.
    *
-   * O pedido e assincrono: o servidor responde depois, num
-   * `messaging-history.set` com `syncType = ON_DEMAND`, e o mesmo caminho de
-   * gravacao do historico normal cuida do resto. Por isso o retorno aqui e so
-   * "o pedido saiu", nao "as mensagens chegaram".
+   * QUEM RESPONDE ISTO E O CELULAR, nao o servidor do WhatsApp. O pedido sai
+   * como uma "peer data operation" endereçada ao proprio aparelho pareado, que
+   * so responde se estiver ligado, com internet e com o WhatsApp rodando. Por
+   * isso a busca de historico antigo pode demorar minutos — ou nao vir nunca,
+   * se o celular estiver fora do ar. Nao ha como acelerar isso do lado do app.
    *
-   * PACING: uma requisicao por vez e por conversa aberta. Varrer todas as
-   * conversas em rajada e exatamente o padrao de trafego que faz o WhatsApp
-   * bloquear o numero — o mesmo motivo pelo qual o disparo tem intervalo.
+   * A resposta chega depois, num `messaging-history.set` com
+   * `syncType = ON_DEMAND` e `peerDataRequestSessionId` igual ao id devolvido
+   * aqui — e por esse id que quem chamou consegue casar pedido e resposta em
+   * vez de ficar adivinhando por tempo.
+   *
+   * PACING: uma requisicao por vez. Varrer todas as conversas em rajada e
+   * exatamente o padrao de trafego que faz o WhatsApp bloquear o numero — o
+   * mesmo motivo pelo qual o disparo tem intervalo.
+   *
+   * Devolve o id do pedido, ou null se nem saiu.
    */
   async fetchOlderMessages(
     oldest: { id: string; remoteJid: string; fromMe: boolean; ts: number },
     count = 50
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     const sock = this.socket
-    if (!sock) return false
-    if (this.historyRequestInFlight) return false
+    if (!sock) return null
+    if (this.historyRequestInFlight) return null
 
     this.historyRequestInFlight = true
     try {
-      // O WhatsApp espera o timestamp em SEGUNDOS; o banco guarda em ms.
+      /**
+       * O campo do protocolo e `oldestMsgTimestampMs` e o proprio WhatsApp
+       * manda o carimbo das mensagens em SEGUNDOS — e e o valor de
+       * `messageTimestamp` (segundos) que a documentacao do Baileys passa aqui.
+       * O banco guarda em ms, entao convertemos.
+       */
       const seconds = Math.floor(oldest.ts / 1000)
-      await sock.fetchMessageHistory(
+      const requestId = await sock.fetchMessageHistory(
         count,
         { id: oldest.id, remoteJid: oldest.remoteJid, fromMe: oldest.fromMe },
         seconds
       )
-      log.info('historico antigo solicitado', { jid: oldest.remoteJid, count })
-      return true
+      log.info('historico antigo solicitado ao celular', {
+        jid: oldest.remoteJid,
+        count,
+        anterioresA: new Date(oldest.ts).toISOString(),
+        requestId
+      })
+      return requestId ?? ''
     } catch (e) {
       log.warn('falha ao pedir historico antigo', {
         jid: oldest.remoteJid,
         erro: e instanceof Error ? e.message : e
       })
-      return false
+      return null
     } finally {
       // Uma janelinha de folga antes de aceitar o proximo pedido: o usuario
       // rolando rapido nao pode virar uma rajada de requisicoes.

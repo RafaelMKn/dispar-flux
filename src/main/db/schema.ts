@@ -72,7 +72,21 @@ export const chats = sqliteTable('chats', {
   avatarPath: text('avatar_path'),
   // Quando a foto foi buscada pela ultima vez, para revalidar com TTL sem
   // martelar a API a cada render.
-  avatarTs: integer('avatar_ts')
+  avatarTs: integer('avatar_ts'),
+  /**
+   * 1 quando o numero da conversa esta em alguma base de leads (`contacts`) ou
+   * e um lead do CRM.
+   *
+   * E um flag GRAVADO, e nao um join na hora de listar: a lista da inbox e
+   * relida a cada evento, e cruzar milhares de conversas com a base a cada
+   * leitura era um dos motivos da tela travar. Quem mantem o flag e
+   * `refreshLeadFlags`, chamado no boot, apos importar CSV e apos sincronizar.
+   */
+  isLead: integer('is_lead').notNull().default(0),
+  /** Ate que instante (ms) o passado desta conversa ja foi puxado do WhatsApp. */
+  syncedFrom: integer('synced_from'),
+  /** 1 quando o WhatsApp ja disse que nao ha mais historico antes do que temos. */
+  syncedFull: integer('synced_full').notNull().default(0)
 })
 
 export const messages = sqliteTable('messages', {
