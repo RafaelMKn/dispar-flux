@@ -24,6 +24,15 @@ contador de nao lidas. A direita, a conversa aberta. Em janelas estreitas (abaix
 O numero ao lado de **Conversas** na barra lateral e o total de mensagens nao lidas. Ele
 zera quando voce abre a conversa.
 
+### Base de leads x Todas
+
+Acima da lista ha dois filtros. **Base de leads** e o padrao e mostra so os numeros que
+estao em alguma base importada ou no CRM — que e quem interessa numa ferramenta de
+prospeccao. **Todas** mostra a inbox inteira, incluindo conversas pessoais.
+
+A lista carrega 100 conversas por vez. Para achar algo fora dessa janela, use o campo de
+busca: ele procura no banco, nao so no que esta na tela.
+
 ### Responder
 
 O campo de texto fica embaixo. **Enter** envia; **Shift+Enter** quebra linha.
@@ -38,11 +47,32 @@ O campo de texto fica embaixo. **Enter** envia; **Shift+Enter** quebra linha.
 Durante a gravacao aparece o cronometro e um botao para **descartar** a nota antes de
 enviar.
 
-### Sincronizar
+### Buscar historico antigo
 
-O botao circular no topo da lista sincroniza conversas e fotos de perfil com o celular. Use
-quando alguma conversa parecer desatualizada ou as fotos nao carregarem. Ele fica
-desabilitado se o WhatsApp estiver desconectado.
+Ha tres botoes diferentes, e a confusao entre eles e comum:
+
+| Botao                                | Onde fica                  | O que faz                                                                  |
+| ------------------------------------ | -------------------------- | -------------------------------------------------------------------------- |
+| Circular, no topo da lista           | Cabecalho de **Conversas** | Atualiza a lista e as fotos de perfil. Nao busca historico.                |
+| **Sincronizar base**                 | Ao lado dos filtros        | Puxa a conversa **completa** de cada numero da base de leads, uma por vez. |
+| Circular, no topo da conversa aberta | Cabecalho da conversa      | Sincroniza so essa conversa: **7 dias**, **30 dias** ou **completa**.      |
+
+> [!NOTA]
+> **Quem responde por historico antigo e o seu celular, nao o servidor do WhatsApp.** O
+> pedido vai para o aparelho pareado, entao ele precisa estar ligado, com internet e com o
+> WhatsApp aberto. E por isso que a busca e lenta — podem ser varios minutos por conversa —
+> e por isso o app avisa "o celular deixou de responder" em vez de fingir que a conversa
+> acabou.
+
+Ao abrir uma conversa pouco sincronizada, o app ja puxa sozinho os ultimos 7 dias (30 se o
+numero esta na base), uma vez por sessao. Rolando a conversa para cima, ele carrega de 50 em
+50 e vai pedindo o que veio antes.
+
+Anexo de mensagem antiga **nao baixa sozinho** — com o historico completo isso seriam varios
+GB. Ele fica pendente e baixa quando voce clica. Mensagem nova continua baixando imagem,
+audio e figurinha automaticamente.
+
+Grupos ficam fora da inbox, por serem ruido numa ferramenta de prospeccao.
 
 ### Descadastro pela conversa
 

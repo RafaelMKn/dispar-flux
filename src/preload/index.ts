@@ -13,7 +13,8 @@ import type {
   CrmSettings,
   CrmAppointmentInput,
   FollowUpRuleInput,
-  HistorySyncState
+  HistorySyncState,
+  ChatSyncState
 } from '@shared/types'
 
 /**
@@ -81,12 +82,21 @@ const api: DisparApi = {
     onStopped: (cb) => subscribe('campaign:stopped', cb)
   },
   inbox: {
-    chats: () => ipcRenderer.invoke('inbox:chats'),
+    chats: (opts) => ipcRenderer.invoke('inbox:chats', opts),
+    chat: (chatJid: string) => ipcRenderer.invoke('inbox:chat', chatJid),
+    leadCount: () => ipcRenderer.invoke('inbox:leadCount'),
     totalUnread: () => ipcRenderer.invoke('inbox:totalUnread'),
     messages: (chatJid: string, limit?: number) =>
       ipcRenderer.invoke('inbox:messages', chatJid, limit),
     count: (chatJid: string) => ipcRenderer.invoke('inbox:count', chatJid),
     requestOlder: (chatJid: string) => ipcRenderer.invoke('inbox:requestOlder', chatJid),
+    syncChat: (chatJid: string, days: number | null) =>
+      ipcRenderer.invoke('inbox:syncChat', chatJid, days),
+    opened: (chatJid: string) => ipcRenderer.invoke('inbox:opened', chatJid),
+    syncLeads: (maxChats?: number) => ipcRenderer.invoke('inbox:syncLeads', maxChats),
+    cancelLeadSync: () => ipcRenderer.invoke('inbox:cancelLeadSync'),
+    leadSyncState: () => ipcRenderer.invoke('inbox:leadSyncState'),
+    onLeadSync: (cb: (s: ChatSyncState) => void) => subscribe('inbox:leadSync', cb),
     syncState: () => ipcRenderer.invoke('inbox:syncState'),
     onSyncProgress: (cb: (s: HistorySyncState) => void) => subscribe('inbox:syncProgress', cb),
     send: (chatJid: string, text: string) => ipcRenderer.invoke('inbox:send', chatJid, text),
