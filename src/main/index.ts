@@ -15,8 +15,10 @@ import {
   destroyTray,
   applyLaunchAtLogin,
   shouldStartHidden,
-  notifyMinimizedToTray
+  notifyMinimizedToTray,
+  notify
 } from './tray'
+import { startScheduler } from './core/crm/scheduler'
 import { getBackgroundSettings, shouldShowTrayNotice } from './settings'
 import { beginQuit, shouldHideOnClose } from './lifecycle'
 
@@ -160,6 +162,10 @@ async function bootstrap(): Promise<void> {
   applyLaunchAtLogin(background.launchAtLogin)
   createWindow(shouldStartHidden())
   initTray({ showWindow, requestQuit })
+
+  // Depois da bandeja existir: o agendador avisa compromissos por notificacao,
+  // e a notificacao usa o icone da bandeja.
+  startScheduler({ notify })
 
   // Depois da janela existir: o broadcast de estado so alcanca janelas abertas.
   initUpdater()

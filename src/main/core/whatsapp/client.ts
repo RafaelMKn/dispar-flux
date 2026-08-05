@@ -13,7 +13,8 @@ import {
   handleContacts,
   handleHistorySet,
   setMediaBridge,
-  inboxEvents
+  inboxEvents,
+  resetHistorySyncState
 } from './inbox'
 import { chatsNeedingAvatar, setAvatar, unreadIncomingIds } from '../../repos/chats'
 import { saveAvatar } from './mediaStore'
@@ -148,6 +149,16 @@ const AVATAR_TTL_MS = 24 * 60 * 60 * 1000
 const AVATAR_BATCH = 20
 const AVATAR_GAP_MS = 400
 
+/**
+ * Folga minima entre dois pedidos de historico antigo.
+ *
+ * Rolar a conversa rapido para cima dispararia varios pedidos seguidos, e
+ * rajada de requisicao ao servidor do WhatsApp e o que mais parece automacao.
+ * Tres segundos e imperceptivel para quem le a conversa e mantem o trafego com
+ * cara de uso humano.
+ */
+const HISTORY_REQUEST_COOLDOWN_MS = 3000
+
 class WhatsappService extends EventEmitter {
   private sock: WASocket | null = null
   private state: WhatsappState = {
@@ -173,6 +184,8 @@ class WhatsappService extends EventEmitter {
   private lastVersion: WaVersion | null = null
   /** Evita duas varreduras de foto de perfil concorrentes (reconexao rapida). */
   private avatarSweepRunning = false
+  /** Segura o pedido de historico antigo durante o cooldown (ver constante). */
+  private historyRequestInFlight = false
 
   getState(): WhatsappState {
     return { ...this.state }
@@ -233,12 +246,21 @@ class WhatsappService extends EventEmitter {
       // "Windows", que aparece associado ao 405 nos relatos do Baileys.
       browser: ['Ubuntu', 'Chrome', '120.0.0.0'],
       /**
-       * Nao baixamos o historico COMPLETO: numa conta antiga isso sao centenas
-       * de milhares de mensagens, que travam o app por minutos no primeiro
-       * pareamento. O WhatsApp ainda manda um recorte recente por conta propria
-       * em `messaging-history.set`, e e ele que preenche as conversas.
+       * Historico COMPLETO no pareamento.
+       *
+       * Ficou `false` por muito tempo para o primeiro pareamento nao travar numa
+       * conta antiga — mas o efeito colateral era a inbox nunca bater com o
+       * celular: o WhatsApp mandava um recorte recente e o resto simplesmente
+       * nao existia no app.
+       *
+       * O custo continua real (conta antiga manda dezenas de milhares de
+       * mensagens em varios lotes), e por isso ele foi pago de outras formas:
+       * o historico chega em lotes com `progress`, que a tela mostra; o anexo de
+       * mensagem antiga NAO baixa sozinho (ver AUTO_DOWNLOAD em inbox.ts); e a
+       * gravacao no banco e debounced. O que o WhatsApp ainda nao entregar aqui
+       * e buscado sob demanda por `fetchOlderMessages`.
        */
-      syncFullHistory: false,
+      syncFullHistory: true,
       markOnlineOnConnect: false
     })
 
@@ -364,6 +386,9 @@ class WhatsappService extends EventEmitter {
         lastError: null,
         me: this.sock?.user ? { id: this.sock.user.id, name: this.sock.user.name ?? null } : null
       })
+      // O contador de historico vale por conexao: os lotes de
+      // `messaging-history.set` comecam a chegar logo depois deste ponto.
+      resetHistorySyncState()
       // Fotos de perfil em segundo plano: nada na tela espera por isso.
       void this.refreshAvatars().catch((e: unknown) =>
         log.warn('falha ao atualizar fotos de perfil', e)
@@ -647,6 +672,52 @@ class WhatsappService extends EventEmitter {
   /** Reconsulta fotos de perfil agora (usado pelo botao de sincronizar). */
   async resync(): Promise<void> {
     await this.refreshAvatars()
+  }
+
+  /**
+   * Pede ao WhatsApp as mensagens ANTERIORES a mais antiga que temos.
+   *
+   * O pedido e assincrono: o servidor responde depois, num
+   * `messaging-history.set` com `syncType = ON_DEMAND`, e o mesmo caminho de
+   * gravacao do historico normal cuida do resto. Por isso o retorno aqui e so
+   * "o pedido saiu", nao "as mensagens chegaram".
+   *
+   * PACING: uma requisicao por vez e por conversa aberta. Varrer todas as
+   * conversas em rajada e exatamente o padrao de trafego que faz o WhatsApp
+   * bloquear o numero — o mesmo motivo pelo qual o disparo tem intervalo.
+   */
+  async fetchOlderMessages(
+    oldest: { id: string; remoteJid: string; fromMe: boolean; ts: number },
+    count = 50
+  ): Promise<boolean> {
+    const sock = this.socket
+    if (!sock) return false
+    if (this.historyRequestInFlight) return false
+
+    this.historyRequestInFlight = true
+    try {
+      // O WhatsApp espera o timestamp em SEGUNDOS; o banco guarda em ms.
+      const seconds = Math.floor(oldest.ts / 1000)
+      await sock.fetchMessageHistory(
+        count,
+        { id: oldest.id, remoteJid: oldest.remoteJid, fromMe: oldest.fromMe },
+        seconds
+      )
+      log.info('historico antigo solicitado', { jid: oldest.remoteJid, count })
+      return true
+    } catch (e) {
+      log.warn('falha ao pedir historico antigo', {
+        jid: oldest.remoteJid,
+        erro: e instanceof Error ? e.message : e
+      })
+      return false
+    } finally {
+      // Uma janelinha de folga antes de aceitar o proximo pedido: o usuario
+      // rolando rapido nao pode virar uma rajada de requisicoes.
+      setTimeout(() => {
+        this.historyRequestInFlight = false
+      }, HISTORY_REQUEST_COOLDOWN_MS)
+    }
   }
 
   /** Presenca "digitando", para o envio parecer menos automatizado. */

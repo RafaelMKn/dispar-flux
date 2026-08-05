@@ -2,7 +2,13 @@ import { safeStorage } from 'electron'
 import { eq } from 'drizzle-orm'
 import { getDb, scheduleSave } from './db'
 import { settings } from './db/schema'
-import type { AiSettings, BackgroundSettings, CampaignDraft, SendingDefaults } from '@shared/types'
+import type {
+  AiSettings,
+  BackgroundSettings,
+  CampaignDraft,
+  CrmSettings,
+  SendingDefaults
+} from '@shared/types'
 
 const ENC_PREFIX = 'enc::'
 
@@ -106,6 +112,27 @@ export function getBackgroundSettings(): BackgroundSettings {
 
 export function setBackgroundSettings(v: BackgroundSettings): void {
   setJson('background', v)
+}
+
+/**
+ * 1 segundo por padrao: resposta que volta praticamente junto com o envio nao e
+ * o cliente, e a mensagem automatica de ausencia do WhatsApp Business. Mover o
+ * cartao para "em andamento" por causa dela enche o funil de gente que nunca
+ * falou com ninguem.
+ *
+ * Fica ajustavel porque o valor certo depende de quem esta do outro lado: quem
+ * dispara para muita conta comercial costuma precisar de mais que 1s.
+ */
+export const DEFAULT_CRM: CrmSettings = {
+  autoReplyWindowMs: 1000
+}
+
+export function getCrmSettings(): CrmSettings {
+  return { ...DEFAULT_CRM, ...getJson('crm', {}) }
+}
+
+export function setCrmSettings(v: CrmSettings): void {
+  setJson('crm', v)
 }
 
 const TRAY_NOTICE_KEY = 'background.trayNoticeShown'

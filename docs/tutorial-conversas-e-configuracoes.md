@@ -58,7 +58,7 @@ nada — e nao ha como reverter sem a pessoa pedir.
 
 ## Parte 2 — Configuracoes
 
-A tela [Configuracoes](app:/config) tem seis cartoes.
+A tela [Configuracoes](app:/config) tem sete cartoes.
 
 ### Conexao WhatsApp
 
@@ -90,6 +90,14 @@ Clique em **Salvar parametros** para aplicar.
 > Esses padroes sao perfil de numero **maduro**. Chip novo com teto de 300 e o roteiro mais
 > curto para perder o numero — veja a tabela por fase em
 > [Como maturar um chip de WhatsApp](app:/docs/maturacao-de-chip).
+
+### CRM
+
+Um campo so: **Janela de resposta automatica (ms)**. Resposta que chega ate esse tempo
+depois do envio nao move o cartao no [Kanban](app:/kanban) — e a mensagem automatica de
+ausencia do WhatsApp Business, nao o cliente. A mensagem continua aparecendo normalmente em
+[Conversas](app:/inbox). Use `0` para desligar a regra. Clique em **Salvar CRM** para
+aplicar.
 
 ### Rodar em segundo plano
 
