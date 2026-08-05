@@ -3,6 +3,7 @@ import {
   Database,
   Send,
   MessagesSquare,
+  Columns3,
   ShieldCheck,
   Sprout,
   type LucideIcon
@@ -11,6 +12,7 @@ import primeirosPassos from '@docs/tutorial-primeiros-passos.md?raw'
 import baseDeContatos from '@docs/tutorial-base-de-contatos.md?raw'
 import primeiroDisparo from '@docs/tutorial-primeiro-disparo.md?raw'
 import conversasEConfiguracoes from '@docs/tutorial-conversas-e-configuracoes.md?raw'
+import crm from '@docs/tutorial-crm.md?raw'
 import disparoSeguro from '@docs/guia-disparo-seguro.md?raw'
 import maturacaoDeChip from '@docs/guia-maturacao-de-chip.md?raw'
 import { readingMinutes } from './toc'
@@ -73,6 +75,14 @@ const GUIDES: DocGuide[] = [
     group: 'Comece por aqui',
     icon: MessagesSquare,
     markdown: conversasEConfiguracoes
+  },
+  {
+    slug: 'crm',
+    title: 'Acompanhar os leads',
+    summary: 'Kanban, Agenda e Cron: o que acontece depois que a campanha sai.',
+    group: 'Comece por aqui',
+    icon: Columns3,
+    markdown: crm
   },
   {
     slug: 'disparo-seguro',

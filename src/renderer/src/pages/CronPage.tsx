@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Clock, Plus, Send, Timer, Trash2 } from 'lucide-react'
 import {
   Button,
@@ -113,7 +114,11 @@ export default function CronPage(): JSX.Element {
         <Callout tone="warning">
           Follow-up automatico e o tipo de envio que mais irrita quem nao pediu contato. Prefira
           prazos largos, no maximo um ou dois degraus e horario comercial. Quem pedir descadastro
-          fica de fora sozinho, e o teto diario de envios continua valendo.
+          fica de fora sozinho, e o teto diario de envios continua valendo.{' '}
+          <Link to="/docs/crm" className="font-medium text-accent-text underline">
+            Como montar uma regra
+          </Link>
+          .
         </Callout>
       </div>
 

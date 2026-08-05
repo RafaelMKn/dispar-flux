@@ -34,16 +34,23 @@ navegador avisar que o arquivo "nao e baixado com frequencia", escolha **Manter*
 
 ## 2. Conhecer as telas
 
-A barra da esquerda tem cinco itens. Se a janela ficar estreita, ela encolhe e mostra so os
+A barra da esquerda tem oito itens. Se a janela ficar estreita, ela encolhe e mostra so os
 icones — o nome aparece ao passar o mouse.
 
-| Tela                         | Para que serve                                                          |
-| ---------------------------- | ----------------------------------------------------------------------- |
-| [Conversas](app:/inbox)      | Responder quem respondeu. Texto, emoji, foto, video, documento e audio. |
-| [Disparo](app:/disparo)      | Montar e executar a campanha, em cinco passos.                          |
-| [Base de Dados](app:/base)   | Cadastrar bases, importar CSV e validar numeros.                        |
-| [Configuracoes](app:/config) | Conectar o WhatsApp, ajustar o ritmo padrao e o comportamento do app.   |
-| [Documentacao](app:/docs)    | Estes guias.                                                            |
+| Tela                         | Para que serve                                                             |
+| ---------------------------- | -------------------------------------------------------------------------- |
+| [Conversas](app:/inbox)      | Responder quem respondeu. Texto, emoji, foto, video, documento e audio.    |
+| [Disparo](app:/disparo)      | Montar e executar a campanha, em cinco passos.                             |
+| [Kanban](app:/kanban)        | O funil: cada lead vira um cartao e anda de coluna conforme a conversa.    |
+| [Agenda](app:/agenda)        | Compromissos que voce marca e os follow-ups que o Cron ainda vai disparar. |
+| [Cron](app:/cron)            | Regras de follow-up automatico para quem recebeu e nao respondeu.          |
+| [Base de Dados](app:/base)   | Cadastrar bases, importar CSV e validar numeros.                           |
+| [Configuracoes](app:/config) | Conectar o WhatsApp, ajustar o ritmo padrao e o comportamento do app.      |
+| [Documentacao](app:/docs)    | Estes guias.                                                               |
+
+As tres telas do meio — Kanban, Agenda e Cron — sao o **CRM do disparo**: elas so ganham
+conteudo depois que a primeira campanha sai. Se voce esta comecando, pode ignora-las por
+enquanto e voltar em [Acompanhar os leads](app:/docs/crm) quando tiver leads no funil.
 
 No rodape da barra ficam o botao de **tema claro/escuro** e um ponto colorido que mostra se
 o WhatsApp esta conectado.
@@ -90,6 +97,9 @@ A ordem importa: o app so deixa disparar quando cada peca esta no lugar.
    no disparo.
 4. **Montar a campanha** em [Disparo](app:/disparo). Ver
    [Seu primeiro disparo](app:/docs/primeiro-disparo).
+
+Depois que a campanha sai, os leads aparecem sozinhos no [Kanban](app:/kanban) e voce passa
+a acompanhar as respostas por la e em [Conversas](app:/inbox).
 
 ---
 

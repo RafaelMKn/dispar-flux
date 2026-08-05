@@ -5,6 +5,9 @@ import remarkGfm from 'remark-gfm'
 import {
   MessageCircle,
   Send,
+  Columns3,
+  CalendarDays,
+  Timer,
   Database,
   Settings,
   BookOpen,
@@ -30,6 +33,9 @@ import { slugify } from './toc'
 const APP_ROUTES: Record<string, LucideIcon> = {
   '/inbox': MessageCircle,
   '/disparo': Send,
+  '/kanban': Columns3,
+  '/agenda': CalendarDays,
+  '/cron': Timer,
   '/base': Database,
   '/config': Settings,
   '/docs': BookOpen
