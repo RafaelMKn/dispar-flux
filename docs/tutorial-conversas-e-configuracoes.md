@@ -127,5 +127,6 @@ LGPD.
 
 ## Para onde ir agora
 
+- Acompanhar quem respondeu e automatizar o follow-up: [Acompanhar os leads](app:/docs/crm).
 - Quer reduzir o risco de ban de forma estrutural: [Disparo em massa sem tomar ban](app:/docs/disparo-seguro).
 - Chip novo ou recem comprado: [Como maturar um chip de WhatsApp](app:/docs/maturacao-de-chip).

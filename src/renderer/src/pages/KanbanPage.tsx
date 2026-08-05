@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
   ArrowRight,
@@ -90,7 +90,11 @@ export default function KanbanPage(): JSX.Element {
       ) : board.leads.length === 0 ? (
         <EmptyState title="Nenhum lead ainda">
           O cartao aparece aqui assim que a primeira campanha enviar para um contato da sua base.
-          Quem responde muda de coluna sozinho.
+          Quem responde muda de coluna sozinho.{' '}
+          <Link to="/docs/crm" className="font-medium text-accent-text underline">
+            Como o funil funciona
+          </Link>
+          .
         </EmptyState>
       ) : (
         <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-2">

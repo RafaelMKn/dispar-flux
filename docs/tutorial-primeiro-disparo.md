@@ -210,6 +210,6 @@ Depois do disparo vem a parte que quase todo mundo esquece: **responder**. Siga 
 [Conversas e Configuracoes](app:/docs/conversas-e-configuracoes).
 
 Cada contato que recebeu a campanha tambem vira um cartao no [Kanban](app:/kanban), que
-passa sozinho para a coluna de em andamento quando a pessoa responde. O acompanhamento do
-funil, os compromissos da [Agenda](app:/agenda) e as regras de follow-up do
-[Cron](app:/cron) sao assunto de um guia proprio, ainda por escrever.
+passa sozinho para a coluna de em andamento quando a pessoa responde. O funil, os
+compromissos da [Agenda](app:/agenda) e as regras de follow-up do [Cron](app:/cron) estao em
+[Acompanhar os leads](app:/docs/crm).

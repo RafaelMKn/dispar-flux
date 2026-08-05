@@ -50,7 +50,7 @@ icones — o nome aparece ao passar o mouse.
 
 As tres telas do meio — Kanban, Agenda e Cron — sao o **CRM do disparo**: elas so ganham
 conteudo depois que a primeira campanha sai. Se voce esta comecando, pode ignora-las por
-enquanto e voltar quando tiver leads no funil.
+enquanto e voltar em [Acompanhar os leads](app:/docs/crm) quando tiver leads no funil.
 
 No rodape da barra ficam o botao de **tema claro/escuro** e um ponto colorido que mostra se
 o WhatsApp esta conectado.
