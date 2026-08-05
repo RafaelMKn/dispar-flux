@@ -79,6 +79,16 @@ export interface Message {
   mediaPtt: boolean
 }
 
+/** Andamento da sincronizacao de historico com o WhatsApp. */
+export interface HistorySyncState {
+  /** Ha lotes de historico chegando agora. */
+  running: boolean
+  /** 0..100 quando o WhatsApp informa; null nos pedidos sob demanda. */
+  percent: number | null
+  /** Mensagens gravadas desde que o app conectou. */
+  messages: number
+}
+
 /** Arquivo escolhido pelo usuario para enviar. */
 export interface PickedAttachment {
   filePath: string
@@ -206,6 +216,132 @@ export interface ContactListStats {
   invalid: number
   unchecked: number
   optOut: number
+}
+
+/* ── CRM ─────────────────────────────────────────────────────────────────── */
+
+/**
+ * Papel da coluna na automacao.
+ *
+ * 'entry'  — onde o lead nasce quando o disparo sai;
+ * 'active' — para onde ele anda sozinho na primeira resposta valida;
+ * null     — coluna comum, movida so na mao.
+ */
+export type StageRole = 'entry' | 'active' | null
+
+export interface CrmStage {
+  id: string
+  name: string
+  position: number
+  role: StageRole
+}
+
+export interface CrmLead {
+  id: string
+  stageId: string
+  phoneE164: string
+  contactId: string | null
+  jid: string | null
+  /** Nome do contato na base, quando existe. */
+  name: string | null
+  /** Nome da base de origem, para o usuario saber de onde veio o lead. */
+  listName: string | null
+  campaignId: string | null
+  campaignName: string | null
+  firstSentAt: number | null
+  /** null = nunca respondeu. E este campo que o cron de follow-up procura. */
+  firstReplyAt: number | null
+  lastInboundAt: number | null
+  lastOutboundAt: number | null
+  followUps: number
+  lastFollowUpAt: number | null
+  /** Respostas descartadas pela janela anti-automatica. */
+  ignoredAutoReplies: number
+  notes: string | null
+  /** Descadastrado (opt-out global). O cartao mostra o aviso e o cron pula. */
+  optOut: boolean
+  unread: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CrmBoard {
+  stages: CrmStage[]
+  leads: CrmLead[]
+}
+
+export interface CrmAppointment {
+  id: string
+  leadId: string | null
+  /** Nome (ou telefone) do lead, resolvido para a agenda nao precisar do board. */
+  leadName: string | null
+  title: string
+  notes: string | null
+  dueAt: number
+  done: boolean
+  createdAt: number
+}
+
+export interface CrmAppointmentInput {
+  leadId: string | null
+  title: string
+  notes: string | null
+  dueAt: number
+}
+
+/**
+ * Follow-up que o cron ainda vai disparar, projetado a partir das regras
+ * ativas. Nao existe no banco: e calculado para a agenda mostrar o que vem.
+ */
+export interface ScheduledFollowUp {
+  ruleId: string
+  ruleName: string
+  leadId: string
+  leadName: string
+  phoneE164: string
+  /** Quando a regra fica elegivel E a janela de horario permite. */
+  dueAt: number
+}
+
+/** Follow-up so faz sentido com texto pronto; IA e paragrafo ficam no disparo. */
+export type FollowUpMode = 'fixed' | 'rotate'
+
+export interface FollowUpRule {
+  id: string
+  name: string
+  /** null = vale para leads de qualquer base. */
+  listId: string | null
+  afterHours: number
+  mode: FollowUpMode
+  config: MessageConfig
+  /** Dias permitidos, 0 = domingo. */
+  weekdays: number[]
+  /** Janela de horario em minutos desde a meia-noite local. */
+  startMinute: number
+  endMinute: number
+  maxFollowUps: number
+  enabled: boolean
+  lastRunAt: number | null
+  createdAt: number
+}
+
+export type FollowUpRuleInput = Omit<FollowUpRule, 'id' | 'lastRunAt' | 'createdAt'>
+
+export interface FollowUpPreview {
+  /** Leads que a regra pegaria agora, ignorando a janela de horario. */
+  eligible: number
+  /** Proximo instante em que a janela abre (ou agora, se ja esta aberta). */
+  nextWindowAt: number
+  /** true se a janela esta aberta neste instante. */
+  windowOpen: boolean
+}
+
+export interface CrmSettings {
+  /**
+   * Respostas que chegam ate N ms depois do envio nao contam como resposta do
+   * cliente — sao mensagem automatica de ausencia. 0 desliga a regra.
+   */
+  autoReplyWindowMs: number
 }
 
 /* ── Import de CSV ───────────────────────────────────────────────────────── */
@@ -344,7 +480,21 @@ export interface DisparApi {
   inbox: {
     chats: () => Promise<Chat[]>
     totalUnread: () => Promise<number>
-    messages: (chatJid: string) => Promise<Message[]>
+    /** Ultimas `limit` mensagens da conversa, em ordem cronologica. So banco local. */
+    messages: (chatJid: string, limit?: number) => Promise<Message[]>
+    /** Quantas mensagens a conversa tem no banco. Diz se ainda ha o que mostrar. */
+    count: (chatJid: string) => Promise<number>
+    /**
+     * Pede ao WhatsApp o historico anterior a mensagem mais antiga que temos.
+     *
+     * Chamar SO quando o banco local acabou: e requisicao de rede ao servidor
+     * do WhatsApp, e rajada dela e o que faz o numero ser bloqueado. As
+     * mensagens chegam depois, por `onChanged` — nao no retorno.
+     */
+    requestOlder: (chatJid: string) => Promise<boolean>
+    /** Andamento da sincronizacao de historico. */
+    syncState: () => Promise<HistorySyncState>
+    onSyncProgress: (cb: (s: HistorySyncState) => void) => () => void
     send: (chatJid: string, text: string) => Promise<void>
     markRead: (chatJid: string) => Promise<void>
     /** Abre o seletor de arquivo. `kind` filtra as extensoes oferecidas. */
@@ -370,9 +520,50 @@ export interface DisparApi {
     /** Avisa que houve mudanca (nova mensagem, leitura, opt-out detectado). */
     onChanged: (cb: (p: { chatJid: string; optOut?: boolean }) => void) => () => void
   }
+  crm: {
+    /** Colunas + leads numa chamada so: o kanban precisa dos dois juntos. */
+    board: () => Promise<CrmBoard>
+    moveLead: (leadId: string, stageId: string) => Promise<void>
+    setLeadNotes: (leadId: string, notes: string) => Promise<void>
+    /** Tira o lead do CRM. Nao apaga o contato nem a conversa. */
+    removeLead: (leadId: string) => Promise<void>
+    createStage: (name: string) => Promise<CrmStage>
+    renameStage: (id: string, name: string) => Promise<void>
+    /** Reordena uma posicao para a esquerda (-1) ou direita (1). */
+    moveStage: (id: string, direction: -1 | 1) => Promise<void>
+    /** Remove a coluna, levando os leads dela para `moveToId`. */
+    removeStage: (id: string, moveToId: string) => Promise<void>
+    onChanged: (cb: () => void) => () => void
+  }
+  agenda: {
+    list: (opts?: {
+      from?: number
+      to?: number
+      includeDone?: boolean
+    }) => Promise<CrmAppointment[]>
+    /** Follow-ups previstos pelas regras ativas, para o calendario. */
+    upcomingFollowUps: (limit?: number) => Promise<ScheduledFollowUp[]>
+    create: (input: CrmAppointmentInput) => Promise<CrmAppointment>
+    update: (id: string, input: CrmAppointmentInput) => Promise<void>
+    setDone: (id: string, done: boolean) => Promise<void>
+    remove: (id: string) => Promise<void>
+  }
+  followups: {
+    list: () => Promise<FollowUpRule[]>
+    create: (input: FollowUpRuleInput) => Promise<FollowUpRule>
+    update: (id: string, input: FollowUpRuleInput) => Promise<void>
+    setEnabled: (id: string, enabled: boolean) => Promise<void>
+    remove: (id: string) => Promise<void>
+    /** Quantos leads a regra pegaria e quando a janela abre. */
+    preview: (id: string) => Promise<FollowUpPreview>
+    /** Roda a regra agora, ignorando a janela de horario. null se nao ha ninguem. */
+    runNow: (id: string) => Promise<{ campaignId: string; queued: number } | null>
+  }
   settings: {
     getSendingDefaults: () => Promise<SendingDefaults>
     setSendingDefaults: (v: SendingDefaults) => Promise<void>
+    getCrm: () => Promise<CrmSettings>
+    setCrm: (v: CrmSettings) => Promise<void>
     getAi: () => Promise<AiSettings>
     setAi: (provider: AiSettings['provider'], model: string, apiKey?: string) => Promise<void>
     /** Comportamento em segundo plano (bandeja, iniciar com o sistema). */

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, isNull, lt, or, sql } from 'drizzle-orm'
 import { getDb, scheduleSave } from '../db'
 import { chats, messages } from '../db/schema'
 import { avatarUrl, mediaUrl } from '../core/whatsapp/mediaStore'
@@ -133,7 +133,12 @@ export function markRead(jid: string): void {
   scheduleSave()
 }
 
-export function listChats(limit = 200): Chat[] {
+/**
+ * O teto existe so para nao serializar o banco inteiro num IPC; 2000 conversas
+ * ja e mais do que qualquer inbox real de prospeccao. Era 200, o que escondia
+ * conversas antigas de quem tem muita — parte do "nao sincroniza tudo".
+ */
+export function listChats(limit = 2000): Chat[] {
   return getDb().select().from(chats).orderBy(desc(chats.lastTs)).limit(limit).all().map(toChat)
 }
 
@@ -253,8 +258,15 @@ export function advanceMessageStatus(id: string, status: MessageStatus): boolean
   return true
 }
 
-export function listMessages(chatJid: string, limit = 200): Message[] {
-  // Pega as ultimas N em ordem decrescente e devolve em ordem cronologica.
+/**
+ * As ultimas `limit` mensagens da conversa, em ordem cronologica.
+ *
+ * A tela cresce o `limit` conforme o usuario rola para cima, em vez de usar
+ * cursor: a conversa e sempre lida do fim para o comeco, e um limite crescente
+ * sobrevive ao recarregamento periodico sem perder o que ja foi carregado —
+ * com cursor, cada refresh teria de remontar a janela.
+ */
+export function listMessages(chatJid: string, limit = 50): Message[] {
   return getDb()
     .select()
     .from(messages)
@@ -264,6 +276,38 @@ export function listMessages(chatJid: string, limit = 200): Message[] {
     .all()
     .reverse()
     .map(toMessage)
+}
+
+/** Quantas mensagens a conversa tem no banco. Diz se ainda ha o que carregar. */
+export function countMessages(chatJid: string): number {
+  return (
+    getDb()
+      .select({ n: sql<number>`count(*)` })
+      .from(messages)
+      .where(eq(messages.chatJid, chatJid))
+      .get()?.n ?? 0
+  )
+}
+
+/**
+ * A mensagem mais antiga da conversa.
+ *
+ * E a ancora que o `fetchMessageHistory` do Baileys exige para pedir "o que veio
+ * antes desta". `fromMe` sai da direcao gravada: a chave do WhatsApp precisa
+ * dele para localizar a mensagem.
+ */
+export function oldestMessage(
+  chatJid: string
+): { id: string; remoteJid: string; fromMe: boolean; ts: number } | null {
+  const row = getDb()
+    .select({ id: messages.id, direction: messages.direction, ts: messages.ts })
+    .from(messages)
+    .where(eq(messages.chatJid, chatJid))
+    .orderBy(asc(messages.ts))
+    .limit(1)
+    .get()
+  if (!row) return null
+  return { id: row.id, remoteJid: chatJid, fromMe: row.direction === 'out', ts: row.ts }
 }
 
 /** Mensagens recebidas ainda nao marcadas como lidas no WhatsApp. */

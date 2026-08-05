@@ -13,6 +13,7 @@ import {
 } from '../../repos/campaigns'
 import { getContact } from '../../repos/contacts'
 import { getOptOutSet } from '../../repos/optOuts'
+import { recordCampaignSend } from '../crm/leads'
 import { scoped } from '../../logger'
 
 const log = scoped('campaign')
@@ -179,6 +180,19 @@ class CampaignRunner {
           const waId = await sender.sendText(jid, text)
           markJobSent(job.id, waId)
           sentInThisRun += 1
+
+          // CRM: e daqui que nasce o cartao no kanban, e `sentAt` vira a
+          // referencia da janela anti-resposta-automatica. Marcado DEPOIS do
+          // envio confirmado — um cartao "aguardando resposta" para quem nunca
+          // recebeu nada seria mentira.
+          recordCampaignSend({
+            contactId: contact.id,
+            phoneE164: contact.phoneE164,
+            jid,
+            campaignId,
+            sentAt: Date.now()
+          })
+
           log.info('enviado', { jid, jobId: job.id })
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e)

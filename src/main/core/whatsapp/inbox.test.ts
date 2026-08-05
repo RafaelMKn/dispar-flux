@@ -10,9 +10,18 @@ import {
   handleMessagesUpdate,
   handleContacts,
   setMediaBridge,
-  inboxEvents
+  inboxEvents,
+  getHistorySyncState,
+  resetHistorySyncState
 } from './inbox'
-import { listChats, listMessages, getMessage, getChat } from '../../repos/chats'
+import {
+  listChats,
+  listMessages,
+  getMessage,
+  getChat,
+  countMessages,
+  oldestMessage
+} from '../../repos/chats'
 import { getOptOutSet } from '../../repos/optOuts'
 
 beforeAll(async () => {
@@ -229,6 +238,24 @@ describe('handleUpsert', () => {
     await new Promise((r) => setTimeout(r, 20))
     expect(download).not.toHaveBeenCalled()
   })
+
+  it('nao baixa sozinho anexo que veio do historico', async () => {
+    const jid = freshJid()
+    const download = vi.fn().mockResolvedValue({ data: Buffer.from('x'), mime: 'image/jpeg' })
+    setMediaBridge({ encode: () => 'RAW', download })
+
+    // Mesma imagem pequena que baixaria sozinha se fosse ao vivo.
+    handleUpsert(
+      [incoming(jid, { imageMessage: { mimetype: 'image/jpeg', fileLength: 2048 } })] as never,
+      { history: true }
+    )
+
+    await new Promise((r) => setTimeout(r, 20))
+    // Com o historico completo ligado, baixar cada anexo antigo seriam varios
+    // GB no pareamento. Fica pendente e baixa quando o usuario clicar.
+    expect(download).not.toHaveBeenCalled()
+    expect(listMessages(jid)[0].mediaState).toBe('pending')
+  })
 })
 
 describe('handleHistorySet', () => {
@@ -263,6 +290,74 @@ describe('handleHistorySet', () => {
 
     // Uma mensagem de historico nao dispara evento propria; so o resumo final.
     expect(seen).toEqual([{ chatJid: '*' }])
+  })
+
+  it('repassa o progresso e marca o fim no ultimo lote', () => {
+    resetHistorySyncState()
+    const jid = freshJid()
+
+    handleHistorySet({
+      chats: [{ id: jid }],
+      messages: [incoming(jid, { conversation: 'a' }), incoming(jid, { conversation: 'b' })],
+      progress: 40
+    } as never)
+
+    // Com o historico completo ligado, os lotes levam minutos. Sem progresso a
+    // tela pareceria travada e o usuario concluiria que nao sincroniza.
+    let state = getHistorySyncState()
+    expect(state.running).toBe(true)
+    expect(state.percent).toBe(40)
+    expect(state.messages).toBe(2)
+
+    handleHistorySet({
+      chats: [{ id: jid }],
+      messages: [incoming(jid, { conversation: 'c' })],
+      progress: 100,
+      isLatest: true
+    } as never)
+
+    state = getHistorySyncState()
+    expect(state.running).toBe(false)
+    // O contador soma os lotes: e o unico numero que mostra avanco de verdade.
+    expect(state.messages).toBe(3)
+  })
+})
+
+describe('paginacao da conversa', () => {
+  it('serve as ultimas N e conta o total, para a tela saber se ha passado', () => {
+    const jid = freshJid()
+    for (let i = 0; i < 12; i++) {
+      handleUpsert([incoming(jid, { conversation: `msg ${i}` })] as never)
+    }
+
+    expect(countMessages(jid)).toBe(12)
+    const janela = listMessages(jid, 5)
+    expect(janela).toHaveLength(5)
+    // Em ordem cronologica, e sao as MAIS RECENTES: a conversa abre pelo fim.
+    expect(janela.map((m) => m.body)).toEqual(['msg 7', 'msg 8', 'msg 9', 'msg 10', 'msg 11'])
+  })
+
+  it('aponta a mensagem mais antiga, que ancora o pedido de historico', () => {
+    const jid = freshJid()
+    // Timestamp explicito e anterior ao de `incoming` (1_700_000_000): a ancora
+    // e a mensagem mais ANTIGA, e sem ts o codigo cairia em Date.now().
+    handleUpsert([
+      {
+        key: { id: 'ANCORA', remoteJid: jid, fromMe: false },
+        message: { conversation: 'primeira' },
+        messageTimestamp: 1_600_000_000
+      }
+    ] as never)
+    handleUpsert([incoming(jid, { conversation: 'segunda' })] as never)
+
+    const oldest = oldestMessage(jid)
+    expect(oldest?.id).toBe('ANCORA')
+    expect(oldest?.remoteJid).toBe(jid)
+    expect(oldest?.fromMe).toBe(false)
+  })
+
+  it('nao tem ancora quando a conversa esta vazia', () => {
+    expect(oldestMessage(freshJid())).toBeNull()
   })
 })
 

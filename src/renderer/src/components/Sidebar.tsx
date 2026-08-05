@@ -7,6 +7,9 @@ import {
   BookOpen,
   Moon,
   Sun,
+  Columns3,
+  CalendarDays,
+  Timer,
   type LucideIcon
 } from 'lucide-react'
 import { StatusDot } from './ui'
@@ -21,6 +24,9 @@ interface NavItem {
 const items: NavItem[] = [
   { to: '/inbox', label: 'Conversas', icon: MessageCircle },
   { to: '/disparo', label: 'Disparo', icon: Send },
+  { to: '/kanban', label: 'Kanban', icon: Columns3 },
+  { to: '/agenda', label: 'Agenda', icon: CalendarDays },
+  { to: '/cron', label: 'Cron', icon: Timer },
   { to: '/base', label: 'Base de Dados', icon: Database },
   { to: '/config', label: 'Configuracoes', icon: Settings },
   { to: '/docs', label: 'Documentacao', icon: BookOpen }
