@@ -504,6 +504,29 @@ export function handleContacts(
 }
 
 /**
+ * Nomes do enum `HistorySync.HistorySyncType` do protocolo.
+ *
+ * Existe para o log ser legivel: "ON_DEMAND" responde na hora a pergunta que
+ * mais custou tempo aqui — o lote que chegou e resposta ao nosso pedido, ou e a
+ * sincronizacao inicial que o WhatsApp manda sozinho? Um `6` cru no log nao
+ * responde isso para quem esta lendo as 3h da manha.
+ */
+const HISTORY_SYNC_TYPES = [
+  'INITIAL_BOOTSTRAP',
+  'INITIAL_STATUS_V3',
+  'FULL',
+  'RECENT',
+  'PUSH_NAME',
+  'NON_BLOCKING_DATA',
+  'ON_DEMAND'
+]
+
+export function historySyncTypeName(t: number | null | undefined): string {
+  if (t == null) return 'nao informado'
+  return HISTORY_SYNC_TYPES[t] ?? `desconhecido(${t})`
+}
+
+/**
  * Sincronizacao de historico (`messaging-history.set`), que o WhatsApp manda
  * logo apos o pareamento e em algumas reconexoes.
  *
@@ -523,6 +546,8 @@ export function handleHistorySet(payload: {
   isLatest?: boolean
   /** Id do pedido sob demanda que gerou este lote (ver `fetchOlderMessages`). */
   peerDataRequestSessionId?: string | null
+  /** Enum `HistorySync.HistorySyncType` do protocolo. 6 = ON_DEMAND. */
+  syncType?: number | null
 }): void {
   /** Quantas mensagens realmente entraram, por conversa. */
   const gravadas = new Map<string, number>()
@@ -538,14 +563,29 @@ export function handleHistorySet(payload: {
   }
 
   const mensagens = payload.messages?.length ?? 0
+  const jidsDoLote = [
+    ...new Set(
+      (payload.messages ?? [])
+        .map((m) => m.key?.remoteJid)
+        .filter((j): j is string => Boolean(j) && !isIgnorableJid(j))
+    )
+  ]
+
   log.info('historico recebido', {
+    tipo: historySyncTypeName(payload.syncType),
     conversas: payload.chats?.length ?? 0,
     contatos: payload.contacts?.length ?? 0,
     mensagens,
     novas: [...gravadas.values()].reduce((a, b) => a + b, 0),
     progresso: payload.progress ?? null,
     ultimoLote: payload.isLatest ?? false,
-    respostaDoPedido: payload.peerDataRequestSessionId ?? null
+    respostaDoPedido: payload.peerDataRequestSessionId ?? null,
+    // Os jids do lote entram no log porque e por eles que a espera do
+    // `historySync` casa pedido e resposta quando o id da sessao vem vazio. Sem
+    // isso, "o celular nao respondeu" e "respondeu falando de outra conversa"
+    // ficam identicos no log — e sao problemas diferentes.
+    jids: jidsDoLote.slice(0, 10),
+    maisJids: Math.max(0, jidsDoLote.length - 10)
   })
 
   /**
@@ -558,15 +598,10 @@ export function handleHistorySet(payload: {
    */
   inboxEvents.emit('historyBatch', {
     requestId: payload.peerDataRequestSessionId ?? null,
+    syncType: payload.syncType ?? null,
     // Conversas citadas no lote, com quantas mensagens novas cada uma trouxe.
     inserted: Object.fromEntries(gravadas),
-    jids: [
-      ...new Set(
-        (payload.messages ?? [])
-          .map((m) => m.key?.remoteJid)
-          .filter((j): j is string => Boolean(j) && !isIgnorableJid(j))
-      )
-    ]
+    jids: jidsDoLote
   })
 
   // O historico completo chega em VARIOS lotes. Sem repassar o progresso, a
