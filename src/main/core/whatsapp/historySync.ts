@@ -2,7 +2,7 @@ import { whatsapp } from './client'
 import { inboxEvents, historySyncTypeName } from './inbox'
 import {
   countMessages,
-  oldestMessage,
+  oldestAnchor,
   setChatSync,
   getChat,
   leadChatsNeedingFullSync,
@@ -32,6 +32,15 @@ const BATCH = 50
 
 /** Teto de rodadas por conversa, para um "sincronizar tudo" nao virar infinito. */
 const MAX_ROUNDS = 40
+
+/**
+ * Teto de esperas por cooldown, contado a parte das rodadas.
+ *
+ * Cooldown nao e rodada: nenhum pedido saiu. Contar junto fazia uma sequencia
+ * de cooldowns (a fila de leads e a tela concorrem pelo mesmo cooldown) comer
+ * as 40 rodadas sem nunca ter perguntado nada ao celular.
+ */
+const MAX_COOLDOWN_WAITS = 10
 
 /**
  * Tempos da espera por uma rodada.
@@ -79,7 +88,8 @@ export async function syncChatHistory(jid: string, days: number | null): Promise
     exhausted: false,
     noAnchor: false,
     offline: false,
-    timedOut: false
+    timedOut: false,
+    requestFailed: false
   }
 
   if (!whatsapp.socket) {
@@ -87,16 +97,19 @@ export async function syncChatHistory(jid: string, days: number | null): Promise
     return result
   }
 
-  let anchor = oldestMessage(jid)
+  let anchor = oldestAnchor(jid)
   if (!anchor) {
-    // Sem nenhuma mensagem local nao ha ancora: o `fetchMessageHistory` do
-    // WhatsApp pede a chave de uma mensagem para saber "antes de qual". Uma
-    // conversa que nunca recebeu nada da sincronizacao inicial so aparece
-    // quando o proprio WhatsApp a mandar (ou quando alguem escrever nela).
+    // Sem ancora nao ha o que pedir: o `fetchMessageHistory` do WhatsApp
+    // localiza "antes de qual" pela tupla (id, fromMe, carimbo), e o celular
+    // so responde se conseguir resolve-la. Conversa vazia, ou conversa em que
+    // tudo que existe foi o proprio app que gravou ao enviar, nao tem essa
+    // tupla — e pedir com uma tupla inventada e o que produzia 45s de silencio
+    // lido como "o aparelho esta offline".
     result.noAnchor = true
     return result
   }
 
+  let cooldownWaits = 0
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
     if (anchor.ts <= target) {
       result.reachedTarget = true
@@ -107,14 +120,37 @@ export async function syncChatHistory(jid: string, days: number | null): Promise
       break
     }
 
-    const requestId = await whatsapp.fetchOlderMessages(anchor, BATCH)
-    if (requestId === null) {
-      // Cooldown de outro pedido em andamento: espera e tenta a mesma rodada.
-      await sleep(timings.retryMs)
-      continue
+    /**
+     * O ouvinte entra em cena ANTES do pedido sair.
+     *
+     * O lote de resposta e emitido no event loop do Baileys e pode chegar
+     * enquanto o `await` do envio ainda esta pendente. Registrando so depois
+     * (o que o codigo fazia), essa resposta caia no vazio e o resultado ficava
+     * indistinguivel de celular offline. Agora tudo que chega e guardado e
+     * reavaliado quando o id do pedido fica conhecido.
+     */
+    const espera = listenForAnswer(jid)
+    const pedido = await whatsapp.fetchOlderMessages(anchor, BATCH)
+
+    if (!pedido.sent) {
+      espera.cancel()
+      if (pedido.reason === 'cooldown') {
+        // Nenhum pedido saiu: nao gasta rodada, so a paciencia do cooldown.
+        cooldownWaits += 1
+        if (cooldownWaits > MAX_COOLDOWN_WAITS) {
+          log.warn('desisti de esperar a vez do pedido de historico', { jid, cooldownWaits })
+          break
+        }
+        round -= 1
+        await sleep(timings.retryMs)
+        continue
+      }
+      if (pedido.reason === 'offline') result.offline = true
+      else result.requestFailed = true
+      break
     }
 
-    const answered = await waitForAnswer(jid, requestId)
+    const answered = await espera.settle(pedido.requestId)
     if (!answered) {
       /**
        * O celular nao respondeu dentro do prazo.
@@ -125,11 +161,14 @@ export async function syncChatHistory(jid: string, days: number | null): Promise
        * "completa" com zero mensagens e a tirava da fila para sempre.
        */
       result.timedOut = true
-      log.warn('o celular nao respondeu ao pedido de historico', { jid, requestId })
+      log.warn('o celular nao respondeu ao pedido de historico', {
+        jid,
+        requestId: pedido.requestId
+      })
       break
     }
 
-    const oldest = oldestMessage(jid)
+    const oldest = oldestAnchor(jid)
     if (!oldest || oldest.ts >= anchor.ts) {
       // Respondeu, mas sem nada anterior ao que ja tinhamos: acabou o passado.
       result.exhausted = true
@@ -164,8 +203,22 @@ interface HistoryBatch {
   jids: string[]
 }
 
+/** Espera armada antes do pedido sair, resolvida depois que ele sai. */
+interface AnswerWatch {
+  /** Arma o prazo e julga (inclusive o que ja chegou) com o id agora conhecido. */
+  settle(requestId: string | null): Promise<boolean>
+  /** Desiste sem esperar — usado quando o pedido nem chegou a sair. */
+  cancel(): void
+}
+
 /**
- * Espera o lote de historico que responde a ESTE pedido.
+ * Escuta os lotes de historico e diz se algum respondeu a ESTE pedido.
+ *
+ * DUAS FASES, e nao uma espera simples, por causa de uma corrida: o lote e
+ * emitido no event loop do Baileys e pode chegar antes do `await` do envio
+ * resolver. Assinando so depois disso, a resposta se perdia e o pedido morria
+ * por timeout como se o celular estivesse mudo. Aqui a assinatura acontece
+ * antes do envio e o que chega no meio fica guardado ate o `settle`.
  *
  * O casamento e pelo `peerDataRequestSessionId` que o WhatsApp devolve no lote
  * (`requestId` aqui). Como nem toda versao preenche esse campo, aceitamos
@@ -178,50 +231,90 @@ interface HistoryBatch {
  * calado, o segundo e o casamento errando — e ate aqui os dois terminavam no
  * mesmo aviso generico de timeout.
  */
-function waitForAnswer(jid: string, requestId: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    /** Lotes que chegaram durante a espera sem serem a resposta deste pedido. */
-    const naoCasaram: string[] = []
+function listenForAnswer(jid: string): AnswerWatch {
+  /** Lotes que chegaram antes do `settle`, ainda sem id de pedido para comparar. */
+  const pendentes: HistoryBatch[] = []
+  /** Lotes que chegaram durante a espera sem serem a resposta deste pedido. */
+  const naoCasaram: string[] = []
 
-    const done = (answered: boolean): void => {
-      clearTimeout(timer)
-      inboxEvents.off('historyBatch', onBatch)
-      if (!answered) {
-        log.warn('nenhum lote de historico casou com o pedido', {
-          jid,
-          requestId,
-          lotesRecebidos: naoCasaram.length,
-          // Vazio aqui = o celular nao mandou NADA. Com conteudo = ele falou,
-          // mas de outra conversa ou com outro id de sessao.
-          detalhe: naoCasaram.slice(0, 5)
-        })
-      }
-      resolve(answered)
-    }
+  let requestId: string | null = null
+  let settled = false
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let resolveAnswer: ((answered: boolean) => void) | null = null
 
-    const onBatch = (batch: HistoryBatch): void => {
-      const meu = requestId && batch.requestId === requestId
-      const mesmaConversa = batch.jids.includes(jid) || batch.inserted[jid] > 0
-      if (meu || mesmaConversa) {
-        log.info('lote de historico casou com o pedido', {
-          jid,
-          requestId,
-          porId: Boolean(meu),
-          tipo: historySyncTypeName(batch.syncType)
-        })
-        done(true)
-        return
-      }
+  const combina = (batch: HistoryBatch): boolean => {
+    const meu = requestId != null && batch.requestId === requestId
+    const mesmaConversa = batch.jids.includes(jid) || batch.inserted[jid] > 0
+    if (!meu && !mesmaConversa) {
       naoCasaram.push(
         `${historySyncTypeName(batch.syncType)} req=${batch.requestId ?? '-'} jids=${
           batch.jids.slice(0, 3).join(',') || '-'
         }`
       )
+      return false
     }
+    log.info('lote de historico casou com o pedido', {
+      jid,
+      requestId,
+      porId: meu,
+      tipo: historySyncTypeName(batch.syncType)
+    })
+    return true
+  }
 
-    const timer = setTimeout(() => done(false), timings.roundTimeoutMs)
-    inboxEvents.on('historyBatch', onBatch)
-  })
+  const finish = (answered: boolean): void => {
+    if (settled) return
+    settled = true
+    if (timer) clearTimeout(timer)
+    inboxEvents.off('historyBatch', onBatch)
+    if (!answered) {
+      log.warn('nenhum lote de historico casou com o pedido', {
+        jid,
+        requestId,
+        lotesRecebidos: naoCasaram.length,
+        // Vazio aqui = o celular nao mandou NADA. Com conteudo = ele falou,
+        // mas de outra conversa ou com outro id de sessao.
+        detalhe: naoCasaram.slice(0, 5)
+      })
+    }
+    resolveAnswer?.(answered)
+  }
+
+  const onBatch = (batch: HistoryBatch): void => {
+    if (settled) return
+    // Antes do `settle` o id do pedido ainda nao existe: guardar e julgar depois
+    // e o que impede a resposta rapida de ser descartada.
+    if (!resolveAnswer) {
+      pendentes.push(batch)
+      return
+    }
+    if (combina(batch)) finish(true)
+  }
+
+  inboxEvents.on('historyBatch', onBatch)
+
+  return {
+    settle(id) {
+      requestId = id
+      return new Promise<boolean>((resolve) => {
+        resolveAnswer = resolve
+        for (const batch of pendentes) {
+          if (combina(batch)) {
+            finish(true)
+            return
+          }
+        }
+        // O prazo conta a partir daqui: antes do no sair o celular nao tinha
+        // como responder.
+        timer = setTimeout(() => finish(false), timings.roundTimeoutMs)
+      })
+    },
+    cancel() {
+      settled = true
+      if (timer) clearTimeout(timer)
+      inboxEvents.off('historyBatch', onBatch)
+    }
+  }
 }
 
 /* ── Fila da base de leads ───────────────────────────────────────────────── */
@@ -277,13 +370,19 @@ export async function syncLeadChats(maxChats = 50): Promise<ChatSyncState> {
       if (r.offline) break
       // Celular sem responder: parar a fila. Insistir nas outras 40 conversas
       // so gastaria meia hora repetindo o mesmo silencio.
-      if (r.timedOut) {
+      if (r.timedOut || r.requestFailed) {
         leadSync = { ...leadSync, stalled: true }
         break
       }
-      // Conversa sem ancora nao adianta reprocessar a cada clique: marcamos
-      // como resolvida para a fila andar, e ela volta quando tiver mensagem.
-      if (r.noAnchor) setChatSync(jid, { syncedFull: true })
+      /**
+       * `noAnchor` NAO marca mais a conversa como completa.
+       *
+       * A marcacao existia so para a fila andar, e o preco era gravar "historico
+       * completo" numa conversa da qual nao puxamos nada — mentira que a tirava
+       * da fila para sempre. Agora quem nao tem ancora nem chega aqui: o
+       * `leadChatsNeedingFullSync` ja filtra, e a conversa volta sozinha quando
+       * ganhar a primeira mensagem com carimbo do servidor.
+       */
 
       leadSync = { ...leadSync, done: leadSync.done + 1, fetched: leadSync.fetched + r.fetched }
       emitLeadSync()

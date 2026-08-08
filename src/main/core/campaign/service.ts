@@ -34,6 +34,9 @@ const log = scoped('campaign')
 function recordCampaignOutgoing(jid: string, waId: string | null, text: string): void {
   const now = Date.now()
   const id = waId ?? `campaign-${now}-${Math.random().toString(36).slice(2, 8)}`
+  // Sem `waTs`: e o relogio desta maquina, nao o carimbo do servidor. Ver a
+  // mesma nota em `recordOutgoing` (ipc.ts) — esta linha so vira ancora de
+  // pedido de historico depois que o eco do Baileys trouxer o carimbo real.
   insertMessage({
     id,
     chatJid: jid,

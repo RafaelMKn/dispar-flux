@@ -68,6 +68,17 @@ Ao abrir uma conversa pouco sincronizada, o app ja puxa sozinho os ultimos 7 dia
 numero esta na base), uma vez por sessao. Rolando a conversa para cima, ele carrega de 50 em
 50 e vai pedindo o que veio antes.
 
+> [!NOTA]
+> **Uma conversa que so tem o que voce disparou nao tem como ser buscada.** Para pedir o
+> passado, o app precisa apontar para uma mensagem que o **celular** conhece — e a mensagem
+> que o proprio app gravou ao enviar nao serve, porque ela nasce aqui, nao no aparelho.
+> Nesses casos a tela avisa que a conversa ainda nao tem ponto de partida. Ela ganha um
+> assim que o celular mandar a primeira mensagem, ou quando o contato responder.
+
+Se precisar investigar uma sincronizacao que nao anda, rode o app com
+`DISPAR_WA_LOG_LEVEL=debug`: o log passa a mostrar o detalhe da conversa com o celular. As
+linhas sobre historico ja aparecem no log normal, mesmo sem essa variavel.
+
 Anexo de mensagem antiga **nao baixa sozinho** — com o historico completo isso seriam varios
 GB. Ele fica pendente e baixa quando voce clica. Mensagem nova continua baixando imagem,
 audio e figurinha automaticamente.

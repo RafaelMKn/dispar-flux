@@ -21,7 +21,9 @@ import {
   getMessage,
   getChat,
   countMessages,
-  oldestMessage
+  insertMessage,
+  oldestMessage,
+  oldestAnchor
 } from '../../repos/chats'
 import { getOptOutSet } from '../../repos/optOuts'
 
@@ -165,6 +167,60 @@ describe('handleUpsert', () => {
 
     const chat = listChats().find((c) => c.jid === jid)
     expect(chat).toMatchObject({ name: 'Ana', lastMessage: 'bom dia', unread: 1 })
+  })
+
+  it('so o que vem do WhatsApp ganha carimbo do servidor', () => {
+    // O carimbo do servidor e a unica coisa que serve de ancora para o pedido
+    // de historico antigo. Ele vem em SEGUNDOS: em ms sempre termina em 000.
+    const comCarimbo = freshJid()
+    handleUpsert([incoming(comCarimbo, { conversation: 'oi' })] as never)
+    const anchor = oldestAnchor(comCarimbo)
+    expect(anchor?.ts).toBe(1_700_000_000_000)
+    expect(anchor!.ts % 1000).toBe(0)
+
+    // Sem `messageTimestamp` o `ts` cai no nosso relogio — e a linha nao pode
+    // virar ancora, sob pena de o celular ignorar o pedido em silencio.
+    const semCarimbo = freshJid()
+    handleUpsert([
+      incoming(semCarimbo, { conversation: 'oi' }, { messageTimestamp: null })
+    ] as never)
+    expect(listMessages(semCarimbo)).toHaveLength(1)
+    expect(oldestAnchor(semCarimbo)).toBeNull()
+  })
+
+  it('descarta carimbo absurdo em vez de virar ancora irresolvivel', () => {
+    const jid = freshJid()
+    handleUpsert([incoming(jid, { conversation: 'oi' }, { messageTimestamp: 1 })] as never)
+    expect(listMessages(jid)).toHaveLength(1)
+    expect(oldestAnchor(jid)).toBeNull()
+  })
+
+  it('o eco do proprio envio corrige o carimbo gravado na hora', () => {
+    // Fluxo real do `recordOutgoing`: o app grava com o relogio da maquina e o
+    // eco do Baileys chega depois com o carimbo de verdade.
+    const jid = freshJid()
+    insertMessage({
+      id: 'ECHO-IN-1',
+      chatJid: jid,
+      direction: 'out',
+      body: 'oi',
+      ts: Date.now(),
+      waMessageId: 'ECHO-IN-1'
+    })
+    expect(oldestAnchor(jid)).toBeNull()
+
+    handleUpsert([
+      {
+        key: { id: 'ECHO-IN-1', remoteJid: jid, fromMe: true },
+        message: { conversation: 'oi' },
+        messageTimestamp: 1_700_000_500
+      }
+    ] as never)
+
+    expect(listMessages(jid)).toHaveLength(1)
+    expect(oldestAnchor(jid)?.ts).toBe(1_700_000_500_000)
+    // Correcao de carimbo nao e mensagem nova: nao pode contar como nao lida.
+    expect(listChats().find((c) => c.jid === jid)?.unread ?? 0).toBe(0)
   })
 
   it('nao duplica quando o Baileys reemite a mesma mensagem', () => {

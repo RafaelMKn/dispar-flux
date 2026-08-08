@@ -198,7 +198,15 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
   // Ate onde (em ms) o historico desta conversa ja foi puxado do WhatsApp.
   { table: 'chats', column: 'synced_from', ddl: 'synced_from INTEGER' },
   // 1 quando a conversa ja foi sincronizada por inteiro (nao ha mais passado).
-  { table: 'chats', column: 'synced_full', ddl: 'synced_full INTEGER NOT NULL DEFAULT 0' }
+  { table: 'chats', column: 'synced_full', ddl: 'synced_full INTEGER NOT NULL DEFAULT 0' },
+  /**
+   * Carimbo do servidor (ver `messages.waTs` no schema).
+   *
+   * Fica NULL nas linhas ja gravadas: o carimbo real delas se perdeu e nao ha
+   * de onde recuperar localmente. Nao ha backfill — NULL e a verdade, e o que
+   * mantem essas linhas fora da escolha de ancora.
+   */
+  { table: 'messages', column: 'wa_ts', ddl: 'wa_ts INTEGER' }
 ]
 
 /**
@@ -211,7 +219,9 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
 const ADDED_INDEXES: string[] = [
   'CREATE INDEX IF NOT EXISTS idx_chats_last_ts ON chats(last_ts)',
   'CREATE INDEX IF NOT EXISTS idx_chats_lead ON chats(is_lead, last_ts)',
-  'CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_jid, ts)'
+  'CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_jid, ts)',
+  // Escolha da ancora do pedido de historico: so linhas com carimbo do servidor.
+  'CREATE INDEX IF NOT EXISTS idx_messages_anchor ON messages(chat_jid, wa_ts)'
 ]
 
 /** Acrescenta as colunas de `ADDED_COLUMNS` que ainda nao existem. Idempotente. */

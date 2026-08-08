@@ -104,7 +104,13 @@ export interface ChatSyncResult {
   reachedTarget: boolean
   /** O WhatsApp nao tem mais passado desta conversa. */
   exhausted: boolean
-  /** Nao ha nenhuma mensagem local para servir de ancora ao pedido. */
+  /**
+   * Nao ha ancora: nenhuma mensagem local que o celular consiga localizar.
+   *
+   * Ou a conversa esta vazia, ou tudo que ela tem foi o proprio app que gravou
+   * ao enviar — e essas linhas nao carregam o carimbo nem o id que o aparelho
+   * conhece. Ver `oldestAnchor`.
+   */
   noAnchor: boolean
   /** O WhatsApp nao estava conectado. */
   offline: boolean
@@ -117,6 +123,14 @@ export interface ChatSyncResult {
    * se ha mais historico, so que ninguem respondeu.
    */
   timedOut: boolean
+  /**
+   * O pedido nem chegou a sair (falha ao falar com o WhatsApp).
+   *
+   * Diferente de `timedOut`: ali o pedido saiu e ninguem respondeu. Sem essa
+   * separacao, "nao consegui pedir" e "pedi e o celular ficou calado" davam a
+   * mesma mensagem na tela — e sao problemas de lugares diferentes.
+   */
+  requestFailed: boolean
 }
 
 /** Andamento da sincronizacao completa das conversas da base de leads. */

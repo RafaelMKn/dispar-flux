@@ -203,11 +203,30 @@ interface WaMessageLike {
   status?: number | string | null
 }
 
-function toMillis(ts: WaMessageLike['messageTimestamp']): number {
-  if (ts == null) return Date.now()
+/** Carimbo mais antigo que aceitamos como plausivel (2008; o WhatsApp e de 2009). */
+const MIN_PLAUSIBLE_MS = 1_200_000_000_000
+const DAY_IN_MS = 24 * 60 * 60 * 1000
+
+/**
+ * O carimbo do SERVIDOR em ms, ou null quando a mensagem nao trouxe nenhum.
+ *
+ * Nao ha fallback aqui de proposito. O `ts` de exibicao ainda cai em
+ * `Date.now()` quando nao ha carimbo (a mensagem precisa aparecer em algum
+ * lugar da lista), mas quem precisa do carimbo que o CELULAR conhece — o pedido
+ * de historico antigo — tem que conseguir distinguir "veio" de "nao veio". Era
+ * justamente a ausencia dessa distincao que mandava um `Date.now()` como ancora
+ * e fazia o aparelho ignorar o pedido em silencio.
+ */
+export function serverMillis(ts: WaMessageLike['messageTimestamp']): number | null {
+  if (ts == null) return null
   const n = typeof ts === 'number' ? ts : ts.toNumber()
+  if (!Number.isFinite(n) || n <= 0) return null
   // O WhatsApp manda em segundos.
-  return n < 1e12 ? n * 1000 : n
+  const ms = n < 1e12 ? n * 1000 : n
+  // Carimbo absurdo (mensagem corrompida) geraria uma ancora irresolvivel, com
+  // o mesmo sintoma de silencio de 45s. Melhor nao ter ancora do que ter uma ruim.
+  if (ms < MIN_PLAUSIBLE_MS || ms > Date.now() + DAY_IN_MS) return null
+  return ms
 }
 
 /** Enum de status do Baileys (WAMessageStatus) para o nosso vocabulario. */
@@ -308,7 +327,11 @@ function parseOne(msg: WaMessageLike): ParsedMessage | null {
   if (text === null && !media) return null
 
   const direction: MessageDirection = msg.key?.fromMe ? 'out' : 'in'
-  const ts = toMillis(msg.messageTimestamp)
+  // `waTs` e a unica fonte de ancora do pedido de historico, e este e o unico
+  // lugar do app que o preenche: so o que veio do Baileys carrega o carimbo
+  // que o celular conhece.
+  const waTs = serverMillis(msg.messageTimestamp)
+  const ts = waTs ?? Date.now()
 
   return {
     input: {
@@ -317,6 +340,7 @@ function parseOne(msg: WaMessageLike): ParsedMessage | null {
       direction,
       body: text,
       ts,
+      waTs,
       waMessageId: id,
       status: mapStatus(msg.status),
       mediaKind: media?.kind ?? null,

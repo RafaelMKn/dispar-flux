@@ -96,6 +96,19 @@ export const messages = sqliteTable('messages', {
   direction: text('direction').notNull(), // 'in' | 'out'
   body: text('body'),
   ts: integer('ts').notNull(),
+  /**
+   * Carimbo do SERVIDOR (`messageTimestamp` * 1000), quando existe.
+   *
+   * PORQUE E SEPARADO DE `ts`: `ts` sempre tem valor porque a mensagem precisa
+   * aparecer em algum lugar da lista, e para a mensagem que o app grava na hora
+   * do envio esse valor e o relogio da maquina. Ja o pedido de historico antigo
+   * exige o carimbo que o CELULAR conhece — mandar o nosso faz o aparelho nao
+   * achar a mensagem e nao responder nada (nem erro, nem lote vazio).
+   *
+   * Null = o ts veio do nosso relogio e a linha NAO serve de ancora.
+   * Como vem de um valor em segundos, e sempre multiplo de 1000.
+   */
+  waTs: integer('wa_ts'),
   waMessageId: text('wa_message_id'),
   status: text('status'), // pending | sent | delivered | read | error
   /* ── Midia ───────────────────────────────────────────────────────────── */

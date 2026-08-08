@@ -16,7 +16,12 @@ import {
   inboxEvents,
   resetHistorySyncState
 } from './inbox'
-import { chatsNeedingAvatar, setAvatar, unreadIncomingIds } from '../../repos/chats'
+import {
+  chatsNeedingAvatar,
+  setAvatar,
+  unreadIncomingIds,
+  type HistoryAnchor
+} from '../../repos/chats'
 import { saveAvatar } from './mediaStore'
 import { webmToOggOpus } from './opusOgg'
 
@@ -158,6 +163,20 @@ const AVATAR_GAP_MS = 400
  * cara de uso humano.
  */
 const HISTORY_REQUEST_COOLDOWN_MS = 3000
+
+/**
+ * Resultado de um pedido de historico antigo.
+ *
+ * PORQUE E UMA UNIAO E NAO `string | null`: eram tres significados espremidos
+ * num tipo so. `null` queria dizer "cooldown" para quem chamava, mas tambem
+ * saia quando nao havia socket ou quando o envio falhava; e o `?? ''` do caso
+ * "enviado sem id" existia so para nao ser confundido com aqueles — ao custo de
+ * desligar em silencio o casamento por id da resposta. Aqui cada estado tem
+ * nome, e quem chama e obrigado a tratar.
+ */
+export type HistoryRequest =
+  | { sent: true; requestId: string | null }
+  | { sent: false; reason: 'offline' | 'cooldown' | 'error' }
 
 class WhatsappService extends EventEmitter {
   private sock: WASocket | null = null
@@ -692,15 +711,14 @@ class WhatsappService extends EventEmitter {
    * exatamente o padrao de trafego que faz o WhatsApp bloquear o numero — o
    * mesmo motivo pelo qual o disparo tem intervalo.
    *
-   * Devolve o id do pedido, ou null se nem saiu.
+   * A ancora TEM que vir de `oldestAnchor`: e la que estao as duas garantias
+   * (id real do WhatsApp e carimbo do servidor) sem as quais o aparelho nao
+   * localiza a mensagem e nao responde nada.
    */
-  async fetchOlderMessages(
-    oldest: { id: string; remoteJid: string; fromMe: boolean; ts: number },
-    count = 50
-  ): Promise<string | null> {
+  async fetchOlderMessages(oldest: HistoryAnchor, count = 50): Promise<HistoryRequest> {
     const sock = this.socket
-    if (!sock) return null
-    if (this.historyRequestInFlight) return null
+    if (!sock) return { sent: false, reason: 'offline' }
+    if (this.historyRequestInFlight) return { sent: false, reason: 'cooldown' }
 
     this.historyRequestInFlight = true
     try {
@@ -719,6 +737,22 @@ class WhatsappService extends EventEmitter {
        * offline".
        */
       const tsMs = oldest.ts
+      /**
+       * Alarme de procedencia, nao validacao de negocio.
+       *
+       * O `oldestAnchor` ja garante que o carimbo veio do servidor, e carimbo do
+       * servidor vem em segundos — entao em ms ele SEMPRE termina em 000. Se
+       * este aviso disparar, alguem abriu um caminho novo que escreve `wa_ts`
+       * com relogio local, e o sintoma la na frente seria de novo o silencio de
+       * 45s, que nao aponta para lugar nenhum.
+       */
+      if (tsMs % 1000 !== 0) {
+        log.warn('ancora com carimbo de relogio local — nao deveria acontecer', {
+          jid: oldest.remoteJid,
+          id: oldest.id,
+          tsMs
+        })
+      }
       const requestId = await sock.fetchMessageHistory(
         count,
         { id: oldest.id, remoteJid: oldest.remoteJid, fromMe: oldest.fromMe },
@@ -729,17 +763,19 @@ class WhatsappService extends EventEmitter {
         count,
         anterioresA: new Date(oldest.ts).toISOString(),
         // Vai cru no log de proposito: se um dia voltar a aparecer valor na casa
-        // de 1.7e9 em vez de 1.7e12, a unidade regrediu.
+        // de 1.7e9 em vez de 1.7e12, a unidade regrediu; e se parar de terminar
+        // em 000, a ancora voltou a sair do nosso relogio.
         tsMs,
-        requestId
+        waMsgId: oldest.id,
+        requestId: requestId ?? null
       })
-      return requestId ?? ''
+      return { sent: true, requestId: requestId ?? null }
     } catch (e) {
       log.warn('falha ao pedir historico antigo', {
         jid: oldest.remoteJid,
         erro: e instanceof Error ? e.message : e
       })
-      return null
+      return { sent: false, reason: 'error' }
     } finally {
       // Uma janelinha de folga antes de aceitar o proximo pedido: o usuario
       // rolando rapido nao pode virar uma rajada de requisicoes.
