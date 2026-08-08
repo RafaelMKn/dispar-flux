@@ -2,7 +2,14 @@ import initSqlJs, { type Database as SqlJsDb } from 'sql.js'
 import { drizzle, type SQLJsDatabase } from 'drizzle-orm/sql-js'
 import { app } from 'electron'
 import { join } from 'node:path'
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  copyFileSync,
+  renameSync,
+  unlinkSync
+} from 'node:fs'
 import * as schema from './schema'
 
 let _sql: SqlJsDb | null = null
@@ -231,6 +238,41 @@ export function migrateColumns(sql: SqlJsDb): void {
   for (const ddl of ADDED_INDEXES) sql.run(ddl)
 }
 
+/** Quantas copias de seguranca guardamos (`.bak.1` e a mais recente). */
+export const BACKUP_KEEP = 3
+
+/**
+ * Copia o banco para `.bak.1` antes de abri-lo, rotacionando as anteriores.
+ *
+ * PORQUE ISSO EXISTE: o banco vive INTEIRO em memoria e o `saveNow()` reescreve
+ * o arquivo todo a cada gravacao. Nao ha append, nao ha merge — quem salva por
+ * ultimo manda. Basta um processo com uma imagem velha em memoria (um build
+ * antigo ainda instalado, uma instancia esquecida na bandeja) para dias de
+ * trabalho desaparecerem sem nenhum erro, que foi exatamente o que aconteceu
+ * com a base de leads em 06/08/2026.
+ *
+ * A copia e feita na abertura, e nao no fechamento, de proposito: o que se quer
+ * preservar e o ultimo estado BOM conhecido. Fechar mal (crash, kill) e
+ * justamente quando nao da para confiar em rodar codigo.
+ *
+ * Best-effort: disco cheio ou arquivo travado nao pode impedir o app de abrir.
+ */
+export function rotateBackups(dbPath: string): void {
+  try {
+    if (!existsSync(dbPath)) return // primeira execucao: nada a preservar
+
+    const maisAntiga = `${dbPath}.bak.${BACKUP_KEEP}`
+    if (existsSync(maisAntiga)) unlinkSync(maisAntiga)
+    for (let i = BACKUP_KEEP - 1; i >= 1; i--) {
+      const de = `${dbPath}.bak.${i}`
+      if (existsSync(de)) renameSync(de, `${dbPath}.bak.${i + 1}`)
+    }
+    copyFileSync(dbPath, `${dbPath}.bak.1`)
+  } catch {
+    // Sem backup e pior que com backup, mas muito melhor que app que nao abre.
+  }
+}
+
 export async function initDb(): Promise<SQLJsDatabase<typeof schema>> {
   if (_db) return _db
 
@@ -244,6 +286,7 @@ export async function initDb(): Promise<SQLJsDatabase<typeof schema>> {
   const SQL = await initSqlJs({ wasmBinary })
 
   _dbPath = join(app.getPath('userData'), 'dispar-flux.sqlite')
+  rotateBackups(_dbPath)
   const initial = existsSync(_dbPath) ? new Uint8Array(readFileSync(_dbPath)) : undefined
   _sql = new SQL.Database(initial)
   _sql.exec(BOOTSTRAP_SQL)

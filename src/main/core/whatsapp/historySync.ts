@@ -1,5 +1,5 @@
 import { whatsapp } from './client'
-import { inboxEvents } from './inbox'
+import { inboxEvents, historySyncTypeName } from './inbox'
 import {
   countMessages,
   oldestMessage,
@@ -159,6 +159,7 @@ export async function syncChatHistory(jid: string, days: number | null): Promise
 
 interface HistoryBatch {
   requestId: string | null
+  syncType?: number | null
   inserted: Record<string, number>
   jids: string[]
 }
@@ -171,19 +172,51 @@ interface HistoryBatch {
  * tambem um lote que fale da mesma conversa — mas nunca o mero passar do tempo:
  * era exatamente isso que fazia o app concluir "acabou o historico" quando na
  * verdade o celular estava offline.
+ *
+ * DIAGNOSTICO: todo lote que chega e NAO casa vira log. "Nenhum lote chegou" e
+ * "chegaram lotes, nenhum era meu" tem causas diferentes — o primeiro e celular
+ * calado, o segundo e o casamento errando — e ate aqui os dois terminavam no
+ * mesmo aviso generico de timeout.
  */
 function waitForAnswer(jid: string, requestId: string): Promise<boolean> {
   return new Promise((resolve) => {
+    /** Lotes que chegaram durante a espera sem serem a resposta deste pedido. */
+    const naoCasaram: string[] = []
+
     const done = (answered: boolean): void => {
       clearTimeout(timer)
       inboxEvents.off('historyBatch', onBatch)
+      if (!answered) {
+        log.warn('nenhum lote de historico casou com o pedido', {
+          jid,
+          requestId,
+          lotesRecebidos: naoCasaram.length,
+          // Vazio aqui = o celular nao mandou NADA. Com conteudo = ele falou,
+          // mas de outra conversa ou com outro id de sessao.
+          detalhe: naoCasaram.slice(0, 5)
+        })
+      }
       resolve(answered)
     }
 
     const onBatch = (batch: HistoryBatch): void => {
       const meu = requestId && batch.requestId === requestId
       const mesmaConversa = batch.jids.includes(jid) || batch.inserted[jid] > 0
-      if (meu || mesmaConversa) done(true)
+      if (meu || mesmaConversa) {
+        log.info('lote de historico casou com o pedido', {
+          jid,
+          requestId,
+          porId: Boolean(meu),
+          tipo: historySyncTypeName(batch.syncType)
+        })
+        done(true)
+        return
+      }
+      naoCasaram.push(
+        `${historySyncTypeName(batch.syncType)} req=${batch.requestId ?? '-'} jids=${
+          batch.jids.slice(0, 3).join(',') || '-'
+        }`
+      )
     }
 
     const timer = setTimeout(() => done(false), timings.roundTimeoutMs)

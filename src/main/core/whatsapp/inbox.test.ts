@@ -12,7 +12,8 @@ import {
   setMediaBridge,
   inboxEvents,
   getHistorySyncState,
-  resetHistorySyncState
+  resetHistorySyncState,
+  historySyncTypeName
 } from './inbox'
 import {
   listChats,
@@ -407,12 +408,42 @@ describe('aviso de resposta do historico', () => {
     handleHistorySet({
       chats: [{ id: jid }],
       messages: [incoming(jid, { conversation: 'antiga' })],
-      peerDataRequestSessionId: 'PDO-123'
+      peerDataRequestSessionId: 'PDO-123',
+      syncType: 6 // ON_DEMAND
     } as never)
 
     // Sem este evento, quem pediu historico so poderia esperar um tempo e
     // chutar "acabou" — que e o que marcava conversa vazia como completa.
-    expect(lotes).toEqual([{ requestId: 'PDO-123', inserted: { [jid]: 1 }, jids: [jid] }])
+    expect(lotes).toEqual([
+      { requestId: 'PDO-123', syncType: 6, inserted: { [jid]: 1 }, jids: [jid] }
+    ])
+  })
+
+  it('repassa o tipo do lote, que e o que separa resposta nossa de sync inicial', () => {
+    // Um lote RECENT chegando logo depois do nosso pedido parece sucesso e nao
+    // e. Sem o tipo no evento, quem espera a resposta nao tem como distinguir.
+    const jid = freshJid()
+    const lotes: { syncType?: number | null }[] = []
+    inboxEvents.on('historyBatch', (b) => lotes.push(b))
+
+    handleHistorySet({
+      messages: [incoming(jid, { conversation: 'recente' })],
+      syncType: 3
+    } as never)
+    expect(lotes[0]?.syncType).toBe(3)
+
+    // Lote sem o campo continua valendo: versoes antigas do protocolo nao o
+    // preenchem, e cair fora por isso seria pior que nao saber o tipo.
+    lotes.length = 0
+    handleHistorySet({ messages: [incoming(freshJid(), { conversation: 'x' })] } as never)
+    expect(lotes[0]?.syncType).toBeNull()
+  })
+
+  it('traduz o tipo do lote para nome legivel no log', () => {
+    expect(historySyncTypeName(6)).toBe('ON_DEMAND')
+    expect(historySyncTypeName(3)).toBe('RECENT')
+    expect(historySyncTypeName(null)).toBe('nao informado')
+    expect(historySyncTypeName(99)).toBe('desconhecido(99)')
   })
 
   it('avisa mesmo quando o lote nao trouxe nada de novo', () => {

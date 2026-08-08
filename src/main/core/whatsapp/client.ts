@@ -705,21 +705,32 @@ class WhatsappService extends EventEmitter {
     this.historyRequestInFlight = true
     try {
       /**
-       * O campo do protocolo e `oldestMsgTimestampMs` e o proprio WhatsApp
-       * manda o carimbo das mensagens em SEGUNDOS — e e o valor de
-       * `messageTimestamp` (segundos) que a documentacao do Baileys passa aqui.
-       * O banco guarda em ms, entao convertemos.
+       * MILISSEGUNDOS, nao segundos.
+       *
+       * O campo do protocolo e `optional int64 oldestMsgTimestampMs = 5` — o
+       * nome nao deixa duvida, e o `.proto` do pacote confirma. O exemplo
+       * oficial do Baileys passa `messageTimestamp` (segundos) direto, e foi
+       * dele que veio o engano aqui; o proprio exemplo esta reconhecidamente
+       * errado (WhiskeySockets/Baileys#2616).
+       *
+       * O efeito de mandar segundos e silencio total: 1754229761 lido como ms
+       * e 21/01/1970, entao o celular procura mensagens anteriores a 1970, nao
+       * acha nada e simplesmente nao responde. Era indistinguivel de "aparelho
+       * offline".
        */
-      const seconds = Math.floor(oldest.ts / 1000)
+      const tsMs = oldest.ts
       const requestId = await sock.fetchMessageHistory(
         count,
         { id: oldest.id, remoteJid: oldest.remoteJid, fromMe: oldest.fromMe },
-        seconds
+        tsMs
       )
       log.info('historico antigo solicitado ao celular', {
         jid: oldest.remoteJid,
         count,
         anterioresA: new Date(oldest.ts).toISOString(),
+        // Vai cru no log de proposito: se um dia voltar a aparecer valor na casa
+        // de 1.7e9 em vez de 1.7e12, a unidade regrediu.
+        tsMs,
         requestId
       })
       return requestId ?? ''
