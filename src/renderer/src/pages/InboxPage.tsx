@@ -82,8 +82,10 @@ const SYNC_WARNING =
 
 function describeSync(r: ChatSyncResult): string {
   if (r.offline) return 'WhatsApp desconectado — reconecte para sincronizar.'
+  if (r.requestFailed)
+    return 'Nao foi possivel enviar o pedido ao WhatsApp. Tente de novo em instantes.'
   if (r.noAnchor)
-    return 'Esta conversa ainda nao tem nenhuma mensagem para servir de ponto de partida. Ela chega quando o WhatsApp mandar ou quando alguem escrever.'
+    return 'Esta conversa ainda nao tem nenhuma mensagem vinda do WhatsApp para servir de ponto de partida — so o que foi enviado por aqui. Ela ganha uma assim que o celular mandar a primeira mensagem ou alguem responder.'
   if (r.timedOut) {
     return r.fetched > 0
       ? `${r.fetched} mensagem(ns) trazida(s), mas o celular parou de responder. Confira se ele esta ligado, com internet e o WhatsApp aberto, e tente de novo.`

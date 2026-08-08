@@ -6,7 +6,12 @@ import {
   upsertChat,
   getChat,
   listChats,
+  insertMessage,
   insertMessages,
+  countMessages,
+  oldestMessage,
+  oldestAnchor,
+  backfillServerTimestamps,
   refreshLeadFlags,
   countLeadChats,
   repairChatTimestamps,
@@ -88,6 +93,145 @@ describe('insertMessages', () => {
     ])
     expect(second.map((m) => m.id)).toEqual(['A3'])
   })
+
+  it('o eco do Baileys corrige o carimbo da linha gravada no envio', () => {
+    // O app grava o proprio envio na hora, com o relogio da maquina, para a
+    // mensagem nao ficar segundos sumida da tela. O eco chega depois com o
+    // carimbo de verdade — e ate aqui era descartado pela idempotencia,
+    // deixando um `ts` que o celular nunca viu servir de ancora.
+    const jid = freshJid()
+    const local = Date.now()
+    insertMessage({
+      id: 'ECO-1',
+      chatJid: jid,
+      direction: 'out',
+      body: 'oi',
+      ts: local,
+      waMessageId: 'ECO-1'
+    })
+    expect(oldestAnchor(jid)).toBeNull()
+
+    const doServidor = Math.floor(local / 1000) * 1000
+    const novas = insertMessages([
+      {
+        id: 'ECO-1',
+        chatJid: jid,
+        direction: 'out',
+        body: 'oi',
+        ts: doServidor,
+        waTs: doServidor,
+        waMessageId: 'ECO-1'
+      }
+    ])
+
+    // Correcao de carimbo NAO e mensagem nova: se entrasse no retorno, o
+    // `afterInsert` rodaria de novo (nao-lidas, opt-out, CRM, download).
+    expect(novas).toEqual([])
+    expect(countMessages(jid)).toBe(1)
+    expect(oldestAnchor(jid)?.ts).toBe(doServidor)
+  })
+
+  it('nao mexe na linha que ja tem carimbo do servidor', () => {
+    const jid = freshJid()
+    const base = { chatJid: jid, direction: 'in' as const, body: 'oi', waMessageId: 'FIX-1' }
+    insertMessages([{ ...base, id: 'FIX-1', ts: 10_000, waTs: 10_000 }])
+
+    insertMessages([{ ...base, id: 'FIX-1', ts: 99_000, waTs: 99_000 }])
+
+    expect(oldestAnchor(jid)?.ts).toBe(10_000)
+  })
+})
+
+describe('ancora do pedido de historico', () => {
+  const base = { direction: 'in' as const, body: 'oi' }
+
+  it('ignora a linha sem carimbo do servidor, mesmo sendo a mais antiga', () => {
+    const jid = freshJid()
+    // Gravada pelo disparo: relogio local, id sintetico.
+    insertMessages([
+      { ...base, id: 'L1', chatJid: jid, direction: 'out', ts: 1_000_500, waMessageId: null }
+    ])
+    insertMessages([
+      { ...base, id: 'W1', chatJid: jid, ts: 5_000_000, waTs: 5_000_000, waMessageId: 'W1' }
+    ])
+
+    // `oldestMessage` continua vendo a mais antiga de verdade (bookkeeping do
+    // `syncedFrom`); a ancora, nao.
+    expect(oldestMessage(jid)?.id).toBe('L1')
+    expect(oldestAnchor(jid)?.id).toBe('W1')
+  })
+
+  it('ignora a linha com carimbo mas sem id do WhatsApp', () => {
+    const jid = freshJid()
+    insertMessages([
+      { ...base, id: 'local-9', chatJid: jid, ts: 2_000_000, waTs: 2_000_000, waMessageId: null }
+    ])
+    expect(oldestAnchor(jid)).toBeNull()
+  })
+
+  it('devolve o id do WhatsApp e o carimbo do servidor, nao os da linha', () => {
+    const jid = freshJid()
+    insertMessages([
+      {
+        ...base,
+        id: 'linha-interna',
+        chatJid: jid,
+        ts: 7_777_777,
+        waTs: 7_000_000,
+        waMessageId: 'WA-XYZ'
+      }
+    ])
+    const anchor = oldestAnchor(jid)
+    expect(anchor?.id).toBe('WA-XYZ')
+    expect(anchor?.ts).toBe(7_000_000)
+    expect(anchor?.remoteJid).toBe(jid)
+  })
+
+  it('a fila de leads pula conversa sem ancora', () => {
+    const listId = createContactList('Base ancora').id
+    const semAncora = freshJid()
+    const comAncora = freshJid()
+    for (const jid of [semAncora, comAncora]) {
+      upsertChat(jid, { lastMessage: 'oi', lastTs: Date.now() })
+    }
+    insertContacts([
+      { listId, name: 'Sem ancora', phoneE164: phoneOf(semAncora), extraJson: null },
+      { listId, name: 'Com ancora', phoneE164: phoneOf(comAncora), extraJson: null }
+    ])
+    refreshLeadFlags()
+
+    insertMessages([
+      { ...base, id: 'SA1', chatJid: semAncora, direction: 'out', ts: 3_000_123, waMessageId: null }
+    ])
+    insertMessages([
+      { ...base, id: 'CA1', chatJid: comAncora, ts: 3_000_000, waTs: 3_000_000, waMessageId: 'CA1' }
+    ])
+
+    const fila = leadChatsNeedingFullSync(100)
+    expect(fila).toContain(comAncora)
+    expect(fila).not.toContain(semAncora)
+  })
+})
+
+describe('backfillServerTimestamps', () => {
+  it('adota o carimbo so onde da para provar a origem, e roda uma vez', () => {
+    const jid = freshJid()
+    const base = { chatJid: jid, direction: 'in' as const, body: 'oi' }
+    insertMessages([
+      // Segundo redondo + id do WhatsApp: com certeza veio do servidor.
+      { ...base, id: 'B1', ts: 4_000_000, waMessageId: 'B1' },
+      // Fracao de ms: com certeza saiu do nosso relogio.
+      { ...base, id: 'B2', ts: 4_000_777, waMessageId: 'B2' },
+      // Segundo redondo, mas sem id do WhatsApp: o celular nao acharia.
+      { ...base, id: 'local-B3', ts: 4_000_000, waMessageId: null }
+    ])
+
+    expect(backfillServerTimestamps()).toBeGreaterThan(0)
+    expect(oldestAnchor(jid)?.id).toBe('B1')
+
+    // Idempotente: nao sobra nada para uma segunda passada.
+    expect(backfillServerTimestamps()).toBe(0)
+  })
 })
 
 describe('base de leads', () => {
@@ -115,8 +259,26 @@ describe('base de leads', () => {
   })
 
   it('fila de sincronizacao completa ignora quem ja esta completo', () => {
+    // A fila so lista quem tem ancora — sem ela nao ha o que pedir ao celular.
+    const jid = freshJid()
+    upsertChat(jid, { lastMessage: 'oi', lastTs: Date.now() })
+    const listId = createContactList('Base fila').id
+    insertContacts([{ listId, name: 'Lead', phoneE164: phoneOf(jid), extraJson: null }])
+    refreshLeadFlags()
+    insertMessages([
+      {
+        id: 'FILA-1',
+        chatJid: jid,
+        direction: 'in',
+        body: 'oi',
+        ts: 6_000_000,
+        waTs: 6_000_000,
+        waMessageId: 'FILA-1'
+      }
+    ])
+
     const pendentes = leadChatsNeedingFullSync()
-    expect(pendentes.length).toBeGreaterThan(0)
+    expect(pendentes).toContain(jid)
 
     setChatSync(pendentes[0], { syncedFull: true })
     expect(leadChatsNeedingFullSync()).not.toContain(pendentes[0])

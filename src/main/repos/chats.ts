@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import { getDb, scheduleSave, withBulkWrite } from '../db'
 import { chats, messages } from '../db/schema'
 import { avatarUrl, mediaUrl } from '../core/whatsapp/mediaStore'
@@ -279,12 +279,27 @@ export function setChatSync(
  *
  * E a fila do "focar na base": quem esta na base tem a conversa completa; o
  * resto da inbox se contenta com a janela recente.
+ *
+ * So entra quem TEM ancora (ver `oldestAnchor`). Uma conversa que existe apenas
+ * porque o disparo escreveu nela nao tem como ser pedida ao celular, e ate aqui
+ * ela era marcada como "completa" so para a fila andar — uma mentira que a
+ * tirava da fila para sempre. Sem ancora ela simplesmente nao e listada, e
+ * volta sozinha quando ganhar a primeira mensagem com carimbo do servidor.
  */
 export function leadChatsNeedingFullSync(limit = 50): string[] {
   return getDb()
     .select({ jid: chats.jid })
     .from(chats)
-    .where(and(eq(chats.isLead, 1), eq(chats.syncedFull, 0)))
+    .where(
+      and(
+        eq(chats.isLead, 1),
+        eq(chats.syncedFull, 0),
+        sql`EXISTS (SELECT 1 FROM messages m
+                    WHERE m.chat_jid = ${chats.jid}
+                      AND m.wa_ts IS NOT NULL
+                      AND m.wa_message_id IS NOT NULL)`
+      )
+    )
     .orderBy(sql`coalesce(${chats.lastTs}, 0) DESC`)
     .limit(limit)
     .all()
@@ -404,6 +419,13 @@ export interface InsertMessageInput {
   direction: MessageDirection
   body: string | null
   ts: number
+  /**
+   * Carimbo do servidor em ms, ou null quando o `ts` veio do nosso relogio.
+   *
+   * So quem recebe a mensagem do Baileys tem esse valor. Quem grava o proprio
+   * envio na hora (`recordOutgoing`) deixa null e espera o eco corrigir.
+   */
+  waTs?: number | null
   waMessageId: string | null
   status?: MessageStatus | null
   mediaKind?: MediaKind | null
@@ -424,6 +446,7 @@ function toRow(m: InsertMessageInput): typeof messages.$inferInsert {
     direction: m.direction,
     body: m.body,
     ts: m.ts,
+    waTs: m.waTs ?? null,
     waMessageId: m.waMessageId,
     status: m.status ?? null,
     mediaKind: m.mediaKind ?? null,
@@ -438,14 +461,41 @@ function toRow(m: InsertMessageInput): typeof messages.$inferInsert {
   }
 }
 
+/**
+ * Adota o carimbo do servidor numa linha que ja existe sem ele.
+ *
+ * O app grava o proprio envio na hora, com o relogio da maquina, porque esperar
+ * o eco do Baileys deixaria a mensagem alguns segundos sumida da tela. O eco
+ * chega depois com o carimbo de verdade — e ate aqui era simplesmente
+ * descartado pela idempotencia, deixando o `ts` fabricado para sempre. Isso
+ * quebrava o pedido de historico antigo: a ancora ia com um timestamp que o
+ * celular nao conhece, e o aparelho nao respondia nada.
+ *
+ * NAO passa por `afterInsert`: aquilo incrementa nao-lidas, grava opt-out de
+ * LGPD e mexe no CRM. Isto aqui e so a correcao de um carimbo.
+ */
+function adoptServerStamp(m: InsertMessageInput): void {
+  getDb()
+    .update(messages)
+    .set({ ts: m.ts, waTs: m.waTs, waMessageId: m.waMessageId })
+    .where(and(eq(messages.id, m.id), isNull(messages.waTs)))
+    .run()
+}
+
 /** true se a mensagem foi inserida; false se ja existia (idempotencia). */
 export function insertMessage(m: InsertMessageInput): boolean {
   const exists = getDb()
-    .select({ id: messages.id })
+    .select({ id: messages.id, waTs: messages.waTs })
     .from(messages)
     .where(eq(messages.id, m.id))
     .get()
-  if (exists) return false
+  if (exists) {
+    if (exists.waTs == null && m.waTs != null) {
+      adoptServerStamp(m)
+      scheduleSave()
+    }
+    return false
+  }
 
   getDb().insert(messages).values(toRow(m)).run()
   scheduleSave()
@@ -469,20 +519,36 @@ export function insertMessages(rows: InsertMessageInput[]): InsertMessageInput[]
   for (const m of rows) unique.set(m.id, m)
   const ids = [...unique.keys()]
 
-  const known = new Set<string>()
+  // Alem de "ja conheco este id", o lookup traz o carimbo do servidor: e ele
+  // que diz se a linha existente ainda precisa ser corrigida pelo eco.
+  const known = new Map<string, number | null>()
   const LOOKUP_CHUNK = 400
   for (let i = 0; i < ids.length; i += LOOKUP_CHUNK) {
     for (const r of getDb()
-      .select({ id: messages.id })
+      .select({ id: messages.id, waTs: messages.waTs })
       .from(messages)
       .where(inArray(messages.id, ids.slice(i, i + LOOKUP_CHUNK)))
       .all()) {
-      known.add(r.id)
+      known.set(r.id, r.waTs)
     }
   }
 
-  const fresh = [...unique.values()].filter((m) => !known.has(m.id))
-  if (fresh.length === 0) return []
+  const fresh: InsertMessageInput[] = []
+  /**
+   * Linhas que ja existiam com carimbo local e agora ganharam o do servidor.
+   *
+   * Ficam FORA do retorno de proposito: o chamador roda `afterInsert` no que
+   * volta daqui, e aquilo tem efeito colateral nao idempotente (nao-lidas,
+   * opt-out, CRM, download de midia). Isto e correcao de carimbo, nao mensagem
+   * nova — e emitir 'inserted' aqui ainda faria um lote de historico casar com
+   * um pedido que ele nao respondeu.
+   */
+  const corrigir: InsertMessageInput[] = []
+  for (const m of unique.values()) {
+    if (!known.has(m.id)) fresh.push(m)
+    else if (known.get(m.id) == null && m.waTs != null) corrigir.push(m)
+  }
+  if (fresh.length === 0 && corrigir.length === 0) return []
 
   withBulkWrite(() => {
     // Lotes pequenos: o sql.js monta a query inteira em memoria (mesma razao do
@@ -494,6 +560,10 @@ export function insertMessages(rows: InsertMessageInput[]): InsertMessageInput[]
         .values(fresh.slice(i, i + INSERT_CHUNK).map(toRow))
         .run()
     }
+    // Um UPDATE por linha, e nao um lote: `corrigir` so tem o que o proprio app
+    // gravou na hora do envio (unidades por lote), enquanto `fresh` tem os
+    // milhares do historico. Otimizar aqui seria complicar o que nao pesa.
+    for (const m of corrigir) adoptServerStamp(m)
     scheduleSave()
   })
   return fresh
@@ -583,11 +653,11 @@ export function countMessages(chatJid: string): number {
 }
 
 /**
- * A mensagem mais antiga da conversa.
+ * A mensagem mais antiga da conversa, do jeito que ela aparece na tela.
  *
- * E a ancora que o `fetchMessageHistory` do Baileys exige para pedir "o que veio
- * antes desta". `fromMe` sai da direcao gravada: a chave do WhatsApp precisa
- * dele para localizar a mensagem.
+ * Serve para o bookkeeping de "ate onde ja puxei" (`syncedFrom`), onde a
+ * resposta certa e a linha mais antiga DE VERDADE, com carimbo do servidor ou
+ * nao. Para pedir historico ao celular use `oldestAnchor`.
  */
 export function oldestMessage(
   chatJid: string
@@ -601,6 +671,95 @@ export function oldestMessage(
     .get()
   if (!row) return null
   return { id: row.id, remoteJid: chatJid, fromMe: row.direction === 'out', ts: row.ts }
+}
+
+/** Ancora de um pedido de historico: a tupla que o celular precisa resolver. */
+export interface HistoryAnchor {
+  id: string
+  remoteJid: string
+  fromMe: boolean
+  ts: number
+}
+
+/**
+ * A mensagem mais antiga que o CELULAR consegue localizar.
+ *
+ * O `fetchMessageHistory` pede "o que veio antes desta" pela tupla
+ * (chatJid, oldestMsgId, oldestMsgFromMe, oldestMsgTimestampMs). Quando essa
+ * tupla nao resolve no aparelho, ele **nao responde nada** — nem erro, nem lote
+ * vazio — e o app ficava 45s esperando e concluindo "celular offline".
+ *
+ * Por isso as duas condicoes sao estruturais, e nao uma convencao a lembrar:
+ *
+ * - `wa_ts NOT NULL`: carimbo do servidor. O `ts` de uma mensagem que o proprio
+ *   app gravou no envio e o relogio da maquina, que o celular nunca viu.
+ * - `wa_message_id NOT NULL`: id de verdade do WhatsApp. Os ids sinteticos
+ *   (`local-...`, `campaign-...`) nao existem em aparelho nenhum.
+ *
+ * O `id` sai de `wa_message_id`, e nao de `id`, justamente para nenhum id
+ * sintetico conseguir chegar ao celular.
+ */
+export function oldestAnchor(chatJid: string): HistoryAnchor | null {
+  const row = getDb()
+    .select({
+      waMessageId: messages.waMessageId,
+      direction: messages.direction,
+      waTs: messages.waTs
+    })
+    .from(messages)
+    .where(
+      and(eq(messages.chatJid, chatJid), isNotNull(messages.waTs), isNotNull(messages.waMessageId))
+    )
+    .orderBy(asc(messages.waTs))
+    .limit(1)
+    .get()
+  if (!row?.waMessageId || row.waTs == null) return null
+  return {
+    id: row.waMessageId,
+    remoteJid: chatJid,
+    fromMe: row.direction === 'out',
+    ts: row.waTs
+  }
+}
+
+/**
+ * Preenche `wa_ts` nas linhas antigas em que da para provar a origem.
+ *
+ * PORQUE ISSO PRECISA EXISTIR: a coluna nasce NULL em todo banco ja existente.
+ * Sem backfill, TODA conversa viraria `noAnchor` e o app pararia de sincronizar
+ * historico — uma regressao bem pior que o bug que estamos corrigindo.
+ *
+ * O criterio e uma prova aritmetica, nao um chute: o WhatsApp manda
+ * `messageTimestamp` em SEGUNDOS, entao todo carimbo que veio dele termina em
+ * `000` depois de virar ms. Um `ts` que nao termina em 000 e, com certeza, do
+ * nosso relogio. Na direcao contraria sobra ~1 em 1000 de falso positivo (um
+ * `Date.now()` que calhou de cair num segundo redondo); o pior caso e uma
+ * ancora com ate 999ms de erro, que o celular nao resolve e o usuario tenta de
+ * novo. Nada corrompe.
+ *
+ * Roda UMA VEZ (o chamador guarda o marcador). Heuristica de migracao e uma
+ * coisa — auditavel, com data; regra de runtime seria outra, e e exatamente o
+ * tipo de convencao implicita que produziu este bug.
+ */
+export function backfillServerTimestamps(): number {
+  const db = getDb()
+  const alvo =
+    db
+      .select({ n: sql<number>`count(*)` })
+      .from(messages)
+      .where(
+        and(isNull(messages.waTs), isNotNull(messages.waMessageId), sql`${messages.ts} % 1000 = 0`)
+      )
+      .get()?.n ?? 0
+  if (alvo === 0) return 0
+
+  withBulkWrite(() => {
+    db.run(
+      sql`UPDATE messages SET wa_ts = ts
+          WHERE wa_ts IS NULL AND wa_message_id IS NOT NULL AND ts % 1000 = 0`
+    )
+  })
+  return alvo
 }
 
 /** Mensagens recebidas ainda nao marcadas como lidas no WhatsApp. */

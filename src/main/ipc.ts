@@ -52,7 +52,7 @@ import {
   listChats,
   listMessages,
   countMessages,
-  oldestMessage,
+  oldestAnchor,
   markRead,
   insertMessage,
   upsertChat,
@@ -156,6 +156,11 @@ function recordOutgoing(input: {
   media?: Partial<InsertMessageInput>
 }): void {
   const now = Date.now()
+  // NAO passa `waTs`: este carimbo e o relogio desta maquina, e o celular nao o
+  // conhece. Quem preenche `waTs` e so o parse do que vem do Baileys — o eco
+  // deste envio chega depois e corrige a linha (ver `adoptServerStamp`).
+  // Preencher aqui com `Date.now()` "porque e quase igual" e exatamente o que
+  // fazia o pedido de historico antigo morrer em silencio.
   insertMessage({
     id: input.id ?? input.waId ?? `local-${now}`,
     chatJid: input.chatJid,
@@ -461,9 +466,9 @@ export function registerIpc(): void {
    * ao servidor do WhatsApp e o padrao que faz o numero ser bloqueado.
    */
   ipcMain.handle('inbox:requestOlder', async (_e, chatJid: string) => {
-    const oldest = oldestMessage(chatJid)
-    if (!oldest) return false
-    return (await whatsapp.fetchOlderMessages(oldest)) !== null
+    const anchor = oldestAnchor(chatJid)
+    if (!anchor) return false
+    return (await whatsapp.fetchOlderMessages(anchor)).sent
   })
   ipcMain.handle('inbox:markRead', async (_e, chatJid: string) => {
     markRead(chatJid)

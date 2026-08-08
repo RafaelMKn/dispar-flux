@@ -23,6 +23,7 @@ import {
   repairChatTimestamps,
   clearPhantomChatDates,
   clearUnprovenFullSync,
+  backfillServerTimestamps,
   refreshLeadFlags
 } from './repos/chats'
 import { getBackgroundSettings, shouldShowTrayNotice, getJson, setJson } from './settings'
@@ -174,6 +175,30 @@ async function bootstrap(): Promise<void> {
     setJson('inbox.unprovenFullSyncCleared', true)
     if (desmarcadas > 0) {
       log.info(`${desmarcadas} conversa(s) voltaram para a fila de sincronizacao`)
+    }
+  }
+  /**
+   * Recupera o carimbo do servidor das mensagens gravadas antes da coluna
+   * `wa_ts` existir. Sem isso TODA conversa antiga ficaria sem ancora e o app
+   * pararia de sincronizar historico — ver `backfillServerTimestamps`.
+   */
+  if (!getJson('inbox.waTsBackfilled', false)) {
+    const recuperadas = backfillServerTimestamps()
+    setJson('inbox.waTsBackfilled', true)
+    if (recuperadas > 0) {
+      log.info(`${recuperadas} mensagem(ns) recuperaram o carimbo do WhatsApp`)
+    }
+    /**
+     * E devolve para a fila quem foi dado como completo com a ancora quebrada.
+     *
+     * O `clearUnprovenFullSync` acima ja rodou uma vez, com o marcador antigo;
+     * quem sincronizou depois dele "completou" conversas pedindo historico com
+     * um carimbo que o celular nunca resolveu. Marcador proprio para nao
+     * disputar com aquele.
+     */
+    const desmarcadas = clearUnprovenFullSync()
+    if (desmarcadas > 0) {
+      log.info(`${desmarcadas} conversa(s) voltaram para a fila apos a correcao da ancora`)
     }
   }
   log.info(`${refreshLeadFlags()} conversa(s) na base de leads`)

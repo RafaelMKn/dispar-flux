@@ -175,13 +175,25 @@ export interface PinoLike {
   child: () => PinoLike
 }
 
+/**
+ * Linhas do Baileys que passam mesmo abaixo do nivel configurado.
+ *
+ * O `WA_LEVEL` e `warn` para o arquivo nao encher (5 MB x 3) com o detalhe de
+ * sessao do Baileys. So que o `got history notification` sai em `info` — e ele
+ * e a UNICA prova externa de que o celular respondeu a um pedido de historico.
+ * Sem essa linha, "o aparelho ficou mudo" e "ele respondeu e o app nao casou"
+ * viram o mesmo timeout generico, que foi o que tornou este bug tao dificil de
+ * enxergar. Sao pouquissimas linhas por sincronizacao.
+ */
+const WA_ALWAYS = /history|peer[- ]?data|on.?demand/i
+
 export function pinoAdapter(scope: string, level: LogLevel = WA_LEVEL): PinoLike {
   const emit =
     (lvl: LogLevel) =>
     (a: unknown, b?: unknown): void => {
-      if (ORDER[lvl] < ORDER[level]) return
       // Normaliza as duas formas de chamada do pino.
       const msg = typeof a === 'string' ? a : typeof b === 'string' ? b : ''
+      if (ORDER[lvl] < ORDER[level] && !WA_ALWAYS.test(msg)) return
       const meta = typeof a === 'string' ? b : a
       write(lvl, scope, msg || '(sem mensagem)', meta)
     }
