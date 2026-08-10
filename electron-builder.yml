@@ -49,3 +49,14 @@ publish:
   provider: github
   owner: RafaelMKn
   repo: dispar-flux
+  # O release e escrito a mao (com as notas) antes de a tag subir. Sem esta
+  # linha o electron-builder assume `draft` e, ao achar um release ja publicado
+  # na mesma tag, recusa mandar os assets e segue como se nada fosse:
+  #   GitHub release not created  reason=existing type not compatible with
+  #   publishing type  existingType=release publishingType=draft
+  #   skipped publishing  file=latest.yml
+  # "skipped publishing" nao derruba o job, entao o workflow fica verde e o
+  # release fica sem instalador e sem latest.yml — que foi o que aconteceu na
+  # v0.3.0. Com `release` ele sobe direto no release existente, preservando as
+  # notas, e ninguem precisa lembrar de tirar o rascunho depois.
+  releaseType: release
