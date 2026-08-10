@@ -177,11 +177,17 @@ instalador, o `.blockmap` (download diferencial) e o **`latest.yml`** — o mani
 `electron-updater` lê no PC do usuário para comparar versões e validar o `sha512` do
 download.
 
-> **O release precisa deixar de ser rascunho.** O electron-builder cria o release como
-> _draft_, e draft não aparece na API pública: o updater dos usuários recebe 404 e
-> ninguém atualiza. Confira os três assets e clique em **Publish release** (ou
-> `gh release edit v0.1.2 --draft=false`). Para publicar direto nos próximos, adicione
-> `releaseType: release` ao bloco `publish` do `electron-builder.yml`.
+> **Bumpe a `version` junto com a tag.** O workflow aborta se a tag não bater com o
+> `package.json`, e aí nenhum asset sobe: o release fica só com as notas, e o updater de
+> quem já tem a versão anterior recebe 404 no `latest.yml`. O `npm version` acima faz bump,
+> commit e tag numa tacada só — foi pular esse passo que deixou a v0.3.0 sem instalador.
+
+> **Confira os três assets no fim.** O `electron-builder.yml` usa `releaseType: release`,
+> então os arquivos vão direto para o release (sem rascunho para publicar depois). Se você
+> escreve as notas na interface do GitHub antes de subir a tag, mantenha o release
+> **publicado** — o electron-builder recusa subir assets quando o tipo do release existente
+> não bate com o dele, e apenas registra `skipped publishing` sem derrubar o job. Ou seja:
+> workflow verde não é garantia de release completo, olhe os assets.
 
 ## Roadmap
 

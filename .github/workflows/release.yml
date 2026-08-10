@@ -51,4 +51,11 @@ jobs:
           # O electron-builder le GH_TOKEN (nao GITHUB_TOKEN). O secret e
           # automatico, nao precisa criar PAT.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Segunda trava do electron-builder: ele so sobe assets num release ja
+          # publicado se a publicacao tiver menos de 2 horas, senao pula tudo
+          # com "existing release published more than 2 hours ago". Aqui o
+          # release costuma ser escrito horas antes de a tag subir, entao a
+          # trava dispara sozinha. O passo acima ja garante que a tag bate com a
+          # version do package.json, que e a protecao que de fato importa.
+          EP_GH_IGNORE_TIME: 'true'
         run: npm run release
