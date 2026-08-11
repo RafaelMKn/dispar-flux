@@ -21,11 +21,14 @@ import {
   chatsNeedingAvatar,
   setAvatar,
   unreadIncomingIds,
+  getMessageRow,
   type HistoryAnchor
 } from '../../repos/chats'
 import { saveAvatar } from './mediaStore'
 import { webmToOggOpus } from './opusOgg'
 import { SerialQueue } from './requestQueue'
+import { MemoryCache } from './memoryCache'
+import { decideReconnect } from './reconnect'
 import {
   resolvePairingBrowser,
   pairingKind,
@@ -83,8 +86,6 @@ const RELINK_DISMISSED_KEY = 'wa.relinkNoticeDismissed'
 function getPairingRecord(): PairingRecord | null {
   return getJson<PairingRecord | null>(PAIRING_KEY, null)
 }
-
-const MAX_BACKOFF_MS = 60_000
 
 /**
  * Versao do WhatsApp Web anunciada no handshake.
@@ -154,9 +155,6 @@ async function resolveWaVersion(): Promise<{ version: WaVersion; source: string 
     return { version: FALLBACK_WA_VERSION, source: 'fallback embutido' }
   }
 }
-
-/** 405 nao e recuperavel por retry: insistir so aumenta risco de bloqueio. */
-const FATAL_CODES = new Set([405])
 
 /**
  * Por quanto tempo uma foto de perfil cacheada vale.
@@ -234,6 +232,8 @@ class WhatsappService extends EventEmitter {
    * calado. Agora quem chega espera a vez, pelo tempo que aceitar esperar.
    */
   private readonly historyQueue = new SerialQueue({ gapMs: HISTORY_REQUEST_GAP_MS })
+  /** Contadores de retentativa de decifragem, exigidos pelo Baileys. */
+  private readonly retryCounters = new MemoryCache({ ttlMs: 60 * 60 * 1000, maxEntries: 2000 })
 
   getState(): WhatsappState {
     /**
@@ -261,15 +261,64 @@ class WhatsappService extends EventEmitter {
   }
 
   async connect(): Promise<void> {
-    if (this.starting) return
     if (this.state.status === 'connected' || this.state.status === 'connecting') return
-    this.starting = true
     this.intentionalClose = false
+    // Clique do usuario e um recomeco: o backoff acumulado nao deve punir quem
+    // acabou de arrumar a internet e pediu para tentar de novo.
+    this.reconnectAttempts = 0
+    await this.openGuarded('user')
+  }
+
+  /**
+   * O UNICO caminho para abrir um socket.
+   *
+   * Antes o timer de reconexao chamava `open()` direto, furando as guardas que
+   * so existiam em `connect()`. Bastava o usuario clicar em "conectar" enquanto
+   * o backoff disparava para nascerem dois sockets — e como so o ultimo ficava
+   * em `this.sock`, o orfao continuava com os ouvintes ligados, alimentando
+   * `handleUpsert` e `handleHistorySet` em paralelo.
+   */
+  private async openGuarded(reason: 'user' | 'reconnect' | 'restartRequired'): Promise<void> {
+    if (this.starting) {
+      log.info('abertura de socket ignorada: ja ha uma em andamento', { reason })
+      return
+    }
+    this.starting = true
     this.clearReconnectTimer()
     try {
+      this.teardownSocket()
       await this.open()
     } finally {
       this.starting = false
+    }
+  }
+
+  /**
+   * Desliga o socket anterior antes de abrir outro.
+   *
+   * A ORDEM IMPORTA: `end()` emite um `connection.update` de fechamento, e com
+   * os ouvintes ainda ligados isso reagendaria uma reconexao do socket que
+   * estamos justamente descartando.
+   */
+  private teardownSocket(): void {
+    const sock = this.sock
+    this.sock = null
+    if (!sock) return
+    try {
+      sock.ev.removeAllListeners('connection.update')
+      sock.ev.removeAllListeners('creds.update')
+      sock.ev.removeAllListeners('messages.upsert')
+      sock.ev.removeAllListeners('messages.update')
+      sock.ev.removeAllListeners('contacts.upsert')
+      sock.ev.removeAllListeners('contacts.update')
+      sock.ev.removeAllListeners('messaging-history.set')
+    } catch (e) {
+      log.warn('falha ao desligar os ouvintes do socket anterior', e)
+    }
+    try {
+      sock.end(undefined)
+    } catch {
+      // socket ja estava morto
     }
   }
 
@@ -354,7 +403,63 @@ class WhatsappService extends EventEmitter {
        * numa desligava a outra em silencio.
        */
       shouldSyncHistoryMessage: () => true,
-      markOnlineOnConnect: false
+      markOnlineOnConnect: false,
+
+      /* ── Tempos, declarados em vez de herdados ────────────────────────── */
+      /** Baileys: 20_000. Rede domestica ruim precisa de mais folga. */
+      connectTimeoutMs: 60_000,
+      /** Baileys: 30_000. Ping mais frequente derruba menos em NAT agressivo. */
+      keepAliveIntervalMs: 25_000,
+      /**
+       * Baileys: 60_000.
+       *
+       * Este e o que importava: `fetchMessageHistory` e uma query, e estourar o
+       * prazo dela faz o Baileys lancar — o que chegava a tela como "nao foi
+       * possivel enviar o pedido" quando o pedido apenas demorou a ser aceito.
+       */
+      defaultQueryTimeoutMs: 90_000,
+      /** Baileys: 250. */
+      retryRequestDelayMs: 500,
+      maxMsgRetryCount: 5,
+      /**
+       * Sem isto o Baileys nao conta as retentativas de decifragem e pode
+       * reenviar a mesma mensagem indefinidamente para um aparelho que nao
+       * consegue le-la.
+       */
+      msgRetryCounterCache: this.retryCounters,
+
+      /**
+       * Responde os pedidos de reenvio a partir do banco local.
+       *
+       * Quando o aparelho do contato nao consegue decifrar algo, ele pede a
+       * mensagem de novo; sem `getMessage` o Baileys nao tem o que devolver e o
+       * contato fica com "Aguardando esta mensagem" para sempre.
+       *
+       * O que o banco realmente tem: `raw_proto` so e gravado para mensagens COM
+       * MIDIA (ver inbox.ts), e o `recordOutgoing` nao grava nenhum. Como os
+       * pedidos de reenvio miram sobretudo o nosso texto de saida, o caminho
+       * util aqui e reconstruir o texto. Midia sem protobuf devolve `undefined`
+       * de proposito: mandar o texto no lugar do anexo seria pior que o
+       * "Aguardando esta mensagem".
+       */
+      getMessage: async (key) => {
+        if (!key?.id) return undefined
+        const row = getMessageRow(key.id)
+        if (!row) return undefined
+        if (row.rawProto) {
+          try {
+            const { proto } = await loadBaileys()
+            return (
+              proto.WebMessageInfo.decode(Buffer.from(row.rawProto, 'base64')).message ?? undefined
+            )
+          } catch (e) {
+            log.warn('nao foi possivel reler a mensagem para reenvio', e)
+            return undefined
+          }
+        }
+        if (row.mediaKind) return undefined
+        return row.body ? { conversation: row.body } : undefined
+      }
     })
 
     this.sock = sock
@@ -499,16 +604,19 @@ class WhatsappService extends EventEmitter {
     }
 
     if (connection === 'close') {
-      const { DisconnectReason } = await loadBaileys()
       const statusCode = (lastDisconnect?.error as BoomLike | undefined)?.output?.statusCode
+      const acao = decideReconnect(statusCode, {
+        intentional: this.intentionalClose,
+        attempts: this.reconnectAttempts
+      })
 
-      if (this.intentionalClose) {
+      if (acao.kind === 'idle') {
         this.patch({ status: 'disconnected', qrDataUrl: null, me: null })
         return
       }
 
       // 401: a sessao foi invalidada (deslogado no celular). Auth nao serve mais.
-      if (statusCode === DisconnectReason.loggedOut) {
+      if (acao.kind === 'loggedOut') {
         await this.clearAuth()
         this.patch({
           status: 'loggedOut',
@@ -519,15 +627,29 @@ class WhatsappService extends EventEmitter {
         return
       }
 
-      // 515: o Baileys exige recriar o socket logo apos o pareamento. E esperado.
-      if (statusCode === DisconnectReason.restartRequired) {
+      // 515: o Baileys exige recriar o socket logo apos o pareamento. E esperado
+      // — e por isso NAO conta como tentativa de reconexao.
+      if (acao.kind === 'reopen') {
         log.info('restartRequired (515): recriando o socket')
-        await this.open()
+        await this.openGuarded('restartRequired')
+        return
+      }
+
+      if (acao.kind === 'giveUp') {
+        log.error('desisti de reconectar', { tentativas: this.reconnectAttempts })
+        this.patch({
+          status: 'disconnected',
+          qrDataUrl: null,
+          me: null,
+          lastError:
+            `Nao conseguimos reconectar depois de ${this.reconnectAttempts} tentativas. ` +
+            `Verifique sua internet e clique em "Gerar QR e conectar" para tentar de novo.`
+        })
         return
       }
 
       // 405 e afins: retry nao resolve e insistir aumenta risco de bloqueio.
-      if (statusCode !== undefined && FATAL_CODES.has(statusCode)) {
+      if (acao.kind === 'fatal') {
         log.error(`handshake rejeitado pelo WhatsApp (${statusCode})`, {
           version: this.lastVersion?.join('.'),
           paired: this.paired
@@ -552,20 +674,22 @@ class WhatsappService extends EventEmitter {
         return
       }
 
-      this.scheduleReconnect(statusCode)
+      this.scheduleReconnect(statusCode, acao.delayMs)
     }
   }
 
-  private scheduleReconnect(statusCode?: number): void {
+  private scheduleReconnect(statusCode: number | undefined, delay: number): void {
     this.reconnectAttempts += 1
-    const delay = Math.min(1000 * 2 ** (this.reconnectAttempts - 1), MAX_BACKOFF_MS)
     this.patch({
       status: 'disconnected',
       lastError: `Conexao caiu (codigo ${statusCode ?? 'desconhecido'}). Reconectando em ${Math.round(delay / 1000)}s...`
     })
     this.clearReconnectTimer()
     this.reconnectTimer = setTimeout(() => {
-      void this.open()
+      // Pelo `openGuarded`, e nao por `open()` direto: o timer disparando junto
+      // com um clique em "conectar" abria dois sockets, e so o ultimo ficava em
+      // `this.sock` — o orfao seguia com os ouvintes vivos, gravando no banco.
+      void this.openGuarded('reconnect')
     }, delay)
   }
 
@@ -580,12 +704,7 @@ class WhatsappService extends EventEmitter {
   async disconnect(): Promise<void> {
     this.intentionalClose = true
     this.clearReconnectTimer()
-    try {
-      this.sock?.end(undefined)
-    } catch {
-      // socket ja estava morto
-    }
-    this.sock = null
+    this.teardownSocket()
     this.patch({ status: 'disconnected', qrDataUrl: null, me: null, lastError: null })
   }
 
@@ -598,7 +717,7 @@ class WhatsappService extends EventEmitter {
     } catch {
       // se o socket nao esta vivo, seguimos e limpamos localmente
     }
-    this.sock = null
+    this.teardownSocket()
     await this.clearAuth()
     this.patch({ status: 'disconnected', qrDataUrl: null, me: null, lastError: null })
   }
