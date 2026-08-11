@@ -72,6 +72,7 @@ import {
   autoSyncOnOpen,
   resetAutoSync
 } from './core/whatsapp/historySync'
+import { recordRequest, resetRequests } from './core/whatsapp/historyRequests'
 import {
   board,
   createStage,
@@ -191,7 +192,12 @@ export function registerIpc(): void {
     // A sincronizacao automatica ao abrir conversa vale por conexao: numa nova
     // sessao vale a pena pedir de novo o que o WhatsApp talvez nao tenha
     // mandado antes.
-    if (state.status === 'connected') resetAutoSync()
+    if (state.status === 'connected') {
+      resetAutoSync()
+      // Pedido feito na sessao anterior nao vai mais ser respondido: o lote
+      // chegaria a um socket que nao existe mais.
+      resetRequests()
+    }
     broadcast('whatsapp:state', state)
   })
 
@@ -421,6 +427,16 @@ export function registerIpc(): void {
   // minutos sem sinal de vida na tela.
   inboxEvents.on('syncProgress', (s: HistorySyncState) => broadcast('inbox:syncProgress', s))
   inboxEvents.on('leadSync', (s: ChatSyncState) => broadcast('inbox:leadSync', s))
+  /**
+   * Resposta de historico que chegou depois de a tela ja ter desistido.
+   *
+   * O aparelho responde quando consegue, as vezes minutos depois. Sem este
+   * aviso o usuario ficaria com a ultima frase que leu ("ainda nao chegou")
+   * enquanto as mensagens ja estavam na conversa.
+   */
+  inboxEvents.on('historyLate', (p: { chatJid: string; inserted: number }) =>
+    broadcast('inbox:historyLate', p)
+  )
 
   ipcMain.handle(
     'inbox:chats',
@@ -462,13 +478,19 @@ export function registerIpc(): void {
    * Pede ao WhatsApp o historico anterior ao que ja temos.
    *
    * A tela so chama isto quando o banco local acabou. O `fetchOlderMessages`
-   * ainda aplica um cooldown proprio: duas defesas, porque rajada de requisicao
+   * ainda serializa os pedidos com folga entre eles, porque rajada de requisicao
    * ao servidor do WhatsApp e o padrao que faz o numero ser bloqueado.
+   *
+   * `waitForSlotMs: 0` de proposito: isto nasce de um gesto de rolagem. Segurar
+   * a rolagem por minutos esperando uma vaga na fila seria pior do que nao fazer
+   * nada — e o usuario pode simplesmente rolar de novo.
    */
   ipcMain.handle('inbox:requestOlder', async (_e, chatJid: string) => {
     const anchor = oldestAnchor(chatJid)
     if (!anchor) return false
-    return (await whatsapp.fetchOlderMessages(anchor)).sent
+    const pedido = await whatsapp.fetchOlderMessages(anchor, 50, { waitForSlotMs: 0 })
+    if (pedido.sent) recordRequest(chatJid, pedido.requestId)
+    return pedido.sent
   })
   ipcMain.handle('inbox:markRead', async (_e, chatJid: string) => {
     markRead(chatJid)

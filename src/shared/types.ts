@@ -95,15 +95,31 @@ export interface HistorySyncState {
   messages: number
 }
 
-/** Resultado de um pedido de historico sob demanda de UMA conversa. */
-export interface ChatSyncResult {
-  jid: string
-  /** Mensagens novas gravadas nesta sincronizacao. */
-  fetched: number
-  /** Chegou ate a janela pedida (7/30 dias). */
-  reachedTarget: boolean
-  /** O WhatsApp nao tem mais passado desta conversa. */
-  exhausted: boolean
+/**
+ * Como uma sincronizacao sob demanda TERMINOU.
+ *
+ * PORQUE E UM TIPO E NAO UM PUNHADO DE BOOLEANOS: a combinacao anterior
+ * permitia estados que a tela nao sabia traduzir, e o pior deles — "saiu do
+ * laco sem ter pedido nada" — caia justamente na frase de sucesso. Pior ainda,
+ * "nao consegui enviar o pedido" e "o celular nao respondeu" acabavam na mesma
+ * mensagem, acusando o aparelho de um problema que era daqui. Aqui todo fim de
+ * caminho tem nome e o `describeSync` e exaustivo pelo tipo.
+ */
+export type ChatSyncOutcome =
+  /** Alcancou a janela pedida (7/30 dias). */
+  | 'reachedTarget'
+  /** O celular RESPONDEU e nao ha mais passado nesta conversa. */
+  | 'exhausted'
+  /** Trouxe mensagens; ainda ha passado alem do que pegamos. */
+  | 'fetched'
+  /**
+   * O pedido saiu e a resposta ainda nao chegou. NAO e erro.
+   *
+   * Quem responde pedido de historico antigo e o APARELHO pareado, montando e
+   * subindo um pacote — pode levar minutos. O pedido continua vivo no registro
+   * e o lote e creditado quando chegar, sem novo clique.
+   */
+  | 'awaitingPhone'
   /**
    * Nao ha ancora: nenhuma mensagem local que o celular consiga localizar.
    *
@@ -111,27 +127,32 @@ export interface ChatSyncResult {
    * ao enviar — e essas linhas nao carregam o carimbo nem o id que o aparelho
    * conhece. Ver `oldestAnchor`.
    */
-  noAnchor: boolean
+  | 'noAnchor'
   /** O WhatsApp nao estava conectado. */
-  offline: boolean
-  /**
-   * O celular nao respondeu ao pedido dentro do prazo.
-   *
-   * Quem responde pedido de historico antigo e o APARELHO pareado, nao o
-   * servidor: se ele esta desligado, sem internet ou com o WhatsApp fechado, o
-   * pedido fica sem resposta. Nao confundir com `exhausted` — aqui nao sabemos
-   * se ha mais historico, so que ninguem respondeu.
-   */
-  timedOut: boolean
-  /**
-   * O pedido nem chegou a sair (falha ao falar com o WhatsApp).
-   *
-   * Diferente de `timedOut`: ali o pedido saiu e ninguem respondeu. Sem essa
-   * separacao, "nao consegui pedir" e "pedi e o celular ficou calado" davam a
-   * mesma mensagem na tela — e sao problemas de lugares diferentes.
-   */
-  requestFailed: boolean
+  | 'offline'
+  /** Nao conseguimos ENVIAR o pedido. Problema daqui, nunca do aparelho. */
+  | 'requestFailed'
+  /** A fila de pedidos nao liberou a vez a tempo. Tambem nao e o aparelho. */
+  | 'busy'
+
+/** Resultado de um pedido de historico sob demanda de UMA conversa. */
+export interface ChatSyncResult {
+  jid: string
+  /** Mensagens novas gravadas nesta sincronizacao. */
+  fetched: number
+  outcome: ChatSyncOutcome
+  /** Pedidos desta conversa ainda sem resposta quando esta chamada terminou. */
+  pendingRequests: number
 }
+
+/** Por que a fila da base de leads parou antes do fim. */
+export type LeadSyncStop =
+  /** Pedidos enviados, respostas ainda nao chegaram. */
+  | 'phoneQuiet'
+  /** Nao conseguimos enviar o pedido — problema daqui. */
+  | 'requestFailed'
+  | 'offline'
+  | 'busy'
 
 /** Andamento da sincronizacao completa das conversas da base de leads. */
 export interface ChatSyncState {
@@ -143,8 +164,13 @@ export interface ChatSyncState {
   jid: string | null
   /** Mensagens novas gravadas na rodada. */
   fetched: number
-  /** A fila parou porque o celular deixou de responder. */
-  stalled: boolean
+  /**
+   * Por que a fila parou, ou null se terminou normalmente / foi cancelada.
+   *
+   * Substituiu um `stalled: boolean` documentado como "o celular deixou de
+   * responder" — que a fila levantava tambem quando o pedido nem tinha saido.
+   */
+  stoppedReason: LeadSyncStop | null
 }
 
 /** Arquivo escolhido pelo usuario para enviar. */
@@ -582,6 +608,8 @@ export interface DisparApi {
     cancelLeadSync: () => Promise<void>
     leadSyncState: () => Promise<ChatSyncState>
     onLeadSync: (cb: (s: ChatSyncState) => void) => () => void
+    /** Lote de historico creditado depois de a tela ja ter parado de esperar. */
+    onHistoryLate: (cb: (p: { chatJid: string; inserted: number }) => void) => () => void
     /** Andamento da sincronizacao de historico. */
     syncState: () => Promise<HistorySyncState>
     onSyncProgress: (cb: (s: HistorySyncState) => void) => () => void

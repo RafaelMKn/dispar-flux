@@ -24,6 +24,7 @@ import {
 } from '../../repos/chats'
 import { saveAvatar } from './mediaStore'
 import { webmToOggOpus } from './opusOgg'
+import { SerialQueue } from './requestQueue'
 
 const log = scoped('whatsapp')
 
@@ -162,7 +163,7 @@ const AVATAR_GAP_MS = 400
  * Tres segundos e imperceptivel para quem le a conversa e mantem o trafego com
  * cara de uso humano.
  */
-const HISTORY_REQUEST_COOLDOWN_MS = 3000
+const HISTORY_REQUEST_GAP_MS = 3000
 
 /**
  * Resultado de um pedido de historico antigo.
@@ -173,10 +174,13 @@ const HISTORY_REQUEST_COOLDOWN_MS = 3000
  * "enviado sem id" existia so para nao ser confundido com aqueles — ao custo de
  * desligar em silencio o casamento por id da resposta. Aqui cada estado tem
  * nome, e quem chama e obrigado a tratar.
+ *
+ * `busy` (antes chamado `cooldown`) mudou de nome junto com a mudanca de
+ * mecanismo: nao e mais "espere 3s e tente de novo", e sim "outro pedido
+ * segurou a vaga por mais tempo do que voce aceitou esperar". Ver `SerialQueue`.
  */
 export type HistoryRequest =
-  | { sent: true; requestId: string | null }
-  | { sent: false; reason: 'offline' | 'cooldown' | 'error' }
+  { sent: true; requestId: string | null } | { sent: false; reason: 'offline' | 'busy' | 'error' }
 
 class WhatsappService extends EventEmitter {
   private sock: WASocket | null = null
@@ -203,8 +207,16 @@ class WhatsappService extends EventEmitter {
   private lastVersion: WaVersion | null = null
   /** Evita duas varreduras de foto de perfil concorrentes (reconexao rapida). */
   private avatarSweepRunning = false
-  /** Segura o pedido de historico antigo durante o cooldown (ver constante). */
-  private historyRequestInFlight = false
+  /**
+   * Fila dos pedidos de historico antigo.
+   *
+   * Antes isto era um booleano derrubado por `setTimeout`, e quem chegasse com
+   * ele levantado era RECUSADO. Como a tela (`autoSyncOnOpen`) e a fila de
+   * leads competiam pela mesma vaga, uma delas voltava de maos vazias sem ter
+   * pedido nada — e a tela reportava isso como se o celular tivesse ficado
+   * calado. Agora quem chega espera a vez, pelo tempo que aceitar esperar.
+   */
+  private readonly historyQueue = new SerialQueue({ gapMs: HISTORY_REQUEST_GAP_MS })
 
   getState(): WhatsappState {
     return { ...this.state }
@@ -715,12 +727,28 @@ class WhatsappService extends EventEmitter {
    * (id real do WhatsApp e carimbo do servidor) sem as quais o aparelho nao
    * localiza a mensagem e nao responde nada.
    */
-  async fetchOlderMessages(oldest: HistoryAnchor, count = 50): Promise<HistoryRequest> {
+  async fetchOlderMessages(
+    oldest: HistoryAnchor,
+    count = 50,
+    opts: { waitForSlotMs?: number } = {}
+  ): Promise<HistoryRequest> {
+    if (!this.socket) return { sent: false, reason: 'offline' }
+
+    const slot = await this.historyQueue.run(
+      () => this.sendHistoryRequest(oldest, count),
+      opts.waitForSlotMs ?? 0
+    )
+    if (!slot.ok) return { sent: false, reason: 'busy' }
+    return slot.value
+  }
+
+  /** O envio em si. Roda com a vaga da fila ja garantida. */
+  private async sendHistoryRequest(oldest: HistoryAnchor, count: number): Promise<HistoryRequest> {
+    // Reconferido aqui: a espera pela vez pode ter durado minutos, e nesse
+    // meio-tempo a conexao pode ter caido.
     const sock = this.socket
     if (!sock) return { sent: false, reason: 'offline' }
-    if (this.historyRequestInFlight) return { sent: false, reason: 'cooldown' }
 
-    this.historyRequestInFlight = true
     try {
       /**
        * MILISSEGUNDOS, nao segundos.
@@ -776,12 +804,6 @@ class WhatsappService extends EventEmitter {
         erro: e instanceof Error ? e.message : e
       })
       return { sent: false, reason: 'error' }
-    } finally {
-      // Uma janelinha de folga antes de aceitar o proximo pedido: o usuario
-      // rolando rapido nao pode virar uma rajada de requisicoes.
-      setTimeout(() => {
-        this.historyRequestInFlight = false
-      }, HISTORY_REQUEST_COOLDOWN_MS)
     }
   }
 

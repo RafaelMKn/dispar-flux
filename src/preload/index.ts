@@ -97,6 +97,8 @@ const api: DisparApi = {
     cancelLeadSync: () => ipcRenderer.invoke('inbox:cancelLeadSync'),
     leadSyncState: () => ipcRenderer.invoke('inbox:leadSyncState'),
     onLeadSync: (cb: (s: ChatSyncState) => void) => subscribe('inbox:leadSync', cb),
+    onHistoryLate: (cb: (p: { chatJid: string; inserted: number }) => void) =>
+      subscribe('inbox:historyLate', cb),
     syncState: () => ipcRenderer.invoke('inbox:syncState'),
     onSyncProgress: (cb: (s: HistorySyncState) => void) => subscribe('inbox:syncProgress', cb),
     send: (chatJid: string, text: string) => ipcRenderer.invoke('inbox:send', chatJid, text),
