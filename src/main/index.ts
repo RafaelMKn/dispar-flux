@@ -200,6 +200,21 @@ async function bootstrap(): Promise<void> {
       log.info(`${desmarcadas} conversa(s) voltaram para a fila apos a correcao da ancora`)
     }
   }
+  /**
+   * A semantica de "conversa completa" mudou nesta versao.
+   *
+   * Ate aqui um `busy` ou um `requestFailed` — casos em que pedido nenhum saiu
+   * daqui — ainda carimbavam a conversa via `setChatSync`. Quem foi marcado
+   * naquele caminho precisa voltar para a fila uma ultima vez; dai o marcador
+   * proprio, para nao disputar com os dois anteriores.
+   */
+  if (!getJson('inbox.unprovenFullSyncV3', false)) {
+    const desmarcadas = clearUnprovenFullSync()
+    setJson('inbox.unprovenFullSyncV3', true)
+    if (desmarcadas > 0) {
+      log.info(`${desmarcadas} conversa(s) voltaram para a fila apos a revisao dos desfechos`)
+    }
+  }
   log.info(`${refreshLeadFlags()} conversa(s) na base de leads`)
 
   // Sem isso o Windows nao mostra as notificacoes do app (ele as associa ao

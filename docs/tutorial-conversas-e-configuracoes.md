@@ -47,6 +47,33 @@ O campo de texto fica embaixo. **Enter** envia; **Shift+Enter** quebra linha.
 Durante a gravacao aparece o cronometro e um botao para **descartar** a nota antes de
 enviar.
 
+### De onde vem o historico
+
+O grosso do historico **nao** e buscado depois: ele chega de uma vez so, logo depois de voce
+escanear o QR. E o WhatsApp que decide quanto mandar, e a decisao depende de como o app se
+identificou **naquele pareamento**:
+
+| Como a conexao se identificou     | Quanto o WhatsApp manda |
+| --------------------------------- | ----------------------- |
+| Navegador (versoes ate a 0.3.0)   | cerca de **3 meses**    |
+| Cliente desktop (0.3.1 em diante) | cerca de **1 ano**      |
+
+Isso e negociado **uma unica vez**, no pareamento, e nao muda a cada vez que o app conecta.
+Se voce ja usava o Dispar Flux antes da 0.3.1, sua conexao continua na faixa curta ate voce
+refazer o pareamento — e o card **Conexao WhatsApp**, em Configuracoes, avisa quando esse e
+o caso.
+
+> [!NOTA]
+> **Refazer o pareamento nao apaga nada seu.** Encerrar a sessao remove so as credenciais da
+> conexao; conversas, mensagens, anexos ja baixados, leads, campanhas e agendamentos ficam
+> onde estao. E como as mensagens sao identificadas pelo id que o WhatsApp da a elas, o
+> pacote novo nao duplica o que voce ja tem — ele so preenche o que faltava.
+>
+> Para refazer: **Configuracoes → Conexao WhatsApp → Encerrar sessao → Gerar QR e conectar**.
+> Depois disso, o aparelho vai listar o Dispar Flux como um **Mac** em Dispositivos
+> conectados. E so o nome da plataforma que o app anuncia — e justamente ela que faz o
+> WhatsApp liberar o pacote maior.
+
 ### Buscar historico antigo
 
 Ha tres botoes diferentes, e a confusao entre eles e comum:
@@ -59,10 +86,16 @@ Ha tres botoes diferentes, e a confusao entre eles e comum:
 
 > [!NOTA]
 > **Quem responde por historico antigo e o seu celular, nao o servidor do WhatsApp.** O
-> pedido vai para o aparelho pareado, entao ele precisa estar ligado, com internet e com o
-> WhatsApp aberto. E por isso que a busca e lenta — podem ser varios minutos por conversa —
-> e por isso o app avisa "o celular deixou de responder" em vez de fingir que a conversa
-> acabou.
+> pedido vai para o aparelho pareado, que monta e envia um pacote — entao ele precisa estar
+> ligado, com internet e com o WhatsApp aberto. E por isso que a busca e lenta: podem ser
+> varios minutos por conversa, e as vezes a resposta simplesmente nao vem.
+>
+> Por isso o app **nao trava esperando**. Ele diz que o pedido foi enviado e segue; quando o
+> pacote chega, as mensagens entram sozinhas na conversa e um aviso aparece na tela. Voce
+> nao precisa clicar de novo.
+>
+> Como essa busca depende do aparelho, ela e o **plano B**. O caminho confiavel para ter a
+> inbox batendo com o celular e o pacote do pareamento, descrito acima.
 
 Ao abrir uma conversa pouco sincronizada, o app ja puxa sozinho os ultimos 7 dias (30 se o
 numero esta na base), uma vez por sessao. Rolando a conversa para cima, ele carrega de 50 em
@@ -75,9 +108,18 @@ numero esta na base), uma vez por sessao. Rolando a conversa para cima, ele carr
 > Nesses casos a tela avisa que a conversa ainda nao tem ponto de partida. Ela ganha um
 > assim que o celular mandar a primeira mensagem, ou quando o contato responder.
 
-Se precisar investigar uma sincronizacao que nao anda, rode o app com
-`DISPAR_WA_LOG_LEVEL=debug`: o log passa a mostrar o detalhe da conversa com o celular. As
-linhas sobre historico ja aparecem no log normal, mesmo sem essa variavel.
+Se uma sincronizacao nao anda, o primeiro passo e **Configuracoes → Conexao WhatsApp →
+Copiar diagnostico**. O bloco copiado traz a versao do WhatsApp Web em uso, com que
+plataforma a sessao se pareou, quantas tentativas de reconexao houve e os ultimos lotes de
+historico que chegaram — que e como se sabe se o WhatsApp esta mandando alguma coisa.
+
+Ele **nao** inclui suas mensagens nem os numeros dos seus contatos (dos lotes vai so a
+quantidade de conversas), e o numero conectado sai mascarado. Pode colar num chat de
+suporte.
+
+Para investigar mais fundo, rode o app com `DISPAR_WA_LOG_LEVEL=debug`: o log passa a
+mostrar o detalhe da conversa com o celular. As linhas sobre historico ja aparecem no log
+normal, mesmo sem essa variavel — o caminho do arquivo vem no diagnostico.
 
 Anexo de mensagem antiga **nao baixa sozinho** — com o historico completo isso seriam varios
 GB. Ele fica pendente e baixa quando voce clica. Mensagem nova continua baixando imagem,
@@ -99,12 +141,16 @@ nada — e nao ha como reverter sem a pessoa pedir.
 
 ## Parte 2 — Configuracoes
 
-A tela [Configuracoes](app:/config) tem sete cartoes.
+A tela [Configuracoes](app:/config) tem oito cartoes.
 
 ### Conexao WhatsApp
 
 Onde voce le o QR Code e ve o status da conexao. Detalhado em
 [Primeiros passos](app:/docs/primeiros-passos).
+
+Tambem e aqui que fica o **Copiar diagnostico** (veja acima) e, quando a sessao foi pareada
+por uma versao antiga do app, o aviso sobre refazer o pareamento para receber o historico
+maior.
 
 ### Inteligencia artificial
 
@@ -157,6 +203,17 @@ hora. Quando ha versao nova, a faixa no topo da janela traz **Baixar agora** e, 
 **Reiniciar e instalar**. A instalacao fica bloqueada enquanto houver disparo em andamento.
 
 No modo de desenvolvimento a atualizacao automatica nao funciona — so no app instalado.
+
+### Avancado: versao do WhatsApp Web
+
+Ao conectar, o app anuncia uma versao do WhatsApp Web — e ele descobre sozinho qual usar.
+Quando o WhatsApp passa a recusar versoes antigas, a conexao falha com o codigo **405**
+antes mesmo de o QR aparecer, e a tela avisa isso.
+
+Esse campo existe para o dia em que a descoberta automatica falhar: fixando aqui uma versao
+aceita, da para voltar a conectar sem esperar uma atualizacao do app. Use o formato de tres
+numeros (`2.3000.1035194821`) e deixe em branco para voltar ao automatico. Vale na proxima
+conexao.
 
 ### Sobre e aviso legal
 
