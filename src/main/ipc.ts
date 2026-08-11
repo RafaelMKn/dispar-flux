@@ -20,10 +20,11 @@ import {
   getBackgroundSettings,
   setBackgroundSettings,
   getCrmSettings,
-  setCrmSettings
+  setCrmSettings,
+  setJson
 } from './settings'
 import { applyLaunchAtLogin } from './tray'
-import { whatsapp } from './core/whatsapp/client'
+import { whatsapp, getWaVersionOverride, setWaVersionOverride } from './core/whatsapp/client'
 import { join, basename } from 'node:path'
 import { statSync } from 'node:fs'
 import { writeFile, copyFile } from 'node:fs/promises'
@@ -35,6 +36,7 @@ import {
   downloadMedia,
   previewLabel,
   getHistorySyncState,
+  recentHistoryBatches,
   type HistorySyncState
 } from './core/whatsapp/inbox'
 import { copyIntoMedia, kindForMime, mimeForPath, saveMedia } from './core/whatsapp/mediaStore'
@@ -60,6 +62,8 @@ import {
   getMessage,
   getMessageRow,
   countLeadChats,
+  countChats,
+  countAllMessages,
   refreshLeadFlags,
   getChatView,
   type InsertMessageInput
@@ -72,7 +76,7 @@ import {
   autoSyncOnOpen,
   resetAutoSync
 } from './core/whatsapp/historySync'
-import { recordRequest, resetRequests } from './core/whatsapp/historyRequests'
+import { recordRequest, resetRequests, recentRequests } from './core/whatsapp/historyRequests'
 import {
   board,
   createStage,
@@ -100,7 +104,7 @@ import {
 } from './repos/followups'
 import { crmEvents } from './core/crm/leads'
 import { previewRule, runRule, upcomingFollowUps } from './core/crm/scheduler'
-import { scoped } from './logger'
+import { scoped, getLogPath, WA_LEVEL } from './logger'
 import {
   updaterEvents,
   getUpdateState,
@@ -125,7 +129,8 @@ import type {
   CrmSettings,
   CrmAppointmentInput,
   FollowUpRuleInput,
-  ChatSyncState
+  ChatSyncState,
+  WaDiagnostics
 } from '@shared/types'
 
 const log = scoped('whatsapp')
@@ -203,6 +208,39 @@ export function registerIpc(): void {
 
   ipcMain.handle('whatsapp:getState', () => whatsapp.getState())
   ipcMain.handle('whatsapp:dismissRelinkNotice', () => whatsapp.dismissRelinkNotice())
+
+  /**
+   * Bloco de diagnostico copiavel.
+   *
+   * Os problemas de sincronizacao sao invisiveis sem o arquivo de log, e pedir
+   * para alguem achar %APPDATA% e ler JSON nao e um pedido razoavel. O servico
+   * ja devolve o numero mascarado; aqui so entram contagens e caminhos.
+   */
+  ipcMain.handle('whatsapp:diagnostics', (): WaDiagnostics => ({
+    appVersion: app.getVersion(),
+    ...whatsapp.diagnostics(),
+    historySync: getHistorySyncState(),
+    historyBatches: recentHistoryBatches(),
+    historyRequests: recentRequests().map((r) => ({
+      requestId: r.requestId,
+      sentAt: r.sentAt,
+      answeredAt: r.answeredAt,
+      inserted: r.inserted,
+      status: r.status
+    })),
+    chats: countChats(),
+    messages: countAllMessages(),
+    logPath: getLogPath(),
+    waLogLevel: WA_LEVEL
+  }))
+
+  ipcMain.handle('whatsapp:getVersionOverride', () => getWaVersionOverride())
+  ipcMain.handle('whatsapp:setVersionOverride', (_e, v: [number, number, number] | null) => {
+    setWaVersionOverride(v)
+    // O cache guardaria a versao recusada e a proxima conexao ignoraria a
+    // escolha do usuario — o mesmo cuidado que o tratamento do 405 ja tem.
+    setJson('wa.versionCache', null)
+  })
   ipcMain.handle('whatsapp:connect', () => whatsapp.connect())
   ipcMain.handle('whatsapp:disconnect', () => whatsapp.disconnect())
   ipcMain.handle('whatsapp:logout', () => whatsapp.logout())

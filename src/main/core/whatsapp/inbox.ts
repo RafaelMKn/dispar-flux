@@ -551,6 +551,35 @@ export function historySyncTypeName(t: number | null | undefined): string {
 }
 
 /**
+ * Os ultimos lotes de historico que chegaram.
+ *
+ * PORQUE GUARDAR: "o WhatsApp esta mandando historico?" e a pergunta central
+ * quando alguem relata que a inbox nao bate com o celular, e ela so era
+ * respondivel abrindo o arquivo de log. Aqui vira algo que o usuario consegue
+ * copiar e mandar junto com o relato.
+ *
+ * Guarda CONTAGEM de conversas, nunca os jids: este bloco existe para ser
+ * colado num chat de suporte.
+ */
+export interface HistoryBatchLog {
+  at: number
+  syncType: string
+  requestId: string | null
+  messages: number
+  inserted: number
+  chats: number
+  progress: number | null
+  isLatest: boolean
+}
+
+const BATCH_LOG_LIMIT = 10
+let batchLog: HistoryBatchLog[] = []
+
+export function recentHistoryBatches(limit = BATCH_LOG_LIMIT): HistoryBatchLog[] {
+  return batchLog.slice(-limit).reverse()
+}
+
+/**
  * Sincronizacao de historico (`messaging-history.set`), que o WhatsApp manda
  * logo apos o pareamento e em algumas reconexoes.
  *
@@ -587,6 +616,7 @@ export function handleHistorySet(payload: {
   }
 
   const mensagens = payload.messages?.length ?? 0
+  const novas = [...gravadas.values()].reduce((a, b) => a + b, 0)
   const jidsDoLote = [
     ...new Set(
       (payload.messages ?? [])
@@ -600,7 +630,7 @@ export function handleHistorySet(payload: {
     conversas: payload.chats?.length ?? 0,
     contatos: payload.contacts?.length ?? 0,
     mensagens,
-    novas: [...gravadas.values()].reduce((a, b) => a + b, 0),
+    novas,
     progresso: payload.progress ?? null,
     ultimoLote: payload.isLatest ?? false,
     respostaDoPedido: payload.peerDataRequestSessionId ?? null,
@@ -611,6 +641,18 @@ export function handleHistorySet(payload: {
     jids: jidsDoLote.slice(0, 10),
     maisJids: Math.max(0, jidsDoLote.length - 10)
   })
+
+  batchLog.push({
+    at: Date.now(),
+    syncType: historySyncTypeName(payload.syncType),
+    requestId: payload.peerDataRequestSessionId ?? null,
+    messages: mensagens,
+    inserted: novas,
+    chats: jidsDoLote.length,
+    progress: typeof payload.progress === 'number' ? Math.round(payload.progress) : null,
+    isLatest: payload.isLatest === true
+  })
+  if (batchLog.length > BATCH_LOG_LIMIT) batchLog = batchLog.slice(-BATCH_LOG_LIMIT)
 
   /**
    * O celular RESPONDEU.

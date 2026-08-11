@@ -5,7 +5,7 @@ import { rm } from 'node:fs/promises'
 import { EventEmitter } from 'node:events'
 import QRCode from 'qrcode'
 import type { WASocket } from 'baileys'
-import type { MediaKind, WhatsappState, WaCheckResult } from '@shared/types'
+import type { MediaKind, WhatsappState, WaCheckResult, WaDiagnostics } from '@shared/types'
 import { scoped, pinoAdapter } from '../../logger'
 import { getJson, setJson } from '../../settings'
 import {
@@ -85,6 +85,20 @@ const RELINK_DISMISSED_KEY = 'wa.relinkNoticeDismissed'
 
 function getPairingRecord(): PairingRecord | null {
   return getJson<PairingRecord | null>(PAIRING_KEY, null)
+}
+
+/**
+ * Esconde o miolo do numero: `5511987654321@s.whatsapp.net` → `5511****4321`.
+ *
+ * O diagnostico existe para ser colado num chat de suporte, entao ele nao pode
+ * carregar o numero inteiro — mas precisa deixar reconhecer de qual conta se
+ * trata quando alguem usa mais de uma.
+ */
+function maskPhone(jid: string | null): string | null {
+  if (!jid) return null
+  const digits = jid.split('@')[0].split(':')[0].replace(/\D/g, '')
+  if (digits.length < 8) return '****'
+  return `${digits.slice(0, 4)}****${digits.slice(-4)}`
 }
 
 /**
@@ -220,6 +234,8 @@ class WhatsappService extends EventEmitter {
    */
   private paired = false
   private lastVersion: WaVersion | null = null
+  /** De onde saiu a versao acima: online, cache, override manual, fallback. */
+  private lastVersionSource: string | null = null
   /** Evita duas varreduras de foto de perfil concorrentes (reconexao rapida). */
   private avatarSweepRunning = false
   /**
@@ -335,6 +351,7 @@ class WhatsappService extends EventEmitter {
     const logger = pinoAdapter('baileys')
     const { version, source } = await resolveWaVersion()
     this.lastVersion = version
+    this.lastVersionSource = source
 
     this.paired = Boolean(authState.creds?.me?.id)
 
@@ -743,6 +760,47 @@ class WhatsappService extends EventEmitter {
   /** Ha credenciais no disco? Permite avisar sobre a sessao antes de conectar. */
   hasStoredSession(): boolean {
     return existsSync(join(AUTH_DIR(), 'creds.json'))
+  }
+
+  /**
+   * A parte do diagnostico que so este servico conhece.
+   *
+   * O `ipc.ts` compoe com o resto (contagens do banco, caminho do log). O numero
+   * sai mascarado aqui, e nao la, para nao existir um caminho em que ele escape
+   * inteiro por esquecimento.
+   */
+  diagnostics(): {
+    status: WhatsappState['status']
+    lastError: string | null
+    me: string | null
+    waVersion: string | null
+    waVersionSource: string | null
+    historyPairing: WhatsappState['historyPairing']
+    pairing: WaDiagnostics['pairing']
+    reconnectAttempts: number
+    historyQueueDepth: number
+  } {
+    const record = getPairingRecord()
+    return {
+      status: this.state.status,
+      lastError: this.state.lastError,
+      me: maskPhone(this.state.me?.id ?? null),
+      waVersion: this.lastVersion?.join('.') ?? null,
+      waVersionSource: this.lastVersionSource,
+      historyPairing: pairingKind(record, this.hasStoredSession()),
+      pairing: record
+        ? {
+            // So o primeiro item: e ele que decide a sub-plataforma.
+            browser: record.browser[0],
+            platform: record.platform,
+            confirmed: record.confirmed,
+            at: record.at,
+            waVersion: record.waVersion
+          }
+        : null,
+      reconnectAttempts: this.reconnectAttempts,
+      historyQueueDepth: this.historyQueue.depth
+    }
   }
 
   /** O usuario dispensou o aviso de repareamento. */

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { QrCode, Loader2, LogOut, Unplug, Plug } from 'lucide-react'
+import { QrCode, Loader2, LogOut, Unplug, Plug, ClipboardCopy } from 'lucide-react'
 import type { WhatsappState, WhatsappStatus } from '@shared/types'
 import { Card, Button, Pill, StatusDot, Callout } from './ui'
 import { formatJid } from '../format'
@@ -33,6 +33,22 @@ export default function WhatsappCard({ state }: { state: WhatsappState }): JSX.E
    * isso sozinho.
    */
   const sugerirRepareamento = historyPairing === 'legacy' && !relinkNoticeDismissed
+
+  const [copiado, setCopiado] = useState(false)
+
+  /**
+   * Diagnostico copiavel.
+   *
+   * O bloco nao carrega corpo de mensagem, jid de contato nem credencial, e o
+   * numero conectado vai mascarado — dito no texto ao lado, porque ninguem cola
+   * o que nao consegue conferir.
+   */
+  async function copiarDiagnostico(): Promise<void> {
+    const d = await window.api.whatsapp.diagnostics()
+    await navigator.clipboard.writeText(JSON.stringify(d, null, 2))
+    setCopiado(true)
+    setTimeout(() => setCopiado(false), 2500)
+  }
 
   async function run(fn: () => Promise<void>): Promise<void> {
     setBusy(true)
@@ -106,6 +122,16 @@ export default function WhatsappCard({ state }: { state: WhatsappState }): JSX.E
                 "Desconectar" mantem a sessao e reconecta sem QR. "Encerrar sessao" apaga as
                 credenciais e exige novo QR.
               </p>
+              <div className="mt-3">
+                <Button variant="secondary" onClick={() => void copiarDiagnostico()}>
+                  <ClipboardCopy size={16} /> {copiado ? 'Copiado' : 'Copiar diagnostico'}
+                </Button>
+                <p className="mt-2 text-xs text-ink-tertiary [text-wrap:pretty]">
+                  Copia um resumo tecnico da conexao (versao, plataforma do pareamento, ultimos
+                  lotes de historico) para voce colar ao relatar um problema. Nao inclui suas
+                  mensagens nem os numeros dos contatos, e o numero conectado vai mascarado.
+                </p>
+              </div>
             </>
           ) : (
             <>

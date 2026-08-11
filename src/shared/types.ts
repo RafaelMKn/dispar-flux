@@ -40,6 +40,67 @@ export interface WhatsappState {
   relinkNoticeDismissed: boolean
 }
 
+/**
+ * Bloco de diagnostico que o usuario copia e manda junto com o relato.
+ *
+ * PORQUE EXISTE: os problemas de sincronizacao sao invisiveis sem o arquivo de
+ * log — "o WhatsApp esta mandando historico?" e "com que plataforma esta sessao
+ * se pareou?" nao tem resposta na tela. Pedir para alguem achar o log em
+ * %APPDATA% e ler JSON nao e um pedido razoavel.
+ *
+ * NAO CARREGA: corpo de mensagem, jid de contato nem material de autenticacao.
+ * O numero conectado vai mascarado. Isto e para ser colado num chat de suporte.
+ */
+export interface WaDiagnostics {
+  appVersion: string
+  status: WhatsappStatus
+  lastError: string | null
+  /** Numero conectado, mascarado (`5511****4321`). */
+  me: string | null
+  waVersion: string | null
+  /** De onde veio a versao: online, cache, override manual, fallback. */
+  waVersionSource: string | null
+  historyPairing: HistoryPairing | null
+  pairing: {
+    browser: string
+    platform: 'desktop' | 'web'
+    confirmed: boolean
+    at: number
+    waVersion: string | null
+  } | null
+  reconnectAttempts: number
+  /** Pedidos de historico esperando a vez na fila de envio. */
+  historyQueueDepth: number
+  historySync: HistorySyncState
+  historyBatches: HistoryBatchLog[]
+  historyRequests: HistoryRequestLog[]
+  chats: number
+  messages: number
+  logPath: string
+  waLogLevel: string
+}
+
+/** Um lote de `messaging-history.set` que chegou. So contagens, nunca jids. */
+export interface HistoryBatchLog {
+  at: number
+  syncType: string
+  requestId: string | null
+  messages: number
+  inserted: number
+  chats: number
+  progress: number | null
+  isLatest: boolean
+}
+
+/** Um pedido de historico sob demanda que saiu daqui. */
+export interface HistoryRequestLog {
+  requestId: string | null
+  sentAt: number
+  answeredAt: number | null
+  inserted: number
+  status: 'aguardando' | 'respondido' | 'expirado'
+}
+
 export interface WaCheckResult {
   phoneE164: string
   exists: boolean
@@ -508,6 +569,11 @@ export interface DisparApi {
     logout: () => Promise<void>
     /** Fecha o aviso de repareamento sem mexer na conexao. */
     dismissRelinkNotice: () => Promise<void>
+    /** Bloco copiavel para o usuario mandar junto com um relato de problema. */
+    diagnostics: () => Promise<WaDiagnostics>
+    getVersionOverride: () => Promise<[number, number, number] | null>
+    /** Valvula de escape para o 405. `null` limpa e volta ao automatico. */
+    setVersionOverride: (v: [number, number, number] | null) => Promise<void>
     /** Assina mudancas de estado. Retorna a funcao de unsubscribe. */
     onState: (cb: (state: WhatsappState) => void) => () => void
   }

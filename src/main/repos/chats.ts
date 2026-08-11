@@ -411,6 +411,25 @@ export function totalUnread(): number {
   )
 }
 
+/** Totais do banco. Usados no diagnostico: dimensionam o que o app ja recebeu. */
+export function countChats(): number {
+  return (
+    getDb()
+      .select({ n: sql<number>`count(*)` })
+      .from(chats)
+      .get()?.n ?? 0
+  )
+}
+
+export function countAllMessages(): number {
+  return (
+    getDb()
+      .select({ n: sql<number>`count(*)` })
+      .from(messages)
+      .get()?.n ?? 0
+  )
+}
+
 /* ── Mensagens ───────────────────────────────────────────────────────────── */
 
 export interface InsertMessageInput {

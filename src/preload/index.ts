@@ -41,6 +41,10 @@ const api: DisparApi = {
     disconnect: () => ipcRenderer.invoke('whatsapp:disconnect'),
     logout: () => ipcRenderer.invoke('whatsapp:logout'),
     dismissRelinkNotice: () => ipcRenderer.invoke('whatsapp:dismissRelinkNotice'),
+    diagnostics: () => ipcRenderer.invoke('whatsapp:diagnostics'),
+    getVersionOverride: () => ipcRenderer.invoke('whatsapp:getVersionOverride'),
+    setVersionOverride: (v: [number, number, number] | null) =>
+      ipcRenderer.invoke('whatsapp:setVersionOverride', v),
     onState: (cb: (s: WhatsappState) => void) => subscribe('whatsapp:state', cb)
   },
   contactLists: {
