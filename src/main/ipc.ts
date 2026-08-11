@@ -202,6 +202,7 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('whatsapp:getState', () => whatsapp.getState())
+  ipcMain.handle('whatsapp:dismissRelinkNotice', () => whatsapp.dismissRelinkNotice())
   ipcMain.handle('whatsapp:connect', () => whatsapp.connect())
   ipcMain.handle('whatsapp:disconnect', () => whatsapp.disconnect())
   ipcMain.handle('whatsapp:logout', () => whatsapp.logout())

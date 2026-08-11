@@ -22,7 +22,17 @@ const TONE: Record<WhatsappStatus, 'success' | 'warning' | 'danger' | 'idle'> = 
 
 export default function WhatsappCard({ state }: { state: WhatsappState }): JSX.Element {
   const [busy, setBusy] = useState(false)
-  const { status, qrDataUrl, me, lastError } = state
+  const { status, qrDataUrl, me, lastError, historyPairing, relinkNoticeDismissed } = state
+
+  /**
+   * Sessao pareada por uma versao anterior, que se anunciava como navegador.
+   *
+   * Nada esta quebrado — por isso o aviso e neutro e dispensavel, e o app NUNCA
+   * desconecta sozinho. Mas enquanto o pareamento nao for refeito o WhatsApp
+   * continua mandando so o recorte curto, e o usuario nao tem como adivinhar
+   * isso sozinho.
+   */
+  const sugerirRepareamento = historyPairing === 'legacy' && !relinkNoticeDismissed
 
   async function run(fn: () => Promise<void>): Promise<void> {
     setBusy(true)
@@ -117,6 +127,31 @@ export default function WhatsappCard({ state }: { state: WhatsappState }): JSX.E
           )}
         </div>
       </div>
+
+      {sugerirRepareamento && (
+        <div className="mt-4">
+          <Callout tone="neutral">
+            <p className="[text-wrap:pretty]">
+              Esta conexao foi pareada por uma versao anterior do app, que se identificava como
+              navegador — e a um navegador o WhatsApp envia cerca de <strong>3 meses</strong> de
+              historico. Refazendo o pareamento ele passa a enviar cerca de <strong>1 ano</strong>.
+            </p>
+            <p className="mt-2 [text-wrap:pretty]">
+              Suas conversas, mensagens, anexos, leads e campanhas <strong>nao sao apagados</strong>{' '}
+              — o app so troca as credenciais da conexao. Para refazer:{' '}
+              <strong>Encerrar sessao</strong> e depois <strong>Gerar QR e conectar</strong>. No
+              celular, o aparelho passara a aparecer como um Mac em Dispositivos conectados.
+            </p>
+            <button
+              type="button"
+              className="mt-2 text-xs underline underline-offset-2 hover:text-ink"
+              onClick={() => void window.api.whatsapp.dismissRelinkNotice()}
+            >
+              Nao mostrar de novo
+            </button>
+          </Callout>
+        </div>
+      )}
 
       {lastError && (
         <div className="mt-4">

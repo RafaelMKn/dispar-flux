@@ -40,6 +40,7 @@ const api: DisparApi = {
     connect: () => ipcRenderer.invoke('whatsapp:connect'),
     disconnect: () => ipcRenderer.invoke('whatsapp:disconnect'),
     logout: () => ipcRenderer.invoke('whatsapp:logout'),
+    dismissRelinkNotice: () => ipcRenderer.invoke('whatsapp:dismissRelinkNotice'),
     onState: (cb: (s: WhatsappState) => void) => subscribe('whatsapp:state', cb)
   },
   contactLists: {

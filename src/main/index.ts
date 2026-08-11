@@ -1,6 +1,5 @@
 import { app, BrowserWindow, protocol, net, shell } from 'electron'
 import { join } from 'node:path'
-import { existsSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { MEDIA_SCHEME, resolveMediaUrl } from './core/whatsapp/mediaStore'
 import { initDb, saveNow } from './db'
@@ -230,7 +229,7 @@ async function bootstrap(): Promise<void> {
   // Se ja existe sessao salva em userData/wa-auth, reconecta sozinho (sem QR).
   // Se nao existe, o Baileys emitiria um QR que ninguem pediu — entao so
   // reconectamos quando ha credenciais.
-  if (existsSync(join(app.getPath('userData'), 'wa-auth', 'creds.json'))) {
+  if (whatsapp.hasStoredSession()) {
     log.info('sessao encontrada, reconectando WhatsApp')
     void whatsapp.connect().catch((e: unknown) => log.error('falha ao reconectar', e))
   }

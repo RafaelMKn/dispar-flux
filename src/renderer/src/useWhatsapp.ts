@@ -5,7 +5,11 @@ const INITIAL: WhatsappState = {
   status: 'disconnected',
   qrDataUrl: null,
   me: null,
-  lastError: null
+  lastError: null,
+  // `null` ate o main responder: nao ha por que sugerir repareamento antes de
+  // saber se existe sessao.
+  historyPairing: null,
+  relinkNoticeDismissed: false
 }
 
 /**

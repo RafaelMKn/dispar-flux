@@ -18,11 +18,26 @@ export type WhatsappStatus =
   | 'connected'
   | 'loggedOut' // sessao invalidada: precisa de novo QR
 
+/**
+ * Quanto historico a sessao atual consegue receber do WhatsApp.
+ *
+ * `'legacy'` = pareada por uma versao do app que se anunciava como navegador, e
+ * a um navegador o WhatsApp manda so os ultimos ~3 meses. Refazer o pareamento
+ * passa a valer ~1 ano. `null` = nao ha sessao.
+ *
+ * Isto e decidido NO PAREAMENTO e nao muda a cada login, por isso nao ha como
+ * corrigir sozinho: so um QR novo renegocia.
+ */
+export type HistoryPairing = 'full' | 'legacy'
+
 export interface WhatsappState {
   status: WhatsappStatus
   qrDataUrl: string | null
   me: { id: string; name: string | null } | null
   lastError: string | null
+  historyPairing: HistoryPairing | null
+  /** O usuario ja fechou o aviso de repareamento desta sessao. */
+  relinkNoticeDismissed: boolean
 }
 
 export interface WaCheckResult {
@@ -491,6 +506,8 @@ export interface DisparApi {
     connect: () => Promise<void>
     disconnect: () => Promise<void>
     logout: () => Promise<void>
+    /** Fecha o aviso de repareamento sem mexer na conexao. */
+    dismissRelinkNotice: () => Promise<void>
     /** Assina mudancas de estado. Retorna a funcao de unsubscribe. */
     onState: (cb: (state: WhatsappState) => void) => () => void
   }

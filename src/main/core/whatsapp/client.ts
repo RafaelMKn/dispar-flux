@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import { join } from 'node:path'
+import { existsSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { EventEmitter } from 'node:events'
 import QRCode from 'qrcode'
@@ -25,6 +26,12 @@ import {
 import { saveAvatar } from './mediaStore'
 import { webmToOggOpus } from './opusOgg'
 import { SerialQueue } from './requestQueue'
+import {
+  resolvePairingBrowser,
+  pairingKind,
+  newPairingRecord,
+  type PairingRecord
+} from './pairingProfile'
 
 const log = scoped('whatsapp')
 
@@ -67,6 +74,15 @@ async function loadBaileys(): Promise<BaileysModule> {
  */
 
 const AUTH_DIR = () => join(app.getPath('userData'), 'wa-auth')
+
+/** Onde fica gravado COMO a sessao atual foi pareada. Ver `pairingProfile`. */
+const PAIRING_KEY = 'wa.pairing'
+/** O usuario ja dispensou o aviso de repareamento desta sessao? */
+const RELINK_DISMISSED_KEY = 'wa.relinkNoticeDismissed'
+
+function getPairingRecord(): PairingRecord | null {
+  return getJson<PairingRecord | null>(PAIRING_KEY, null)
+}
 
 const MAX_BACKOFF_MS = 60_000
 
@@ -184,7 +200,8 @@ export type HistoryRequest =
 
 class WhatsappService extends EventEmitter {
   private sock: WASocket | null = null
-  private state: WhatsappState = {
+  /** Os campos derivados ficam fora daqui: `getState` os calcula na hora. */
+  private state: Omit<WhatsappState, 'historyPairing' | 'relinkNoticeDismissed'> = {
     status: 'disconnected',
     qrDataUrl: null,
     me: null,
@@ -219,7 +236,18 @@ class WhatsappService extends EventEmitter {
   private readonly historyQueue = new SerialQueue({ gapMs: HISTORY_REQUEST_GAP_MS })
 
   getState(): WhatsappState {
-    return { ...this.state }
+    /**
+     * `historyPairing` e derivado na hora, nao guardado no estado.
+     *
+     * Ele depende de duas fontes que vivem fora daqui (o registro nas settings
+     * e a existencia do `creds.json`), e guardar uma copia so criaria uma
+     * terceira verdade para sair de sincronia.
+     */
+    return {
+      ...this.state,
+      historyPairing: pairingKind(getPairingRecord(), this.hasStoredSession()),
+      relinkNoticeDismissed: getJson<boolean>(RELINK_DISMISSED_KEY, false)
+    }
   }
 
   private patch(next: Partial<WhatsappState>): void {
@@ -260,10 +288,33 @@ class WhatsappService extends EventEmitter {
     this.lastVersion = version
 
     this.paired = Boolean(authState.creds?.me?.id)
+
+    /**
+     * A identidade anunciada e propriedade da SESSAO — ver `pairingProfile`.
+     *
+     * Sessao ja pareada mantem a tripla com que se pareou (o tamanho do
+     * historico foi negociado la, e trocar agora nao traria nada). Pareamento
+     * novo se apresenta como cliente desktop, que e a unica forma de o
+     * `syncFullHistory` abaixo valer alguma coisa.
+     */
+    const browser = resolvePairingBrowser(getPairingRecord(), this.paired)
+
+    /**
+     * O registro nasce ANTES do socket, e nao depois de conectar.
+     *
+     * A danca do pareamento e: QR → credenciais gravadas → o WhatsApp derruba
+     * com 515 → `open()` de novo, agora ja pareado. Sem gravar aqui, esse
+     * segundo socket resolveria a identidade do zero, nao acharia registro
+     * nenhum, cairia na tripla legada e divergiria do registro que gerou as
+     * credenciais.
+     */
+    if (!this.paired) setJson(PAIRING_KEY, newPairingRecord(browser, version.join('.')))
+
     log.info('abrindo socket', {
       version: version.join('.'),
       versionSource: source,
-      paired: this.paired
+      paired: this.paired,
+      browser: browser[0]
     })
 
     const sock = makeWASocket({
@@ -273,9 +324,7 @@ class WhatsappService extends EventEmitter {
       },
       logger,
       version,
-      // Identificar-se como Ubuntu/Chrome e mais aceito no handshake do que
-      // "Windows", que aparece associado ao 405 nos relatos do Baileys.
-      browser: ['Ubuntu', 'Chrome', '120.0.0.0'],
+      browser,
       /**
        * Historico COMPLETO no pareamento.
        *
@@ -290,8 +339,21 @@ class WhatsappService extends EventEmitter {
        * mensagem antiga NAO baixa sozinho (ver AUTO_DOWNLOAD em inbox.ts); e a
        * gravacao no banco e debounced. O que o WhatsApp ainda nao entregar aqui
        * e buscado sob demanda por `fetchOlderMessages`.
+       *
+       * ATENCAO: esta flag SO tem efeito com um `browser` que o Baileys
+       * reconheca como desktop — foi por nao ser esse o caso que ela passou
+       * tanto tempo sem fazer nada. Ver `pairingProfile`.
        */
       syncFullHistory: true,
+      /**
+       * Declarado, e nao herdado.
+       *
+       * O padrao do Baileys e `() => !!syncFullHistory` (`lib/Socket/index.js`),
+       * entao o processamento dos lotes ON_DEMAND — que e o que a busca sob
+       * demanda depende — vinha de carona numa flag sobre outro assunto. Mexer
+       * numa desligava a outra em silencio.
+       */
+      shouldSyncHistoryMessage: () => true,
       markOnlineOnConnect: false
     })
 
@@ -411,6 +473,15 @@ class WhatsappService extends EventEmitter {
 
     if (connection === 'open') {
       this.reconnectAttempts = 0
+      // O pareamento vingou: o registro deixa de ser uma aposta e vira historico.
+      const record = getPairingRecord()
+      if (record && !record.confirmed) {
+        setJson(PAIRING_KEY, {
+          ...record,
+          confirmed: true,
+          waVersion: this.lastVersion?.join('.') ?? record.waVersion
+        })
+      }
       this.patch({
         status: 'connected',
         qrDataUrl: null,
@@ -538,6 +609,27 @@ class WhatsappService extends EventEmitter {
     } catch {
       // pasta pode nao existir
     }
+    /**
+     * O registro de pareamento NUNCA pode sobreviver as credenciais.
+     *
+     * Se sobrevivesse, a proxima sessao herdaria a impressao digital de uma
+     * conexao que nao existe mais — e o aviso de repareamento ou sumiria sem
+     * motivo, ou apareceria numa sessao que ja esta correta.
+     */
+    setJson(PAIRING_KEY, null)
+    setJson(RELINK_DISMISSED_KEY, false)
+    this.emit('state', this.getState())
+  }
+
+  /** Ha credenciais no disco? Permite avisar sobre a sessao antes de conectar. */
+  hasStoredSession(): boolean {
+    return existsSync(join(AUTH_DIR(), 'creds.json'))
+  }
+
+  /** O usuario dispensou o aviso de repareamento. */
+  dismissRelinkNotice(): void {
+    setJson(RELINK_DISMISSED_KEY, true)
+    this.emit('state', this.getState())
   }
 
   /**
