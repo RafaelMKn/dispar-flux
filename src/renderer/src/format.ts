@@ -6,8 +6,14 @@
  *
  * Abaixo de 12 digitos nao da para separar DDI/DDD com seguranca, entao devolve
  * so os digitos com "+" — melhor um numero cru do que um numero errado.
+ *
+ * `@lid` nao e telefone: e o identificador opaco do novo endereçamento do
+ * WhatsApp. Um LID de 14 digitos era formatado como "+71 70 030152-9149", que o
+ * usuario lia como o numero do contato. Enquanto o app nao souber o telefone por
+ * tras dele (ver `lid.ts`), mostrar um rotulo honesto e melhor que inventar.
  */
 export function formatJid(jid: string): string {
+  if (jid.endsWith('@lid')) return 'Numero nao identificado'
   const d = jid.split(':')[0].split('@')[0].replace(/\D/g, '')
   if (d.length < 12) return `+${d}`
   return `+${d.slice(0, 2)} ${d.slice(2, 4)} ${d.slice(4, d.length - 4)}-${d.slice(-4)}`
@@ -88,5 +94,8 @@ export function initialsFor(name: string | null, jid: string): string {
     return letters.toUpperCase()
   }
   // Sem nome, as iniciais do telefone nao dizem nada; os ultimos digitos sim.
+  // De um LID nem isso: os digitos sao de um identificador opaco, e mostra-los
+  // sugere um numero que nao existe.
+  if (jid.endsWith('@lid')) return '?'
   return jid.split('@')[0].replace(/\D/g, '').slice(-2) || '?'
 }

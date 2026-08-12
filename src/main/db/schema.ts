@@ -86,7 +86,52 @@ export const chats = sqliteTable('chats', {
   /** Ate que instante (ms) o passado desta conversa ja foi puxado do WhatsApp. */
   syncedFrom: integer('synced_from'),
   /** 1 quando o WhatsApp ja disse que nao ha mais historico antes do que temos. */
-  syncedFull: integer('synced_full').notNull().default(0)
+  syncedFull: integer('synced_full').notNull().default(0),
+  /**
+   * Endereco de protocolo da conversa, quando o WhatsApp a endereça por LID.
+   *
+   * A CHAVE (`jid`) E SEMPRE O TELEFONE — e o que faz a conversa ser uma so,
+   * casar com a base de leads e com o CRM, e nao aparecer duplicada. Mas o
+   * WhatsApp esta migrando o endereçamento para LID (`71700301529149@lid`), um
+   * identificador opaco, e quem fala com o servidor precisa usar o endereco que
+   * ELE usa: o `fetchMessageHistory` manda o `chatJid` verbatim (conferido no
+   * Baileys 7.0.0-rc14), entao pedir historico pelo telefone numa conversa que o
+   * aparelho conhece por LID e mais uma forma de nao receber resposta.
+   *
+   * NULL = conversa endereçada pelo telefone mesmo. Ver `core/whatsapp/lid.ts`.
+   */
+  lid: text('lid')
+})
+
+/**
+ * De qual telefone e cada LID.
+ *
+ * O WhatsApp entrega o par de duas formas, e as duas ja existem no Baileys
+ * 6.7.23: o `senderPn` que vem junto da chave da mensagem (cobre so as
+ * mensagens recebidas — as `fromMe` nao trazem) e o campo `lid` que o
+ * `onWhatsApp` devolve ao validar um numero. Sem guardar isso, cada reinicio
+ * recomeçaria do zero e a conversa voltaria a se partir em duas.
+ */
+export const lidMap = sqliteTable('lid_map', {
+  /** `71700301529149@lid` */
+  lid: text('lid').primaryKey(),
+  /** `555184579349@s.whatsapp.net` */
+  jid: text('jid').notNull(),
+  /** Como descobrimos: 'senderPn' (do envelope) ou 'usync' (consulta). */
+  source: text('source').notNull(),
+  at: integer('at').notNull()
+})
+
+/**
+ * Numeros ja perguntados ao servidor que nao devolveram LID.
+ *
+ * Sao os contatos que ainda nao migraram para o endereçamento novo. Guardar isso
+ * evita que a varredura refaca as mesmas consultas USync a cada conexao —
+ * rajada repetida e justamente o padrao de trafego que o resto do app evita.
+ */
+export const lidProbe = sqliteTable('lid_probe', {
+  phone: text('phone').primaryKey(),
+  at: integer('at').notNull()
 })
 
 export const messages = sqliteTable('messages', {

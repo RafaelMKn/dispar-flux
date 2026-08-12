@@ -26,6 +26,7 @@ import {
   oldestAnchor
 } from '../../repos/chats'
 import { getOptOutSet } from '../../repos/optOuts'
+import { resetLidCache, rememberLid } from '../../repos/lidMap'
 
 beforeAll(async () => {
   await initDb()
@@ -34,6 +35,7 @@ beforeAll(async () => {
 beforeEach(() => {
   setMediaBridge(null)
   inboxEvents.removeAllListeners()
+  resetLidCache()
 })
 
 let counter = 0
@@ -539,5 +541,154 @@ describe('datas vindas do historico', () => {
     // E registra ate onde o passado ja foi puxado, para o botao de 7/30 dias
     // saber se ainda precisa pedir algo.
     expect(getChat(jid)?.syncedFrom).toBe(ts)
+  })
+})
+
+describe('endereçamento LID', () => {
+  function freshLid(): string {
+    counter += 1
+    return `7170030152${String(counter).padStart(4, '0')}@lid`
+  }
+
+  it('mensagem com @lid entra na conversa do TELEFONE, nao numa conversa nova', () => {
+    /**
+     * O bug que o usuario via: 46 conversas duplicadas na inbox, cada uma com um
+     * "numero" que era na verdade um LID. A mesma pessoa aparecia duas vezes —
+     * a conversa que o disparo criou pelo numero e a que a resposta dela criou
+     * pelo LID.
+     */
+    const lid = freshLid()
+    const pn = freshJid()
+
+    handleUpsert([
+      {
+        key: { id: `L${counter}`, remoteJid: lid, fromMe: false, senderPn: pn },
+        message: { conversation: 'oi' },
+        messageTimestamp: 1_700_000_000
+      }
+    ] as Parameters<typeof handleUpsert>[0])
+
+    expect(countMessages(pn)).toBe(1)
+    expect(getChat(pn)).toBeTruthy()
+    expect(getChat(lid)).toBeUndefined()
+  })
+
+  it('guarda o LID na conversa: e o endereco que o servidor usa', () => {
+    // O fetchMessageHistory manda o chatJid verbatim. Pedir historico pelo
+    // telefone numa conversa que o aparelho conhece por LID e mais uma forma de
+    // ficar sem resposta.
+    const lid = freshLid()
+    const pn = freshJid()
+    handleUpsert([
+      {
+        key: { id: `L${counter}`, remoteJid: lid, fromMe: false, senderPn: pn },
+        message: { conversation: 'oi' },
+        messageTimestamp: 1_700_000_000
+      }
+    ] as Parameters<typeof handleUpsert>[0])
+    expect(getChat(pn)?.lid).toBe(lid)
+  })
+
+  it('mensagem NOSSA, que nao traz senderPn, usa o mapa aprendido antes', () => {
+    /**
+     * No log real, 29 dos 46 LIDs so apareciam em mensagens `fromMe` — que nao
+     * carregam `senderPn`. Sem aprender o par na mensagem recebida, essas
+     * ficariam sem dono para sempre.
+     */
+    const lid = freshLid()
+    const pn = freshJid()
+
+    handleUpsert([
+      {
+        key: { id: `IN${counter}`, remoteJid: lid, fromMe: false, senderPn: pn },
+        message: { conversation: 'oi' },
+        messageTimestamp: 1_700_000_000
+      }
+    ] as Parameters<typeof handleUpsert>[0])
+    counter += 1
+    handleUpsert([
+      {
+        key: { id: `OUT${counter}`, remoteJid: lid, fromMe: true },
+        message: { conversation: 'resposta' },
+        messageTimestamp: 1_700_000_100
+      }
+    ] as Parameters<typeof handleUpsert>[0])
+
+    expect(countMessages(pn)).toBe(2)
+    expect(getChat(lid)).toBeUndefined()
+  })
+
+  it('LID desconhecido NAO vira conversa', () => {
+    // Deixar entrar com o LID cru e exatamente o que produzia a duplicata. A
+    // mensagem volta pelo historico depois que o USync resolver o numero.
+    const lid = freshLid()
+    handleUpsert([
+      {
+        key: { id: `X${counter}`, remoteJid: lid, fromMe: true },
+        message: { conversation: 'sem dono' },
+        messageTimestamp: 1_700_000_000
+      }
+    ] as Parameters<typeof handleUpsert>[0])
+    expect(getChat(lid)).toBeUndefined()
+  })
+
+  it('o mapa ja gravado resolve um LID sem senderPn nenhum', () => {
+    const lid = freshLid()
+    const pn = freshJid()
+    rememberLid(lid, pn, 'usync')
+
+    handleUpsert([
+      {
+        key: { id: `U${counter}`, remoteJid: lid, fromMe: true },
+        message: { conversation: 'do usync' },
+        messageTimestamp: 1_700_000_000
+      }
+    ] as Parameters<typeof handleUpsert>[0])
+
+    expect(countMessages(pn)).toBe(1)
+  })
+
+  it('o ack de entrega avisa a conversa canonica, nao o LID', () => {
+    // A tela filtra por igualdade (chatJid === active). Um @lid aqui seria um
+    // jid que nao existe em lista nenhuma: o "enviado" nunca viraria "lido".
+    const lid = freshLid()
+    const pn = freshJid()
+    rememberLid(lid, pn, 'senderPn')
+    const id = `ACK${(counter += 1)}`
+    insertMessage({
+      id,
+      chatJid: pn,
+      direction: 'out',
+      body: 'oi',
+      ts: Date.now(),
+      waMessageId: id,
+      status: 'sent'
+    })
+
+    const vistos: string[] = []
+    inboxEvents.on('changed', (p: { chatJid: string }) => vistos.push(p.chatJid))
+    handleMessagesUpdate([{ key: { id, remoteJid: lid }, update: { status: 4 } }])
+
+    expect(vistos).toContain(pn)
+    expect(vistos).not.toContain(lid)
+  })
+
+  it('nome vindo da agenda com LID cola na conversa do telefone', () => {
+    const lid = freshLid()
+    const pn = freshJid()
+    rememberLid(lid, pn, 'senderPn')
+    // `handleContacts` usa `create: false` — so preenche nome de conversa que ja
+    // existe. Entao a conversa precisa nascer de uma mensagem, como na vida real.
+    handleUpsert([
+      {
+        key: { id: `N${(counter += 1)}`, remoteJid: pn, fromMe: false },
+        message: { conversation: 'oi' },
+        messageTimestamp: 1_700_000_000
+      }
+    ] as Parameters<typeof handleUpsert>[0])
+
+    handleContacts([{ id: lid, name: 'Fulano' }])
+
+    expect(getChat(pn)?.name).toBe('Fulano')
   })
 })

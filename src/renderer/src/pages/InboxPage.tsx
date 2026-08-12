@@ -15,7 +15,15 @@ import {
   Music,
   RefreshCw
 } from 'lucide-react'
-import type { Chat, ChatSyncResult, ChatSyncState, HistorySyncState, Message } from '@shared/types'
+import type {
+  Chat,
+  ChatSyncOutcome,
+  ChatSyncResult,
+  ChatSyncState,
+  HistorySyncState,
+  LeadSyncStop,
+  Message
+} from '@shared/types'
 import { EmptyState, Button, StatusDot } from '../components/ui'
 import { Avatar } from '../components/Avatar'
 import { EmojiPicker } from '../components/EmojiPicker'
@@ -80,21 +88,48 @@ const SYNC_RANGES: { label: string; days: number | null }[] = [
 const SYNC_WARNING =
   'O historico antigo vem do seu celular: mantenha-o ligado, com internet e o WhatsApp aberto. Pode levar varios minutos.'
 
+/**
+ * UMA FRASE POR DESFECHO, E CADA UMA DIZ A VERDADE.
+ *
+ * A versao anterior era uma cadeia de `if` sobre booleanos, e tinha dois
+ * defeitos graves: o caminho "nao consegui nem pedir" terminava acusando o
+ * celular de ter parado de responder, e qualquer estado nao previsto caia no
+ * "Nada novo veio desta vez." — que soa como sucesso.
+ *
+ * Aqui o mapa e indexado pelo tipo: um desfecho novo sem frase nao compila.
+ * REGRA: `requestFailed`, `busy`, `offline` e `noAnchor` NUNCA mencionam o
+ * aparelho, porque em nenhum deles o aparelho chegou a ser consultado.
+ */
+const SYNC_MESSAGE: Record<ChatSyncOutcome, (r: ChatSyncResult) => string> = {
+  offline: () => 'WhatsApp desconectado — reconecte para sincronizar.',
+  requestFailed: () => 'Nao foi possivel enviar o pedido ao WhatsApp. Tente de novo em instantes.',
+  busy: () =>
+    'Havia outra sincronizacao em andamento e esta nao chegou a ser enviada. Tente de novo em instantes.',
+  noAnchor: () =>
+    'Esta conversa ainda nao tem nenhuma mensagem vinda do WhatsApp para servir de ponto de partida — so o que foi enviado por aqui. Ela ganha uma assim que o celular mandar a primeira mensagem ou alguem responder.',
+  awaitingPhone: (r) =>
+    (r.fetched > 0 ? `${r.fetched} mensagem(ns) trazida(s). ` : '') +
+    'O restante foi pedido ao celular, que monta o historico e envia quando puder — pode levar varios minutos. Deixe-o ligado, com internet e o WhatsApp aberto: o que chegar entra sozinho na conversa.',
+  exhausted: (r) =>
+    r.fetched > 0
+      ? `${r.fetched} mensagem(ns) trazida(s) — conversa completa.`
+      : 'Nao ha mais historico anterior no WhatsApp.',
+  reachedTarget: (r) => `${r.fetched} mensagem(ns) trazida(s).`,
+  fetched: (r) => `${r.fetched} mensagem(ns) trazida(s).`
+}
+
 function describeSync(r: ChatSyncResult): string {
-  if (r.offline) return 'WhatsApp desconectado — reconecte para sincronizar.'
-  if (r.requestFailed)
-    return 'Nao foi possivel enviar o pedido ao WhatsApp. Tente de novo em instantes.'
-  if (r.noAnchor)
-    return 'Esta conversa ainda nao tem nenhuma mensagem vinda do WhatsApp para servir de ponto de partida — so o que foi enviado por aqui. Ela ganha uma assim que o celular mandar a primeira mensagem ou alguem responder.'
-  if (r.timedOut) {
-    return r.fetched > 0
-      ? `${r.fetched} mensagem(ns) trazida(s), mas o celular parou de responder. Confira se ele esta ligado, com internet e o WhatsApp aberto, e tente de novo.`
-      : 'O celular nao respondeu. Confira se ele esta ligado, com internet e o WhatsApp aberto, e tente de novo.'
-  }
-  if (r.fetched > 0) {
-    return `${r.fetched} mensagem(ns) trazida(s)${r.exhausted ? ' — conversa completa' : ''}.`
-  }
-  return r.exhausted ? 'Nao ha mais historico anterior no WhatsApp.' : 'Nada novo veio desta vez.'
+  return SYNC_MESSAGE[r.outcome](r)
+}
+
+/** Por que a fila da base parou. Mesma regra: so acusa o celular quando e ele. */
+const LEAD_STOP_MESSAGE: Record<LeadSyncStop, string> = {
+  phoneQuiet:
+    'A sincronizacao pausou: os pedidos foram enviados e as respostas ainda nao chegaram. O celular envia quando puder — mantenha-o ligado, com internet e o WhatsApp aberto. O que chegar entra sozinho.',
+  requestFailed:
+    'A sincronizacao parou: nao foi possivel enviar o pedido ao WhatsApp. Tente de novo em instantes.',
+  offline: 'A sincronizacao parou: o WhatsApp desconectou. Reconecte para retomar.',
+  busy: 'A sincronizacao parou: havia outro pedido de historico em andamento. Tente de novo em instantes.'
 }
 
 function syncLabel(chat: Chat): string {
@@ -136,7 +171,7 @@ export default function InboxPage(): JSX.Element {
     total: 0,
     jid: null,
     fetched: 0,
-    stalled: false
+    stoppedReason: null
   })
   const [total, setTotal] = useState(0)
   const [loadingOlder, setLoadingOlder] = useState(false)
@@ -272,6 +307,23 @@ export default function InboxPage(): JSX.Element {
     }
   }, [active, loadChats, loadMessages])
 
+  /**
+   * O historico pedido chegou depois de a tela ja ter dito "ainda nao chegou".
+   *
+   * Sem isto o usuario ficava com aquela frase na tela enquanto as mensagens ja
+   * tinham entrado na conversa — e concluia (de novo) que o app nao sincroniza.
+   */
+  useEffect(() => {
+    return window.api.inbox.onHistoryLate(({ chatJid, inserted }) => {
+      if (chatJid !== active) return
+      setSyncNote(
+        inserted > 0
+          ? `Chegou o historico pedido: ${inserted} mensagem(ns).`
+          : 'O celular respondeu ao pedido de historico.'
+      )
+    })
+  }, [active])
+
   // Polling periódico: garante que a inbox se atualize mesmo que um evento
   // `inbox:changed` se perca. Espacado, porque cada rodada e uma releitura da
   // lista inteira — a atualizacao de verdade vem pelos eventos acima.
@@ -333,8 +385,12 @@ export default function InboxPage(): JSX.Element {
         await loadChats()
       }
       // So avisa quando ha algo a dizer: abrir conversa ja sincronizada nao
-      // pode encher a tela de recado.
-      if (r && (r.noAnchor || r.timedOut || r.fetched > 0)) setSyncNote(describeSync(r))
+      // pode encher a tela de recado. `busy` e `requestFailed` ficam de fora de
+      // proposito — a sincronizacao automatica ao abrir e melhor-esforco, e nao
+      // vale assustar quem so queria ler a conversa.
+      const valeAvisar =
+        r && (r.outcome === 'noAnchor' || r.outcome === 'awaitingPhone' || r.fetched > 0)
+      if (r && valeAvisar) setSyncNote(describeSync(r))
     } finally {
       setSyncing(false)
     }
@@ -583,10 +639,9 @@ export default function InboxPage(): JSX.Element {
               {leadSync.fetched > 0 ? ` — ${leadSync.fetched} mensagens` : ''}. {SYNC_WARNING}
             </p>
           )}
-          {!leadSync.running && leadSync.stalled && (
+          {!leadSync.running && leadSync.stoppedReason && (
             <p className="text-[11px] text-state-warningText [text-wrap:pretty]">
-              A sincronizacao parou: o celular deixou de responder. Confira se ele esta ligado, com
-              internet e o WhatsApp aberto, e clique de novo.
+              {LEAD_STOP_MESSAGE[leadSync.stoppedReason]}
             </p>
           )}
         </div>

@@ -9,9 +9,13 @@ import {
   refreshLeadFlags
 } from '../../repos/chats'
 import { scoped } from '../../logger'
-import type { ChatSyncResult, ChatSyncState } from '@shared/types'
+import { timings } from './historyTimings'
+import { recordRequest, pendingFor } from './historyRequests'
+import type { ChatSyncOutcome, ChatSyncResult, ChatSyncState, LeadSyncStop } from '@shared/types'
 
 const log = scoped('history')
+
+export { timings }
 
 /**
  * Sincronizacao de historico SOB DEMANDA, por conversa.
@@ -33,41 +37,7 @@ const BATCH = 50
 /** Teto de rodadas por conversa, para um "sincronizar tudo" nao virar infinito. */
 const MAX_ROUNDS = 40
 
-/**
- * Teto de esperas por cooldown, contado a parte das rodadas.
- *
- * Cooldown nao e rodada: nenhum pedido saiu. Contar junto fazia uma sequencia
- * de cooldowns (a fila de leads e a tela concorrem pelo mesmo cooldown) comer
- * as 40 rodadas sem nunca ter perguntado nada ao celular.
- */
-const MAX_COOLDOWN_WAITS = 10
-
-/**
- * Tempos da espera por uma rodada.
- *
- * Ficam num objeto, e nao em constantes soltas, para o teste poder encurta-los:
- * o caminho "o celular nao respondeu" so termina depois do timeout, e esperar
- * 45s de verdade em teste nao prova nada alem de paciencia.
- */
-export const timings = {
-  /**
-   * Quanto esperamos o CELULAR responder um pedido de historico.
-   *
-   * Nao e o servidor do WhatsApp que responde: e o aparelho pareado, que pode
-   * estar com a tela apagada, em rede ruim ou com o app fechado. 45s e
-   * generoso de proposito — desistir cedo demais era o que produzia o
-   * diagnostico errado de "essa conversa acabou".
-   */
-  roundTimeoutMs: 45_000,
-  /** Espera quando outro pedido de historico esta no cooldown. */
-  retryMs: 2_000
-}
-
 const DAY_MS = 24 * 60 * 60 * 1000
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 /**
  * Puxa o historico de uma conversa ate `days` atras (null = tudo).
@@ -76,26 +46,54 @@ function sleep(ms: number): Promise<void> {
  * `messaging-history.set`, e e gravada pelo caminho normal do historico. Por
  * isso cada rodada espera a mensagem mais antiga da conversa andar para tras —
  * quando ela para de andar, e porque o servidor nao tem mais o que mandar.
+ *
+ * ESPERAR AQUI E UMA CORTESIA COM A TELA, NAO O MECANISMO. Se a resposta nao
+ * vier dentro de `roundWaitMs`, esta funcao devolve `awaitingPhone` e para de
+ * bombear rodadas — mas o pedido continua vivo em `historyRequests`, e o lote e
+ * creditado quando chegar. O erro que a versao anterior cometia era tratar esse
+ * prazo como um veredito sobre o aparelho.
  */
-export async function syncChatHistory(jid: string, days: number | null): Promise<ChatSyncResult> {
+export async function syncChatHistory(
+  jid: string,
+  days: number | null,
+  opts: { queueWaitMs?: number } = {}
+): Promise<ChatSyncResult> {
   const target = days == null ? 0 : Date.now() - days * DAY_MS
   const before = countMessages(jid)
+  const queueWaitMs = opts.queueWaitMs ?? timings.queueWaitMs
 
-  const result: ChatSyncResult = {
-    jid,
-    fetched: 0,
-    reachedTarget: false,
-    exhausted: false,
-    noAnchor: false,
-    offline: false,
-    timedOut: false,
-    requestFailed: false
+  const done = (outcome: ChatSyncOutcome, anchorTs: number | null): ChatSyncResult => {
+    const fetched = countMessages(jid) - before
+
+    /**
+     * So gravamos quando ALGO foi aprendido sobre a conversa.
+     *
+     * `busy`, `requestFailed` e `offline` significam que pedido nenhum chegou a
+     * ser respondido — carimbar `syncedFrom` neles fazia a conversa parecer
+     * sincronizada sem ter sido, e era metade do motivo de a tela mentir.
+     */
+    const aprendeu = outcome === 'reachedTarget' || outcome === 'exhausted' || outcome === 'fetched'
+    if (aprendeu && anchorTs != null) {
+      setChatSync(jid, {
+        syncedFrom: anchorTs,
+        // "Completa" so quando o celular RESPONDEU e nao tinha mais passado.
+        // Nem alcancar a janela de 7/30 dias nem um silencio do aparelho valem
+        // como fim da conversa.
+        syncedFull: outcome === 'exhausted'
+      })
+    }
+
+    log.info('conversa sincronizada', {
+      jid,
+      dias: days ?? 'tudo',
+      novas: fetched,
+      desfecho: outcome
+    })
+    inboxEvents.emit('changed', { chatJid: jid })
+    return { jid, fetched, outcome, pendingRequests: pendingFor(jid).length }
   }
 
-  if (!whatsapp.socket) {
-    result.offline = true
-    return result
-  }
+  if (!whatsapp.socket) return done('offline', null)
 
   let anchor = oldestAnchor(jid)
   if (!anchor) {
@@ -103,22 +101,14 @@ export async function syncChatHistory(jid: string, days: number | null): Promise
     // localiza "antes de qual" pela tupla (id, fromMe, carimbo), e o celular
     // so responde se conseguir resolve-la. Conversa vazia, ou conversa em que
     // tudo que existe foi o proprio app que gravou ao enviar, nao tem essa
-    // tupla — e pedir com uma tupla inventada e o que produzia 45s de silencio
-    // lido como "o aparelho esta offline".
-    result.noAnchor = true
-    return result
+    // tupla — e pedir com uma tupla inventada e o que produzia minutos de
+    // silencio lidos como "o aparelho esta offline".
+    return done('noAnchor', null)
   }
 
-  let cooldownWaits = 0
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
-    if (anchor.ts <= target) {
-      result.reachedTarget = true
-      break
-    }
-    if (!whatsapp.socket) {
-      result.offline = true
-      break
-    }
+    if (anchor.ts <= target) return done('reachedTarget', anchor.ts)
+    if (!whatsapp.socket) return done('offline', anchor.ts)
 
     /**
      * O ouvinte entra em cena ANTES do pedido sair.
@@ -130,70 +120,47 @@ export async function syncChatHistory(jid: string, days: number | null): Promise
      * reavaliado quando o id do pedido fica conhecido.
      */
     const espera = listenForAnswer(jid)
-    const pedido = await whatsapp.fetchOlderMessages(anchor, BATCH)
+    const pedido = await whatsapp.fetchOlderMessages(anchor, BATCH, {
+      waitForSlotMs: queueWaitMs
+    })
 
     if (!pedido.sent) {
       espera.cancel()
-      if (pedido.reason === 'cooldown') {
-        // Nenhum pedido saiu: nao gasta rodada, so a paciencia do cooldown.
-        cooldownWaits += 1
-        if (cooldownWaits > MAX_COOLDOWN_WAITS) {
-          log.warn('desisti de esperar a vez do pedido de historico', { jid, cooldownWaits })
-          break
-        }
-        round -= 1
-        await sleep(timings.retryMs)
-        continue
+      if (pedido.reason === 'offline') return done('offline', anchor.ts)
+      if (pedido.reason === 'busy') {
+        // A vaga na fila nao abriu a tempo. NENHUM pedido saiu — isto nao pode
+        // virar frase sobre o celular, nem carimbar a conversa.
+        log.warn('a fila de pedidos de historico nao liberou a vez', { jid, queueWaitMs })
+        return done('busy', anchor.ts)
       }
-      if (pedido.reason === 'offline') result.offline = true
-      else result.requestFailed = true
-      break
+      return done('requestFailed', anchor.ts)
     }
+
+    // O pedido passa a ter vida propria a partir daqui: mesmo que esta chamada
+    // desista de esperar, o registro continua ouvindo por ele.
+    recordRequest(jid, pedido.requestId)
 
     const answered = await espera.settle(pedido.requestId)
     if (!answered) {
-      /**
-       * O celular nao respondeu dentro do prazo.
-       *
-       * Isto NAO significa que a conversa acabou — significa que o aparelho
-       * esta offline, com o WhatsApp fechado ou em rede ruim. Tratar como fim
-       * do historico (o que o codigo fazia antes) marcava a conversa como
-       * "completa" com zero mensagens e a tirava da fila para sempre.
-       */
-      result.timedOut = true
-      log.warn('o celular nao respondeu ao pedido de historico', {
+      log.info('pedido de historico ainda sem resposta; segue pendente', {
         jid,
-        requestId: pedido.requestId
+        requestId: pedido.requestId,
+        esperouMs: timings.roundWaitMs
       })
-      break
+      return done('awaitingPhone', anchor.ts)
     }
 
     const oldest = oldestAnchor(jid)
     if (!oldest || oldest.ts >= anchor.ts) {
       // Respondeu, mas sem nada anterior ao que ja tinhamos: acabou o passado.
-      result.exhausted = true
-      break
+      // Vale como prova de fim de conversa mesmo com `fetched === 0` — o que
+      // importa e o aparelho ter FALADO, nao a rodada ter trazido algo.
+      return done('exhausted', anchor.ts)
     }
     anchor = oldest
   }
 
-  result.fetched = countMessages(jid) - before
-  setChatSync(jid, {
-    syncedFrom: anchor.ts,
-    // "Completa" so quando o celular RESPONDEU e nao tinha mais passado. Nem
-    // alcancar a janela de 7/30 dias nem um silencio do aparelho valem como
-    // fim da conversa.
-    syncedFull: result.exhausted
-  })
-  log.info('conversa sincronizada', {
-    jid,
-    dias: days ?? 'tudo',
-    novas: result.fetched,
-    ateOFim: result.exhausted,
-    semResposta: result.timedOut
-  })
-  inboxEvents.emit('changed', { chatJid: jid })
-  return result
+  return done('fetched', anchor.ts)
 }
 
 interface HistoryBatch {
@@ -268,7 +235,7 @@ function listenForAnswer(jid: string): AnswerWatch {
     if (timer) clearTimeout(timer)
     inboxEvents.off('historyBatch', onBatch)
     if (!answered) {
-      log.warn('nenhum lote de historico casou com o pedido', {
+      log.info('nenhum lote de historico casou com o pedido dentro do prazo', {
         jid,
         requestId,
         lotesRecebidos: naoCasaram.length,
@@ -306,7 +273,7 @@ function listenForAnswer(jid: string): AnswerWatch {
         }
         // O prazo conta a partir daqui: antes do no sair o celular nao tinha
         // como responder.
-        timer = setTimeout(() => finish(false), timings.roundTimeoutMs)
+        timer = setTimeout(() => finish(false), timings.roundWaitMs)
       })
     },
     cancel() {
@@ -335,9 +302,23 @@ let leadSync: ChatSyncState = {
   total: 0,
   jid: null,
   fetched: 0,
-  stalled: false
+  stoppedReason: null
 }
 let cancelRequested = false
+
+/**
+ * Quais desfechos param a fila, e sob que nome.
+ *
+ * Os que nao aparecem aqui deixam a fila andar: `exhausted`, `fetched` e
+ * `reachedTarget` sao sucesso, e `noAnchor` e uma conversa que nao tinha o que
+ * pedir — insistir nela nao ajuda, mas as outras ainda podem render.
+ */
+const STOP_BY_OUTCOME: Partial<Record<ChatSyncOutcome, LeadSyncStop>> = {
+  awaitingPhone: 'phoneQuiet',
+  requestFailed: 'requestFailed',
+  offline: 'offline',
+  busy: 'busy'
+}
 
 export function getLeadSyncState(): ChatSyncState {
   return { ...leadSync }
@@ -357,7 +338,14 @@ export async function syncLeadChats(maxChats = 50): Promise<ChatSyncState> {
   refreshLeadFlags()
   const jids = leadChatsNeedingFullSync(maxChats)
   cancelRequested = false
-  leadSync = { running: true, done: 0, total: jids.length, jid: null, fetched: 0, stalled: false }
+  leadSync = {
+    running: true,
+    done: 0,
+    total: jids.length,
+    jid: null,
+    fetched: 0,
+    stoppedReason: null
+  }
   emitLeadSync()
 
   try {
@@ -366,12 +354,25 @@ export async function syncLeadChats(maxChats = 50): Promise<ChatSyncState> {
       leadSync = { ...leadSync, jid }
       emitLeadSync()
 
-      const r = await syncChatHistory(jid, null)
-      if (r.offline) break
-      // Celular sem responder: parar a fila. Insistir nas outras 40 conversas
-      // so gastaria meia hora repetindo o mesmo silencio.
-      if (r.timedOut || r.requestFailed) {
-        leadSync = { ...leadSync, stalled: true }
+      /**
+       * Prazo curto na fila: o trabalho de fundo cede a vez para a tela.
+       *
+       * Com o prazo longo dos dois lados, abrir uma conversa enquanto a fila
+       * roda fazia um dos dois voltar de maos vazias — e a tela reportava isso
+       * como se o aparelho tivesse ficado calado.
+       */
+      const r = await syncChatHistory(jid, null, { queueWaitMs: timings.leadQueueWaitMs })
+
+      /**
+       * Cada motivo de parada tem nome proprio.
+       *
+       * A versao anterior juntava "o celular nao respondeu" com "nao consegui
+       * enviar o pedido" num unico `stalled`, e a tela dizia que o aparelho
+       * tinha parado de responder mesmo quando pedido nenhum havia saido.
+       */
+      const parada = STOP_BY_OUTCOME[r.outcome]
+      if (parada) {
+        leadSync = { ...leadSync, stoppedReason: parada }
         break
       }
       /**
@@ -419,9 +420,20 @@ export async function autoSyncOnOpen(jid: string): Promise<ChatSyncResult | null
 
   autoSynced.add(jid)
   const r = await syncChatHistory(jid, days)
-  // Sem resposta do celular (ou sem conexao) nao conta como tentativa gasta: o
-  // aparelho pode voltar em um minuto e a proxima abertura deve tentar de novo.
-  if (r.timedOut || r.offline) autoSynced.delete(jid)
+
+  /**
+   * O que conta como "tentativa gasta".
+   *
+   * `offline`, `busy` e `requestFailed` nao gastam a vez: nada saiu daqui, e a
+   * proxima abertura deve tentar de novo. Ja `awaitingPhone` COM pedido aberto
+   * gasta — o aparelho ja esta montando o pacote, e reabrir a conversa nao pode
+   * empilhar um pedido novo em cima do que ainda esta de pe. Era assim que uma
+   * conversa lenta virava uma rajada de pedidos a cada clique.
+   */
+  const naoSaiuNada =
+    r.outcome === 'offline' || r.outcome === 'busy' || r.outcome === 'requestFailed'
+  const podeTentarDeNovo = r.outcome === 'awaitingPhone' && r.pendingRequests === 0
+  if (naoSaiuNada || podeTentarDeNovo) autoSynced.delete(jid)
   return r
 }
 

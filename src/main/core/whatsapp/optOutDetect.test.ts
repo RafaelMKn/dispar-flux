@@ -67,4 +67,16 @@ describe('jidToE164', () => {
   it('devolve null para jid sem numero utilizavel', () => {
     expect(jidToE164('status@broadcast')).toBeNull()
   })
+
+  it('LID nao e telefone, mesmo tendo digitos de sobra', () => {
+    /**
+     * ESTE ERA UM BUG SILENCIOSO E CARO. Um LID de 14 digitos passava no teste
+     * de comprimento e virava `+71700301529149`. Quem respondia SAIR numa
+     * conversa LID nao era descadastrado — o telefone real nunca entrava na
+     * `opt_outs`, que e global a todas as bases — e ainda ficava um numero
+     * inexistente gravado la.
+     */
+    expect(jidToE164('71700301529149@lid')).toBeNull()
+    expect(jidToE164('128033663008918@lid')).toBeNull()
+  })
 })

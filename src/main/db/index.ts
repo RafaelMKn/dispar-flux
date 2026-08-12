@@ -105,6 +105,25 @@ const BOOTSTRAP_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_jid, ts);
 
+  -- Mapa LID -> telefone (0.3.2). O WhatsApp esta trocando o endereçamento das
+  -- conversas de numero para LID (71700301529149@lid), um identificador opaco.
+  -- Sem este mapa a mesma pessoa vira duas conversas. Ver core/whatsapp/lid.ts.
+  CREATE TABLE IF NOT EXISTS lid_map (
+    lid    TEXT PRIMARY KEY,
+    jid    TEXT NOT NULL,
+    source TEXT NOT NULL,
+    at     INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_lid_map_jid ON lid_map(jid);
+
+  -- Numeros que ja perguntamos ao servidor e que nao tem LID (ainda nao
+  -- migraram). Sem isto a varredura repetiria as mesmas 200 consultas USync a
+  -- cada conexao, para sempre.
+  CREATE TABLE IF NOT EXISTS lid_probe (
+    phone TEXT PRIMARY KEY,
+    at    INTEGER NOT NULL
+  );
+
   -- CRM (Fase 4)
   CREATE TABLE IF NOT EXISTS crm_stages (
     id         TEXT PRIMARY KEY,
@@ -206,7 +225,16 @@ const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
    * de onde recuperar localmente. Nao ha backfill — NULL e a verdade, e o que
    * mantem essas linhas fora da escolha de ancora.
    */
-  { table: 'messages', column: 'wa_ts', ddl: 'wa_ts INTEGER' }
+  { table: 'messages', column: 'wa_ts', ddl: 'wa_ts INTEGER' },
+  /**
+   * Endereco de protocolo da conversa, quando o WhatsApp a endereça por LID.
+   *
+   * A conversa e canonicalizada pelo TELEFONE (e a chave `jid`), mas o fio
+   * precisa continuar falando o que o servidor fala: o `fetchMessageHistory`
+   * manda o `chatJid` verbatim, entao pedir historico com o telefone numa
+   * conversa que o aparelho conhece por LID e outra forma de silencio.
+   */
+  { table: 'chats', column: 'lid', ddl: 'lid TEXT' }
 ]
 
 /**

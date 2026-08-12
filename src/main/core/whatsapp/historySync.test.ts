@@ -19,9 +19,17 @@ vi.mock('./client', () => ({
 
 const socketRef: { current: unknown } = { current: socket }
 
-import { syncChatHistory, autoSyncOnOpen, resetAutoSync, timings } from './historySync'
+import {
+  syncChatHistory,
+  syncLeadChats,
+  autoSyncOnOpen,
+  resetAutoSync,
+  timings
+} from './historySync'
+import { resetRequests, pendingFor, recentRequests } from './historyRequests'
 import { inboxEvents } from './inbox'
 import { insertMessages, upsertChat, getChat, setChatSync } from '../../repos/chats'
+import { insertContacts } from '../../repos/contacts'
 
 beforeAll(async () => {
   await initDb()
@@ -31,8 +39,12 @@ beforeEach(() => {
   fetchOlderMessages.mockReset()
   socketRef.current = socket
   resetAutoSync()
+  resetRequests()
   // Tempos de teste: o que importa e a sequencia de pedidos, nao a espera real.
-  timings.roundTimeoutMs = 150
+  timings.roundWaitMs = 150
+  timings.queueWaitMs = 150
+  timings.leadQueueWaitMs = 150
+  timings.requestTtlMs = 10_000
   timings.retryMs = 20
 })
 
@@ -70,9 +82,13 @@ function sent(requestId: string | null = null): { sent: true; requestId: string 
 }
 
 /** Simula o celular respondendo o pedido: chega um lote de historico. */
-function answer(jid: string, opts: { withOlder?: number } = {}): void {
+function answer(jid: string, opts: { withOlder?: number; requestId?: string | null } = {}): void {
   if (opts.withOlder) seed(jid, opts.withOlder)
-  inboxEvents.emit('historyBatch', { requestId: null, inserted: {}, jids: [jid] })
+  inboxEvents.emit('historyBatch', {
+    requestId: opts.requestId ?? null,
+    inserted: {},
+    jids: [jid]
+  })
 }
 
 describe('syncChatHistory', () => {
@@ -90,9 +106,7 @@ describe('syncChatHistory', () => {
 
     const r = await syncChatHistory(jid, 7)
 
-    expect(r.reachedTarget).toBe(true)
-    expect(r.exhausted).toBe(false)
-    expect(r.timedOut).toBe(false)
+    expect(r.outcome).toBe('reachedTarget')
     expect(r.fetched).toBeGreaterThan(0)
     // Nao continua depois de alcancar a janela pedida: cada rodada e um pedido
     // ao celular do usuario.
@@ -110,37 +124,36 @@ describe('syncChatHistory', () => {
 
     const r = await syncChatHistory(jid, null)
 
-    expect(r.exhausted).toBe(true)
-    expect(r.timedOut).toBe(false)
+    expect(r.outcome).toBe('exhausted')
     expect(r.fetched).toBe(0)
     expect(getChat(jid)?.syncedFull).toBe(1)
   })
 
-  it('celular calado NAO vira "conversa completa"', async () => {
-    // Este era o bug: quem responde o pedido de historico e o aparelho pareado.
-    // Se ele esta offline, ninguem responde — e a versao anterior concluia que
-    // a conversa tinha acabado, marcava como completa com zero mensagens e a
-    // tirava da fila para sempre.
+  it('celular calado NAO vira "conversa completa" nem acusa o aparelho', async () => {
+    // Este era o bug original: quem responde o pedido e o aparelho pareado. Se
+    // ele demora, a versao antiga concluia que a conversa tinha acabado. Hoje o
+    // desfecho e `awaitingPhone` — que a tela traduz como "ainda nao chegou",
+    // nao como "o celular parou de responder" — e o pedido segue aberto.
     const jid = freshJid()
     seed(jid, Date.now() - DAY)
     fetchOlderMessages.mockResolvedValue(sent('req-3'))
 
     const r = await syncChatHistory(jid, null)
 
-    expect(r.timedOut).toBe(true)
-    expect(r.exhausted).toBe(false)
+    expect(r.outcome).toBe('awaitingPhone')
+    expect(r.pendingRequests).toBe(1)
     expect(getChat(jid)?.syncedFull).toBe(0)
   })
 
   it('nao pede nada sem ancora nem com o WhatsApp desconectado', async () => {
     const semMensagem = freshJid()
     upsertChat(semMensagem, { name: 'vazia' })
-    expect((await syncChatHistory(semMensagem, 7)).noAnchor).toBe(true)
+    expect((await syncChatHistory(semMensagem, 7)).outcome).toBe('noAnchor')
 
     const jid = freshJid()
     seed(jid, Date.now() - DAY)
     socketRef.current = null
-    expect((await syncChatHistory(jid, 7)).offline).toBe(true)
+    expect((await syncChatHistory(jid, 7)).outcome).toBe('offline')
 
     expect(fetchOlderMessages).not.toHaveBeenCalled()
   })
@@ -167,15 +180,14 @@ describe('syncChatHistory', () => {
 
   it('conversa que so tem o que o app enviou fica sem ancora', async () => {
     // Conversa criada pelo disparo: nenhuma linha tem carimbo do servidor nem
-    // id do WhatsApp. Antes isso virava um pedido fantasma e 45s de silencio
-    // lidos como "o celular esta offline".
+    // id do WhatsApp. Antes isso virava um pedido fantasma e um silencio longo
+    // lido como "o celular esta offline".
     const jid = freshJid()
     seedLocal(jid, Date.now() - DAY)
 
     const r = await syncChatHistory(jid, 30)
 
-    expect(r.noAnchor).toBe(true)
-    expect(r.timedOut).toBe(false)
+    expect(r.outcome).toBe('noAnchor')
     expect(fetchOlderMessages).not.toHaveBeenCalled()
   })
 
@@ -198,39 +210,40 @@ describe('syncChatHistory', () => {
 
     const r = await syncChatHistory(jid, null)
 
-    expect(r.timedOut).toBe(false)
-    expect(r.exhausted).toBe(true)
+    expect(r.outcome).toBe('exhausted')
   })
 
-  it('cooldown nao consome rodada', async () => {
+  it('fila ocupada nao vira "o celular parou de responder" nem carimba a conversa', async () => {
+    /**
+     * A CAUSA EXATA DA RECLAMACAO. Quando a vaga de envio estava tomada, a
+     * versao anterior saia do laco sem marcar nada: a tela dizia "nada novo veio
+     * desta vez" e o `setChatSync` ainda gravava `syncedFrom`, deixando a
+     * conversa com cara de sincronizada sem nenhum pedido ter saido.
+     */
     const jid = freshJid()
     seed(jid, Date.now() - DAY)
-    let tentativas = 0
-    fetchOlderMessages.mockImplementation(async () => {
-      tentativas += 1
-      if (tentativas <= 3) return { sent: false, reason: 'cooldown' }
-      setTimeout(() => answer(jid), 5)
-      return sent('req-cool')
-    })
+    const antes = getChat(jid)?.syncedFrom ?? null
+    fetchOlderMessages.mockResolvedValue({ sent: false, reason: 'busy' })
 
     const r = await syncChatHistory(jid, null)
 
-    // O pedido chegou a sair depois dos cooldowns: eles nao gastaram as rodadas.
-    expect(r.exhausted).toBe(true)
-    expect(r.timedOut).toBe(false)
-    expect(tentativas).toBe(4)
+    expect(r.outcome).toBe('busy')
+    expect(getChat(jid)?.syncedFrom ?? null).toBe(antes)
+    expect(getChat(jid)?.syncedFull).toBe(0)
+    // E nenhum pedido foi registrado: nao houve o que o celular responder.
+    expect(pendingFor(jid)).toHaveLength(0)
   })
 
   it('falha ao enviar o pedido nao vira "celular calado" nem "conversa completa"', async () => {
     const jid = freshJid()
     seed(jid, Date.now() - DAY)
+    const antes = getChat(jid)?.syncedFrom ?? null
     fetchOlderMessages.mockResolvedValue({ sent: false, reason: 'error' })
 
     const r = await syncChatHistory(jid, null)
 
-    expect(r.requestFailed).toBe(true)
-    expect(r.timedOut).toBe(false)
-    expect(r.exhausted).toBe(false)
+    expect(r.outcome).toBe('requestFailed')
+    expect(getChat(jid)?.syncedFrom ?? null).toBe(antes)
     expect(getChat(jid)?.syncedFull).toBe(0)
   })
 
@@ -245,8 +258,81 @@ describe('syncChatHistory', () => {
 
     const r = await syncChatHistory(jid, null)
 
-    expect(r.exhausted).toBe(true)
-    expect(r.timedOut).toBe(false)
+    expect(r.outcome).toBe('exhausted')
+  })
+
+  it('resposta que chega DEPOIS do retorno ainda e creditada', async () => {
+    /**
+     * A tese da mudanca. O aparelho monta e sobe o pacote de historico quando
+     * consegue — as vezes minutos depois. Antes o ouvinte morria junto com a
+     * rodada, entao esse lote atrasado nao era creditado a lugar nenhum e o
+     * usuario tinha que clicar de novo.
+     */
+    const jid = freshJid()
+    seed(jid, Date.now() - DAY)
+    fetchOlderMessages.mockResolvedValue(sent('req-tardio'))
+
+    const r = await syncChatHistory(jid, null)
+    expect(r.outcome).toBe('awaitingPhone')
+    expect(pendingFor(jid)).toHaveLength(1)
+
+    const tardios: unknown[] = []
+    inboxEvents.on('historyLate', (p) => tardios.push(p))
+
+    // O celular responde depois que ninguem mais estava esperando.
+    seed(jid, Date.now() - 30 * DAY)
+    answer(jid, { requestId: 'req-tardio' })
+
+    expect(pendingFor(jid)).toHaveLength(0)
+    expect(recentRequests()[0].status).toBe('respondido')
+    // E a conversa aprendeu o passado novo, sem novo clique.
+    expect(getChat(jid)?.syncedFrom).toBeLessThan(Date.now() - 29 * DAY)
+    expect(tardios).toHaveLength(1)
+  })
+})
+
+describe('syncLeadChats', () => {
+  /**
+   * Conversa que entra na fila de leads.
+   *
+   * `is_lead` e derivado da base de contatos por `refreshLeadFlags`, entao nao
+   * adianta escrever a flag na conversa: ela seria sobrescrita na hora.
+   */
+  function seedLead(): string {
+    const jid = freshJid()
+    seed(jid, Date.now() - DAY)
+    insertContacts([
+      {
+        listId: 'lista-teste',
+        name: 'Lead',
+        phoneE164: `+${jid.split('@')[0]}`,
+        extraJson: null
+      }
+    ])
+    return jid
+  }
+
+  it('falha de envio e reportada como falha de envio, nao como celular calado', async () => {
+    /**
+     * A CAUSA 3 DENTRO DA FILA. Antes, `requestFailed` e "sem resposta" caiam
+     * no mesmo `stalled: boolean`, e o banner dizia que o celular tinha parado
+     * de responder mesmo quando o pedido nao havia saido daqui.
+     */
+    seedLead()
+    fetchOlderMessages.mockResolvedValue({ sent: false, reason: 'error' })
+
+    const s = await syncLeadChats(5)
+
+    expect(s.stoppedReason).toBe('requestFailed')
+  })
+
+  it('silencio do aparelho para a fila com o motivo certo', async () => {
+    seedLead()
+    fetchOlderMessages.mockResolvedValue(sent('req-fila'))
+
+    const s = await syncLeadChats(5)
+
+    expect(s.stoppedReason).toBe('phoneQuiet')
   })
 })
 
@@ -269,15 +355,32 @@ describe('autoSyncOnOpen', () => {
     expect(fetchOlderMessages).not.toHaveBeenCalled()
   })
 
-  it('tentativa sem resposta do celular nao queima a vez da conversa', async () => {
+  it('reabrir a conversa nao empilha pedido em cima de um que ainda esta de pe', async () => {
+    /**
+     * O aparelho ja esta montando o pacote. Antes, "sem resposta no prazo"
+     * liberava a conversa para pedir de novo, entao cada reabertura somava mais
+     * um pedido — justamente o padrao de rajada que o resto do modulo evita.
+     */
     const jid = freshJid()
     seed(jid, Date.now() - DAY)
     setChatSync(jid, { syncedFrom: Date.now() - DAY })
     fetchOlderMessages.mockResolvedValue(sent('req-5'))
 
-    expect((await autoSyncOnOpen(jid))?.timedOut).toBe(true)
+    expect((await autoSyncOnOpen(jid))?.outcome).toBe('awaitingPhone')
 
-    // O aparelho pode voltar em um minuto: abrir de novo tenta de novo.
+    fetchOlderMessages.mockClear()
+    expect(await autoSyncOnOpen(jid)).toBeNull()
+    expect(fetchOlderMessages).not.toHaveBeenCalled()
+  })
+
+  it('quando nada saiu daqui, a proxima abertura tenta de novo', async () => {
+    const jid = freshJid()
+    seed(jid, Date.now() - DAY)
+    setChatSync(jid, { syncedFrom: Date.now() - DAY })
+    fetchOlderMessages.mockResolvedValue({ sent: false, reason: 'busy' })
+
+    expect((await autoSyncOnOpen(jid))?.outcome).toBe('busy')
+
     fetchOlderMessages.mockClear()
     fetchOlderMessages.mockResolvedValue(sent('req-6'))
     expect(await autoSyncOnOpen(jid)).not.toBeNull()

@@ -1,6 +1,5 @@
 import { app, BrowserWindow, protocol, net, shell } from 'electron'
 import { join } from 'node:path'
-import { existsSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { MEDIA_SCHEME, resolveMediaUrl } from './core/whatsapp/mediaStore'
 import { initDb, saveNow } from './db'
@@ -23,9 +22,11 @@ import {
   repairChatTimestamps,
   clearPhantomChatDates,
   clearUnprovenFullSync,
+  mergeLidChats,
   backfillServerTimestamps,
   refreshLeadFlags
 } from './repos/chats'
+import { mappedLidChats } from './repos/lidMap'
 import { getBackgroundSettings, shouldShowTrayNotice, getJson, setJson } from './settings'
 import { beginQuit, shouldHideOnClose } from './lifecycle'
 
@@ -201,6 +202,34 @@ async function bootstrap(): Promise<void> {
       log.info(`${desmarcadas} conversa(s) voltaram para a fila apos a correcao da ancora`)
     }
   }
+  /**
+   * A semantica de "conversa completa" mudou nesta versao.
+   *
+   * Ate aqui um `busy` ou um `requestFailed` — casos em que pedido nenhum saiu
+   * daqui — ainda carimbavam a conversa via `setChatSync`. Quem foi marcado
+   * naquele caminho precisa voltar para a fila uma ultima vez; dai o marcador
+   * proprio, para nao disputar com os dois anteriores.
+   */
+  if (!getJson('inbox.unprovenFullSyncV3', false)) {
+    const desmarcadas = clearUnprovenFullSync()
+    setJson('inbox.unprovenFullSyncV3', true)
+    if (desmarcadas > 0) {
+      log.info(`${desmarcadas} conversa(s) voltaram para a fila apos a revisao dos desfechos`)
+    }
+  }
+  /**
+   * Junta as conversas que o endereçamento LID partiu em duas.
+   *
+   * Roda com o mapa que ja conseguimos montar; conversa LID sem traducao fica
+   * onde esta e a varredura por USync resolve depois, fundindo no proximo boot.
+   * Por isso NAO ha flag one-shot aqui: enquanto sobrar LID por traduzir, ainda
+   * ha trabalho a fazer, e a funcao e barata quando nao ha nada a fundir.
+   */
+  const fundidas = mergeLidChats(mappedLidChats())
+  if (fundidas > 0) {
+    log.info(`${fundidas} conversa(s) duplicada(s) por LID foram unificadas`)
+  }
+
   log.info(`${refreshLeadFlags()} conversa(s) na base de leads`)
 
   // Sem isso o Windows nao mostra as notificacoes do app (ele as associa ao
@@ -230,7 +259,7 @@ async function bootstrap(): Promise<void> {
   // Se ja existe sessao salva em userData/wa-auth, reconecta sozinho (sem QR).
   // Se nao existe, o Baileys emitiria um QR que ninguem pediu — entao so
   // reconectamos quando ha credenciais.
-  if (existsSync(join(app.getPath('userData'), 'wa-auth', 'creds.json'))) {
+  if (whatsapp.hasStoredSession()) {
     log.info('sessao encontrada, reconectando WhatsApp')
     void whatsapp.connect().catch((e: unknown) => log.error('falha ao reconectar', e))
   }

@@ -1,10 +1,11 @@
 import { app } from 'electron'
 import { join } from 'node:path'
+import { existsSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { EventEmitter } from 'node:events'
 import QRCode from 'qrcode'
 import type { WASocket } from 'baileys'
-import type { MediaKind, WhatsappState, WaCheckResult } from '@shared/types'
+import type { MediaKind, WhatsappState, WaCheckResult, WaDiagnostics } from '@shared/types'
 import { scoped, pinoAdapter } from '../../logger'
 import { getJson, setJson } from '../../settings'
 import {
@@ -20,10 +21,25 @@ import {
   chatsNeedingAvatar,
   setAvatar,
   unreadIncomingIds,
+  getMessageRow,
+  getChat,
+  mergeLidChats,
   type HistoryAnchor
 } from '../../repos/chats'
+import { rememberLid, phonesNeedingLid, mappedLidChats, markLidProbed } from '../../repos/lidMap'
 import { saveAvatar } from './mediaStore'
 import { webmToOggOpus } from './opusOgg'
+import { SerialQueue } from './requestQueue'
+import { MemoryCache } from './memoryCache'
+import { decideReconnect } from './reconnect'
+import {
+  resolvePairingBrowser,
+  pairingKind,
+  newPairingRecord,
+  PAIRING_ATTEMPTS_BEFORE_FALLBACK,
+  pairingLadderStart,
+  type PairingRecord
+} from './pairingProfile'
 
 const log = scoped('whatsapp')
 
@@ -67,7 +83,48 @@ async function loadBaileys(): Promise<BaileysModule> {
 
 const AUTH_DIR = () => join(app.getPath('userData'), 'wa-auth')
 
-const MAX_BACKOFF_MS = 60_000
+/** Onde fica gravado COMO a sessao atual foi pareada. Ver `pairingProfile`. */
+const PAIRING_KEY = 'wa.pairing'
+/** O usuario ja dispensou o aviso de repareamento desta sessao? */
+const RELINK_DISMISSED_KEY = 'wa.relinkNoticeDismissed'
+/**
+ * Quando o servidor recusou o pareamento como aplicativo desktop.
+ *
+ * Guardado porque muda o que o app pode PROMETER: sem a sub-plataforma desktop
+ * o WhatsApp so manda a janela curta de historico, e insistir com o usuario para
+ * refazer o pareamento passaria a ser um conselho falso.
+ */
+const DESKTOP_REFUSED_KEY = 'wa.desktopPairingRefusedAt'
+
+function getPairingRecord(): PairingRecord | null {
+  return getJson<PairingRecord | null>(PAIRING_KEY, null)
+}
+
+/**
+ * O endereco pelo qual o SERVIDOR conhece esta conversa.
+ *
+ * A conversa e chaveada pelo telefone aqui dentro (e o que a mantem unica e
+ * casada com a base de leads), mas o WhatsApp pode endereça-la por LID. Recibo
+ * de leitura e presenca precisam sair no endereco dele, ou simplesmente nao
+ * chegam — sem erro nenhum, que e o pior tipo de falha nesta camada.
+ */
+function protocolJid(jid: string): string {
+  return getChat(jid)?.lid ?? jid
+}
+
+/**
+ * Esconde o miolo do numero: `5511987654321@s.whatsapp.net` → `5511****4321`.
+ *
+ * O diagnostico existe para ser colado num chat de suporte, entao ele nao pode
+ * carregar o numero inteiro — mas precisa deixar reconhecer de qual conta se
+ * trata quando alguem usa mais de uma.
+ */
+function maskPhone(jid: string | null): string | null {
+  if (!jid) return null
+  const digits = jid.split('@')[0].split(':')[0].replace(/\D/g, '')
+  if (digits.length < 8) return '****'
+  return `${digits.slice(0, 4)}****${digits.slice(-4)}`
+}
 
 /**
  * Versao do WhatsApp Web anunciada no handshake.
@@ -138,9 +195,6 @@ async function resolveWaVersion(): Promise<{ version: WaVersion; source: string 
   }
 }
 
-/** 405 nao e recuperavel por retry: insistir so aumenta risco de bloqueio. */
-const FATAL_CODES = new Set([405])
-
 /**
  * Por quanto tempo uma foto de perfil cacheada vale.
  *
@@ -155,6 +209,17 @@ const AVATAR_BATCH = 20
 const AVATAR_GAP_MS = 400
 
 /**
+ * Varredura de LID: mesmo cuidado de ritmo das fotos de perfil.
+ *
+ * O `onWhatsApp` aceita varios numeros por consulta, entao o custo por numero e
+ * baixo — mas a folga entre lotes continua importando: quem varre a base inteira
+ * de uma vez logo apos conectar tem o padrao de trafego de um robo.
+ */
+const LID_SWEEP_BATCH = 200
+const LID_SWEEP_CHUNK = 20
+const LID_SWEEP_GAP_MS = 1500
+
+/**
  * Folga minima entre dois pedidos de historico antigo.
  *
  * Rolar a conversa rapido para cima dispararia varios pedidos seguidos, e
@@ -162,7 +227,7 @@ const AVATAR_GAP_MS = 400
  * Tres segundos e imperceptivel para quem le a conversa e mantem o trafego com
  * cara de uso humano.
  */
-const HISTORY_REQUEST_COOLDOWN_MS = 3000
+const HISTORY_REQUEST_GAP_MS = 3000
 
 /**
  * Resultado de um pedido de historico antigo.
@@ -173,14 +238,21 @@ const HISTORY_REQUEST_COOLDOWN_MS = 3000
  * "enviado sem id" existia so para nao ser confundido com aqueles — ao custo de
  * desligar em silencio o casamento por id da resposta. Aqui cada estado tem
  * nome, e quem chama e obrigado a tratar.
+ *
+ * `busy` (antes chamado `cooldown`) mudou de nome junto com a mudanca de
+ * mecanismo: nao e mais "espere 3s e tente de novo", e sim "outro pedido
+ * segurou a vaga por mais tempo do que voce aceitou esperar". Ver `SerialQueue`.
  */
 export type HistoryRequest =
-  | { sent: true; requestId: string | null }
-  | { sent: false; reason: 'offline' | 'cooldown' | 'error' }
+  { sent: true; requestId: string | null } | { sent: false; reason: 'offline' | 'busy' | 'error' }
 
 class WhatsappService extends EventEmitter {
   private sock: WASocket | null = null
-  private state: WhatsappState = {
+  /** Os campos derivados ficam fora daqui: `getState` os calcula na hora. */
+  private state: Omit<
+    WhatsappState,
+    'historyPairing' | 'relinkNoticeDismissed' | 'desktopPairingRefused'
+  > = {
     status: 'disconnected',
     qrDataUrl: null,
     me: null,
@@ -201,13 +273,51 @@ class WhatsappService extends EventEmitter {
    */
   private paired = false
   private lastVersion: WaVersion | null = null
+  /** De onde saiu a versao acima: online, cache, override manual, fallback. */
+  private lastVersionSource: string | null = null
   /** Evita duas varreduras de foto de perfil concorrentes (reconexao rapida). */
   private avatarSweepRunning = false
-  /** Segura o pedido de historico antigo durante o cooldown (ver constante). */
-  private historyRequestInFlight = false
+  /** Idem para a varredura de LID. */
+  private lidSweepRunning = false
+  /** Pares LID -> telefone aprendidos por consulta nesta sessao (diagnostico). */
+  private lidLearned = 0
+  /**
+   * Tentativas de PAREAMENTO que morreram antes de o QR aparecer.
+   *
+   * Contador proprio, separado do `reconnectAttempts`: aquele e zerado a cada
+   * clique do usuario em "conectar", e se o fallback de identidade dependesse
+   * dele nunca chegaria a acontecer — o usuario clicaria para sempre.
+   */
+  private failedPairAttempts = 0
+  /** Este socket chegou a emitir QR? Distingue "recusado" de "ninguem leu". */
+  private sawQrThisSocket = false
+  /**
+   * Fila dos pedidos de historico antigo.
+   *
+   * Antes isto era um booleano derrubado por `setTimeout`, e quem chegasse com
+   * ele levantado era RECUSADO. Como a tela (`autoSyncOnOpen`) e a fila de
+   * leads competiam pela mesma vaga, uma delas voltava de maos vazias sem ter
+   * pedido nada — e a tela reportava isso como se o celular tivesse ficado
+   * calado. Agora quem chega espera a vez, pelo tempo que aceitar esperar.
+   */
+  private readonly historyQueue = new SerialQueue({ gapMs: HISTORY_REQUEST_GAP_MS })
+  /** Contadores de retentativa de decifragem, exigidos pelo Baileys. */
+  private readonly retryCounters = new MemoryCache({ ttlMs: 60 * 60 * 1000, maxEntries: 2000 })
 
   getState(): WhatsappState {
-    return { ...this.state }
+    /**
+     * `historyPairing` e derivado na hora, nao guardado no estado.
+     *
+     * Ele depende de duas fontes que vivem fora daqui (o registro nas settings
+     * e a existencia do `creds.json`), e guardar uma copia so criaria uma
+     * terceira verdade para sair de sincronia.
+     */
+    return {
+      ...this.state,
+      historyPairing: pairingKind(getPairingRecord(), this.hasStoredSession()),
+      relinkNoticeDismissed: getJson<boolean>(RELINK_DISMISSED_KEY, false),
+      desktopPairingRefused: getJson<number | null>(DESKTOP_REFUSED_KEY, null) != null
+    }
   }
 
   private patch(next: Partial<WhatsappState>): void {
@@ -221,15 +331,64 @@ class WhatsappService extends EventEmitter {
   }
 
   async connect(): Promise<void> {
-    if (this.starting) return
     if (this.state.status === 'connected' || this.state.status === 'connecting') return
-    this.starting = true
     this.intentionalClose = false
+    // Clique do usuario e um recomeco: o backoff acumulado nao deve punir quem
+    // acabou de arrumar a internet e pediu para tentar de novo.
+    this.reconnectAttempts = 0
+    await this.openGuarded('user')
+  }
+
+  /**
+   * O UNICO caminho para abrir um socket.
+   *
+   * Antes o timer de reconexao chamava `open()` direto, furando as guardas que
+   * so existiam em `connect()`. Bastava o usuario clicar em "conectar" enquanto
+   * o backoff disparava para nascerem dois sockets — e como so o ultimo ficava
+   * em `this.sock`, o orfao continuava com os ouvintes ligados, alimentando
+   * `handleUpsert` e `handleHistorySet` em paralelo.
+   */
+  private async openGuarded(reason: 'user' | 'reconnect' | 'restartRequired'): Promise<void> {
+    if (this.starting) {
+      log.info('abertura de socket ignorada: ja ha uma em andamento', { reason })
+      return
+    }
+    this.starting = true
     this.clearReconnectTimer()
     try {
+      this.teardownSocket()
       await this.open()
     } finally {
       this.starting = false
+    }
+  }
+
+  /**
+   * Desliga o socket anterior antes de abrir outro.
+   *
+   * A ORDEM IMPORTA: `end()` emite um `connection.update` de fechamento, e com
+   * os ouvintes ainda ligados isso reagendaria uma reconexao do socket que
+   * estamos justamente descartando.
+   */
+  private teardownSocket(): void {
+    const sock = this.sock
+    this.sock = null
+    if (!sock) return
+    try {
+      sock.ev.removeAllListeners('connection.update')
+      sock.ev.removeAllListeners('creds.update')
+      sock.ev.removeAllListeners('messages.upsert')
+      sock.ev.removeAllListeners('messages.update')
+      sock.ev.removeAllListeners('contacts.upsert')
+      sock.ev.removeAllListeners('contacts.update')
+      sock.ev.removeAllListeners('messaging-history.set')
+    } catch (e) {
+      log.warn('falha ao desligar os ouvintes do socket anterior', e)
+    }
+    try {
+      sock.end(undefined)
+    } catch {
+      // socket ja estava morto
     }
   }
 
@@ -246,12 +405,48 @@ class WhatsappService extends EventEmitter {
     const logger = pinoAdapter('baileys')
     const { version, source } = await resolveWaVersion()
     this.lastVersion = version
+    this.lastVersionSource = source
 
     this.paired = Boolean(authState.creds?.me?.id)
+
+    /**
+     * A identidade anunciada e propriedade da SESSAO — ver `pairingProfile`.
+     *
+     * Sessao ja pareada mantem a tripla com que se pareou (o tamanho do
+     * historico foi negociado la, e trocar agora nao traria nada). Pareamento
+     * novo se apresenta como cliente desktop, que e a unica forma de o
+     * `syncFullHistory` abaixo valer alguma coisa.
+     */
+    /**
+     * A escada de identidades comeca DEPOIS do desktop quando ele ja foi
+     * recusado nesta conta: repeti-la a cada pareamento so faria o usuario
+     * esperar quatro falhas e um backoff para chegar no mesmo lugar.
+     */
+    const ladderStart = pairingLadderStart(getJson<number | null>(DESKTOP_REFUSED_KEY, null))
+    const browser = resolvePairingBrowser(
+      getPairingRecord(),
+      this.paired,
+      Math.max(this.failedPairAttempts, ladderStart)
+    )
+    this.sawQrThisSocket = false
+
+    /**
+     * O registro nasce ANTES do socket, e nao depois de conectar.
+     *
+     * A danca do pareamento e: QR → credenciais gravadas → o WhatsApp derruba
+     * com 515 → `open()` de novo, agora ja pareado. Sem gravar aqui, esse
+     * segundo socket resolveria a identidade do zero, nao acharia registro
+     * nenhum, cairia na tripla legada e divergiria do registro que gerou as
+     * credenciais.
+     */
+    if (!this.paired) setJson(PAIRING_KEY, newPairingRecord(browser, version.join('.')))
+
     log.info('abrindo socket', {
       version: version.join('.'),
       versionSource: source,
-      paired: this.paired
+      paired: this.paired,
+      browser: browser[0],
+      tentativaDePareamento: this.paired ? undefined : this.failedPairAttempts + 1
     })
 
     const sock = makeWASocket({
@@ -261,9 +456,7 @@ class WhatsappService extends EventEmitter {
       },
       logger,
       version,
-      // Identificar-se como Ubuntu/Chrome e mais aceito no handshake do que
-      // "Windows", que aparece associado ao 405 nos relatos do Baileys.
-      browser: ['Ubuntu', 'Chrome', '120.0.0.0'],
+      browser,
       /**
        * Historico COMPLETO no pareamento.
        *
@@ -278,9 +471,78 @@ class WhatsappService extends EventEmitter {
        * mensagem antiga NAO baixa sozinho (ver AUTO_DOWNLOAD em inbox.ts); e a
        * gravacao no banco e debounced. O que o WhatsApp ainda nao entregar aqui
        * e buscado sob demanda por `fetchOlderMessages`.
+       *
+       * ATENCAO: esta flag SO tem efeito com um `browser` que o Baileys
+       * reconheca como desktop — foi por nao ser esse o caso que ela passou
+       * tanto tempo sem fazer nada. Ver `pairingProfile`.
        */
       syncFullHistory: true,
-      markOnlineOnConnect: false
+      /**
+       * Declarado, e nao herdado.
+       *
+       * O padrao do Baileys e `() => !!syncFullHistory` (`lib/Socket/index.js`),
+       * entao o processamento dos lotes ON_DEMAND — que e o que a busca sob
+       * demanda depende — vinha de carona numa flag sobre outro assunto. Mexer
+       * numa desligava a outra em silencio.
+       */
+      shouldSyncHistoryMessage: () => true,
+      markOnlineOnConnect: false,
+
+      /* ── Tempos, declarados em vez de herdados ────────────────────────── */
+      /** Baileys: 20_000. Rede domestica ruim precisa de mais folga. */
+      connectTimeoutMs: 60_000,
+      /** Baileys: 30_000. Ping mais frequente derruba menos em NAT agressivo. */
+      keepAliveIntervalMs: 25_000,
+      /**
+       * Baileys: 60_000.
+       *
+       * Este e o que importava: `fetchMessageHistory` e uma query, e estourar o
+       * prazo dela faz o Baileys lancar — o que chegava a tela como "nao foi
+       * possivel enviar o pedido" quando o pedido apenas demorou a ser aceito.
+       */
+      defaultQueryTimeoutMs: 90_000,
+      /** Baileys: 250. */
+      retryRequestDelayMs: 500,
+      maxMsgRetryCount: 5,
+      /**
+       * Sem isto o Baileys nao conta as retentativas de decifragem e pode
+       * reenviar a mesma mensagem indefinidamente para um aparelho que nao
+       * consegue le-la.
+       */
+      msgRetryCounterCache: this.retryCounters,
+
+      /**
+       * Responde os pedidos de reenvio a partir do banco local.
+       *
+       * Quando o aparelho do contato nao consegue decifrar algo, ele pede a
+       * mensagem de novo; sem `getMessage` o Baileys nao tem o que devolver e o
+       * contato fica com "Aguardando esta mensagem" para sempre.
+       *
+       * O que o banco realmente tem: `raw_proto` so e gravado para mensagens COM
+       * MIDIA (ver inbox.ts), e o `recordOutgoing` nao grava nenhum. Como os
+       * pedidos de reenvio miram sobretudo o nosso texto de saida, o caminho
+       * util aqui e reconstruir o texto. Midia sem protobuf devolve `undefined`
+       * de proposito: mandar o texto no lugar do anexo seria pior que o
+       * "Aguardando esta mensagem".
+       */
+      getMessage: async (key) => {
+        if (!key?.id) return undefined
+        const row = getMessageRow(key.id)
+        if (!row) return undefined
+        if (row.rawProto) {
+          try {
+            const { proto } = await loadBaileys()
+            return (
+              proto.WebMessageInfo.decode(Buffer.from(row.rawProto, 'base64')).message ?? undefined
+            )
+          } catch (e) {
+            log.warn('nao foi possivel reler a mensagem para reenvio', e)
+            return undefined
+          }
+        }
+        if (row.mediaKind) return undefined
+        return row.body ? { conversation: row.body } : undefined
+      }
     })
 
     this.sock = sock
@@ -394,11 +656,25 @@ class WhatsappService extends EventEmitter {
     if (qr) {
       // O QR expira e o Baileys emite um novo automaticamente.
       const qrDataUrl = await QRCode.toDataURL(qr, { margin: 1, width: 320 })
+      // O servidor aceitou a identidade que anunciamos: o que acontecer daqui
+      // para a frente e com o usuario, nao com o handshake.
+      this.sawQrThisSocket = true
+      this.failedPairAttempts = 0
       this.patch({ status: 'pairing', qrDataUrl })
     }
 
     if (connection === 'open') {
       this.reconnectAttempts = 0
+      this.failedPairAttempts = 0
+      // O pareamento vingou: o registro deixa de ser uma aposta e vira historico.
+      const record = getPairingRecord()
+      if (record && !record.confirmed) {
+        setJson(PAIRING_KEY, {
+          ...record,
+          confirmed: true,
+          waVersion: this.lastVersion?.join('.') ?? record.waVersion
+        })
+      }
       this.patch({
         status: 'connected',
         qrDataUrl: null,
@@ -412,20 +688,54 @@ class WhatsappService extends EventEmitter {
       void this.refreshAvatars().catch((e: unknown) =>
         log.warn('falha ao atualizar fotos de perfil', e)
       )
+      // Idem para a traducao dos LIDs que ainda nao conhecemos.
+      void this.sweepLids().catch((e: unknown) => log.warn('falha na varredura de LID', e))
       return
     }
 
     if (connection === 'close') {
-      const { DisconnectReason } = await loadBaileys()
       const statusCode = (lastDisconnect?.error as BoomLike | undefined)?.output?.statusCode
+      /**
+       * Pareamento que morre ANTES do QR e um caso proprio.
+       *
+       * Sem credenciais e sem QR emitido, o servidor recusou a identidade que
+       * anunciamos — nao adianta reconectar identico para sempre, que foi o loop
+       * de 428 que deixou o usuario sem conseguir parear. Contamos a tentativa
+       * para o `resolvePairingBrowser` poder cair na identidade legada.
+       */
+      if (!this.paired && !this.sawQrThisSocket && !this.intentionalClose) {
+        this.failedPairAttempts += 1
+        const proximaEhLegada = this.failedPairAttempts >= PAIRING_ATTEMPTS_BEFORE_FALLBACK
+        log.warn('pareamento recusado antes de emitir o QR', {
+          codigo: statusCode ?? 'desconhecido',
+          tentativa: this.failedPairAttempts,
+          proximaIdentidade: proximaEhLegada ? 'legada' : 'desktop'
+        })
+        if (proximaEhLegada) {
+          /**
+           * Registra a recusa: e o que impede o app de continuar prometendo ao
+           * usuario um historico maior que o servidor nao entrega, e o que evita
+           * repetir a escada inteira no proximo pareamento.
+           */
+          setJson(DESKTOP_REFUSED_KEY, Date.now())
+          log.warn('o WhatsApp recusou o pareamento como desktop; seguindo como navegador', {
+            tentativas: this.failedPairAttempts
+          })
+        }
+      }
 
-      if (this.intentionalClose) {
+      const acao = decideReconnect(statusCode, {
+        intentional: this.intentionalClose,
+        attempts: this.reconnectAttempts
+      })
+
+      if (acao.kind === 'idle') {
         this.patch({ status: 'disconnected', qrDataUrl: null, me: null })
         return
       }
 
       // 401: a sessao foi invalidada (deslogado no celular). Auth nao serve mais.
-      if (statusCode === DisconnectReason.loggedOut) {
+      if (acao.kind === 'loggedOut') {
         await this.clearAuth()
         this.patch({
           status: 'loggedOut',
@@ -436,15 +746,29 @@ class WhatsappService extends EventEmitter {
         return
       }
 
-      // 515: o Baileys exige recriar o socket logo apos o pareamento. E esperado.
-      if (statusCode === DisconnectReason.restartRequired) {
+      // 515: o Baileys exige recriar o socket logo apos o pareamento. E esperado
+      // — e por isso NAO conta como tentativa de reconexao.
+      if (acao.kind === 'reopen') {
         log.info('restartRequired (515): recriando o socket')
-        await this.open()
+        await this.openGuarded('restartRequired')
+        return
+      }
+
+      if (acao.kind === 'giveUp') {
+        log.error('desisti de reconectar', { tentativas: this.reconnectAttempts })
+        this.patch({
+          status: 'disconnected',
+          qrDataUrl: null,
+          me: null,
+          lastError:
+            `Nao conseguimos reconectar depois de ${this.reconnectAttempts} tentativas. ` +
+            `Verifique sua internet e clique em "Gerar QR e conectar" para tentar de novo.`
+        })
         return
       }
 
       // 405 e afins: retry nao resolve e insistir aumenta risco de bloqueio.
-      if (statusCode !== undefined && FATAL_CODES.has(statusCode)) {
+      if (acao.kind === 'fatal') {
         log.error(`handshake rejeitado pelo WhatsApp (${statusCode})`, {
           version: this.lastVersion?.join('.'),
           paired: this.paired
@@ -469,20 +793,22 @@ class WhatsappService extends EventEmitter {
         return
       }
 
-      this.scheduleReconnect(statusCode)
+      this.scheduleReconnect(statusCode, acao.delayMs)
     }
   }
 
-  private scheduleReconnect(statusCode?: number): void {
+  private scheduleReconnect(statusCode: number | undefined, delay: number): void {
     this.reconnectAttempts += 1
-    const delay = Math.min(1000 * 2 ** (this.reconnectAttempts - 1), MAX_BACKOFF_MS)
     this.patch({
       status: 'disconnected',
       lastError: `Conexao caiu (codigo ${statusCode ?? 'desconhecido'}). Reconectando em ${Math.round(delay / 1000)}s...`
     })
     this.clearReconnectTimer()
     this.reconnectTimer = setTimeout(() => {
-      void this.open()
+      // Pelo `openGuarded`, e nao por `open()` direto: o timer disparando junto
+      // com um clique em "conectar" abria dois sockets, e so o ultimo ficava em
+      // `this.sock` — o orfao seguia com os ouvintes vivos, gravando no banco.
+      void this.openGuarded('reconnect')
     }, delay)
   }
 
@@ -497,12 +823,7 @@ class WhatsappService extends EventEmitter {
   async disconnect(): Promise<void> {
     this.intentionalClose = true
     this.clearReconnectTimer()
-    try {
-      this.sock?.end(undefined)
-    } catch {
-      // socket ja estava morto
-    }
-    this.sock = null
+    this.teardownSocket()
     this.patch({ status: 'disconnected', qrDataUrl: null, me: null, lastError: null })
   }
 
@@ -515,7 +836,7 @@ class WhatsappService extends EventEmitter {
     } catch {
       // se o socket nao esta vivo, seguimos e limpamos localmente
     }
-    this.sock = null
+    this.teardownSocket()
     await this.clearAuth()
     this.patch({ status: 'disconnected', qrDataUrl: null, me: null, lastError: null })
   }
@@ -526,6 +847,75 @@ class WhatsappService extends EventEmitter {
     } catch {
       // pasta pode nao existir
     }
+    /**
+     * O registro de pareamento NUNCA pode sobreviver as credenciais.
+     *
+     * Se sobrevivesse, a proxima sessao herdaria a impressao digital de uma
+     * conexao que nao existe mais — e o aviso de repareamento ou sumiria sem
+     * motivo, ou apareceria numa sessao que ja esta correta.
+     */
+    setJson(PAIRING_KEY, null)
+    setJson(RELINK_DISMISSED_KEY, false)
+    // A recusa do desktop NAO e apagada junto: ela e do servidor sobre esta
+    // conta, nao da sessao. Apagar aqui faria o proximo pareamento repetir a
+    // escada inteira de falhas para chegar no mesmo lugar.
+    this.emit('state', this.getState())
+  }
+
+  /** Ha credenciais no disco? Permite avisar sobre a sessao antes de conectar. */
+  hasStoredSession(): boolean {
+    return existsSync(join(AUTH_DIR(), 'creds.json'))
+  }
+
+  /**
+   * A parte do diagnostico que so este servico conhece.
+   *
+   * O `ipc.ts` compoe com o resto (contagens do banco, caminho do log). O numero
+   * sai mascarado aqui, e nao la, para nao existir um caminho em que ele escape
+   * inteiro por esquecimento.
+   */
+  diagnostics(): {
+    status: WhatsappState['status']
+    lastError: string | null
+    me: string | null
+    waVersion: string | null
+    waVersionSource: string | null
+    historyPairing: WhatsappState['historyPairing']
+    pairing: WaDiagnostics['pairing']
+    reconnectAttempts: number
+    historyQueueDepth: number
+    lidLearned: number
+    desktopPairingRefused: boolean
+  } {
+    const record = getPairingRecord()
+    return {
+      status: this.state.status,
+      lastError: this.state.lastError,
+      me: maskPhone(this.state.me?.id ?? null),
+      waVersion: this.lastVersion?.join('.') ?? null,
+      waVersionSource: this.lastVersionSource,
+      historyPairing: pairingKind(record, this.hasStoredSession()),
+      pairing: record
+        ? {
+            // So o primeiro item: e ele que decide a sub-plataforma.
+            browser: record.browser[0],
+            platform: record.platform,
+            confirmed: record.confirmed,
+            at: record.at,
+            waVersion: record.waVersion
+          }
+        : null,
+      reconnectAttempts: this.reconnectAttempts,
+      historyQueueDepth: this.historyQueue.depth,
+      lidLearned: this.lidLearned,
+      desktopPairingRefused: getJson<number | null>(DESKTOP_REFUSED_KEY, null) != null
+    }
+  }
+
+  /** O usuario dispensou o aviso de repareamento. */
+  dismissRelinkNotice(): void {
+    setJson(RELINK_DISMISSED_KEY, true)
+    this.emit('state', this.getState())
   }
 
   /**
@@ -533,12 +923,34 @@ class WhatsappService extends EventEmitter {
    *
    * Devolve o `jid` que a API retornar — nunca construimos o jid a mao, porque
    * e justamente isso que resolve o 9o digito dos numeros brasileiros.
+   *
+   * DE QUEBRA, APRENDE O LID. O `onWhatsApp` do Baileys ja monta a consulta
+   * USync com `.withLIDProtocol()` e devolve `{ jid, exists, lid }` — o campo
+   * estava sendo descartado aqui. E a segunda fonte de traducao LID→telefone, e
+   * a unica que alcança as conversas em que so vimos mensagens nossas (o
+   * `senderPn` do envelope so vem no que RECEBEMOS: no log real, 29 dos 46 LIDs
+   * so apareciam assim).
    */
   async checkNumbers(phones: string[]): Promise<WaCheckResult[]> {
     const sock = this.socket
     if (!sock) throw new Error('WhatsApp nao esta conectado.')
 
     const results = await sock.onWhatsApp(...phones)
+    for (const r of results ?? []) {
+      /**
+       * O servidor pode devolver o LID como jid completo ou so os digitos.
+       *
+       * O parser do Baileys entrega `node.attrs.val` cru, e nao ha garantia de
+       * formato. Exigir o sufixo `@lid` fazia a varredura inteira descartar tudo
+       * em silencio caso viessem digitos — e o log nao tinha como mostrar isso.
+       */
+      const bruto = typeof r.lid === 'string' ? r.lid.trim() : ''
+      if (!bruto || !r.jid) continue
+      const lid = bruto.includes('@') ? bruto : `${bruto}@lid`
+      if (!lid.endsWith('@lid')) continue
+      rememberLid(lid, r.jid, 'usync')
+      this.lidLearned += 1
+    }
     return phones.map((phoneE164) => {
       const digits = phoneE164.replace(/\D/g, '')
       const hit = results?.find((r) => {
@@ -552,6 +964,70 @@ class WhatsappService extends EventEmitter {
         jid: hit?.exists ? hit.jid : null
       }
     })
+  }
+
+  /**
+   * Descobre o LID dos numeros que ja temos, aos poucos.
+   *
+   * Roda em segundo plano depois de conectar, no mesmo molde do
+   * `refreshAvatars` — e pela mesma razao: uma rajada de consultas USync logo
+   * apos o handshake e exatamente o padrao de trafego que chama atencao do
+   * anti-spam.
+   *
+   * Existe porque o `senderPn` do envelope so cobre as conversas em que
+   * RECEBEMOS algo. Sem esta varredura, uma conversa em que so disparamos ficaria
+   * para sempre sem traducao, e as mensagens dela continuariam sem dono.
+   */
+  private async sweepLids(): Promise<void> {
+    if (this.lidSweepRunning) return
+    this.lidSweepRunning = true
+    try {
+      const phones = phonesNeedingLid(LID_SWEEP_BATCH)
+      const antes = this.lidLearned
+      for (let i = 0; i < phones.length; i += LID_SWEEP_CHUNK) {
+        if (!this.socket) break
+        const lote = phones.slice(i, i + LID_SWEEP_CHUNK)
+        try {
+          await this.checkNumbers(lote)
+          // Perguntamos por estes. Quem tinha LID entrou no mapa; quem nao
+          // tinha precisa ficar registrado, senao a proxima conexao refaz
+          // exatamente as mesmas consultas — para sempre, sem aprender nada.
+          markLidProbed(lote)
+        } catch (e) {
+          log.warn('falha ao consultar LID de um lote de numeros', e)
+          break
+        }
+        await new Promise((r) => setTimeout(r, LID_SWEEP_GAP_MS))
+      }
+      const aprendidos = this.lidLearned - antes
+      if (phones.length > 0) {
+        /**
+         * `aprendidos` e o numero que decide se este caminho serve para alguma
+         * coisa. Antes o log so dizia quantos numeros foram CONSULTADOS, e
+         * "o servidor nao mandou LID" ficava indistinguivel de "o codigo
+         * descartou o que veio".
+         */
+        log.info('varredura de LID concluida', { consultados: phones.length, aprendidos })
+      }
+
+      /**
+       * FUNDIR AGORA, e nao so no proximo boot.
+       *
+       * O merge do bootstrap roda com a `lid_map` como ela estava na execucao
+       * anterior — numa maquina que acabou de atualizar, vazia. Sem esta segunda
+       * passada, a primeira execucao depois de atualizar nao conserta duplicata
+       * nenhuma e o usuario reinicia achando que nada foi corrigido. Foi
+       * exatamente o que aconteceu na 0.3.2.
+       */
+      const fundidas = mergeLidChats(mappedLidChats())
+      if (fundidas > 0) {
+        log.info(`${fundidas} conversa(s) duplicada(s) por LID foram unificadas`)
+        // A lista precisa se redesenhar sem o usuario reiniciar.
+        inboxEvents.emit('changed', { chatJid: '*' })
+      }
+    } finally {
+      this.lidSweepRunning = false
+    }
   }
 
   async sendText(jid: string, text: string): Promise<string | null> {
@@ -629,8 +1105,10 @@ class WhatsappService extends EventEmitter {
     if (!sock) return
     const ids = unreadIncomingIds(jid)
     if (ids.length === 0) return
+    // Mesma regra da ancora: o recibo vai para o endereco que o servidor usa.
+    const alvo = protocolJid(jid)
     try {
-      await sock.readMessages(ids.map((id) => ({ remoteJid: jid, id, fromMe: false })))
+      await sock.readMessages(ids.map((id) => ({ remoteJid: alvo, id, fromMe: false })))
     } catch (e) {
       // Confirmacao de leitura e best-effort: falhar aqui nao pode impedir o
       // usuario de ler a conversa.
@@ -715,12 +1193,28 @@ class WhatsappService extends EventEmitter {
    * (id real do WhatsApp e carimbo do servidor) sem as quais o aparelho nao
    * localiza a mensagem e nao responde nada.
    */
-  async fetchOlderMessages(oldest: HistoryAnchor, count = 50): Promise<HistoryRequest> {
+  async fetchOlderMessages(
+    oldest: HistoryAnchor,
+    count = 50,
+    opts: { waitForSlotMs?: number } = {}
+  ): Promise<HistoryRequest> {
+    if (!this.socket) return { sent: false, reason: 'offline' }
+
+    const slot = await this.historyQueue.run(
+      () => this.sendHistoryRequest(oldest, count),
+      opts.waitForSlotMs ?? 0
+    )
+    if (!slot.ok) return { sent: false, reason: 'busy' }
+    return slot.value
+  }
+
+  /** O envio em si. Roda com a vaga da fila ja garantida. */
+  private async sendHistoryRequest(oldest: HistoryAnchor, count: number): Promise<HistoryRequest> {
+    // Reconferido aqui: a espera pela vez pode ter durado minutos, e nesse
+    // meio-tempo a conexao pode ter caido.
     const sock = this.socket
     if (!sock) return { sent: false, reason: 'offline' }
-    if (this.historyRequestInFlight) return { sent: false, reason: 'cooldown' }
 
-    this.historyRequestInFlight = true
     try {
       /**
        * MILISSEGUNDOS, nao segundos.
@@ -759,7 +1253,17 @@ class WhatsappService extends EventEmitter {
         tsMs
       )
       log.info('historico antigo solicitado ao celular', {
-        jid: oldest.remoteJid,
+        jid: oldest.chatJid,
+        /**
+         * O endereco que foi NO FIO, separado da conversa.
+         *
+         * Quando o WhatsApp endereça a conversa por LID, o pedido tem que sair
+         * com o LID (o `fetchMessageHistory` manda o `chatJid` verbatim). Sem
+         * separar os dois no log, "pedimos pela conversa certa?" e "pedimos no
+         * endereco certo?" ficam indistinguiveis — e as duas ja falharam em
+         * silencio antes.
+         */
+        enderecoProtocolo: oldest.remoteJid !== oldest.chatJid ? oldest.remoteJid : undefined,
         count,
         anterioresA: new Date(oldest.ts).toISOString(),
         // Vai cru no log de proposito: se um dia voltar a aparecer valor na casa
@@ -776,12 +1280,6 @@ class WhatsappService extends EventEmitter {
         erro: e instanceof Error ? e.message : e
       })
       return { sent: false, reason: 'error' }
-    } finally {
-      // Uma janelinha de folga antes de aceitar o proximo pedido: o usuario
-      // rolando rapido nao pode virar uma rajada de requisicoes.
-      setTimeout(() => {
-        this.historyRequestInFlight = false
-      }, HISTORY_REQUEST_COOLDOWN_MS)
     }
   }
 
@@ -789,11 +1287,12 @@ class WhatsappService extends EventEmitter {
   async sendTyping(jid: string, ms: number): Promise<void> {
     const sock = this.socket
     if (!sock) return
+    const alvo = protocolJid(jid)
     try {
-      await sock.presenceSubscribe(jid)
-      await sock.sendPresenceUpdate('composing', jid)
+      await sock.presenceSubscribe(alvo)
+      await sock.sendPresenceUpdate('composing', alvo)
       await new Promise((r) => setTimeout(r, ms))
-      await sock.sendPresenceUpdate('paused', jid)
+      await sock.sendPresenceUpdate('paused', alvo)
     } catch {
       // presenca e best-effort; nunca deve abortar um envio
     }

@@ -40,6 +40,11 @@ const api: DisparApi = {
     connect: () => ipcRenderer.invoke('whatsapp:connect'),
     disconnect: () => ipcRenderer.invoke('whatsapp:disconnect'),
     logout: () => ipcRenderer.invoke('whatsapp:logout'),
+    dismissRelinkNotice: () => ipcRenderer.invoke('whatsapp:dismissRelinkNotice'),
+    diagnostics: () => ipcRenderer.invoke('whatsapp:diagnostics'),
+    getVersionOverride: () => ipcRenderer.invoke('whatsapp:getVersionOverride'),
+    setVersionOverride: (v: [number, number, number] | null) =>
+      ipcRenderer.invoke('whatsapp:setVersionOverride', v),
     onState: (cb: (s: WhatsappState) => void) => subscribe('whatsapp:state', cb)
   },
   contactLists: {
@@ -97,6 +102,8 @@ const api: DisparApi = {
     cancelLeadSync: () => ipcRenderer.invoke('inbox:cancelLeadSync'),
     leadSyncState: () => ipcRenderer.invoke('inbox:leadSyncState'),
     onLeadSync: (cb: (s: ChatSyncState) => void) => subscribe('inbox:leadSync', cb),
+    onHistoryLate: (cb: (p: { chatJid: string; inserted: number }) => void) =>
+      subscribe('inbox:historyLate', cb),
     syncState: () => ipcRenderer.invoke('inbox:syncState'),
     onSyncProgress: (cb: (s: HistorySyncState) => void) => subscribe('inbox:syncProgress', cb),
     send: (chatJid: string, text: string) => ipcRenderer.invoke('inbox:send', chatJid, text),

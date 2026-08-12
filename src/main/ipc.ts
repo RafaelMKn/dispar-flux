@@ -20,10 +20,11 @@ import {
   getBackgroundSettings,
   setBackgroundSettings,
   getCrmSettings,
-  setCrmSettings
+  setCrmSettings,
+  setJson
 } from './settings'
 import { applyLaunchAtLogin } from './tray'
-import { whatsapp } from './core/whatsapp/client'
+import { whatsapp, getWaVersionOverride, setWaVersionOverride } from './core/whatsapp/client'
 import { join, basename } from 'node:path'
 import { statSync } from 'node:fs'
 import { writeFile, copyFile } from 'node:fs/promises'
@@ -35,6 +36,7 @@ import {
   downloadMedia,
   previewLabel,
   getHistorySyncState,
+  recentHistoryBatches,
   type HistorySyncState
 } from './core/whatsapp/inbox'
 import { copyIntoMedia, kindForMime, mimeForPath, saveMedia } from './core/whatsapp/mediaStore'
@@ -60,6 +62,8 @@ import {
   getMessage,
   getMessageRow,
   countLeadChats,
+  countChats,
+  countAllMessages,
   refreshLeadFlags,
   getChatView,
   type InsertMessageInput
@@ -72,6 +76,8 @@ import {
   autoSyncOnOpen,
   resetAutoSync
 } from './core/whatsapp/historySync'
+import { recordRequest, resetRequests, recentRequests } from './core/whatsapp/historyRequests'
+import { unmappedLidChats, countLidMappings } from './repos/lidMap'
 import {
   board,
   createStage,
@@ -99,7 +105,7 @@ import {
 } from './repos/followups'
 import { crmEvents } from './core/crm/leads'
 import { previewRule, runRule, upcomingFollowUps } from './core/crm/scheduler'
-import { scoped } from './logger'
+import { scoped, getLogPath, WA_LEVEL } from './logger'
 import {
   updaterEvents,
   getUpdateState,
@@ -124,7 +130,8 @@ import type {
   CrmSettings,
   CrmAppointmentInput,
   FollowUpRuleInput,
-  ChatSyncState
+  ChatSyncState,
+  WaDiagnostics
 } from '@shared/types'
 
 const log = scoped('whatsapp')
@@ -191,11 +198,55 @@ export function registerIpc(): void {
     // A sincronizacao automatica ao abrir conversa vale por conexao: numa nova
     // sessao vale a pena pedir de novo o que o WhatsApp talvez nao tenha
     // mandado antes.
-    if (state.status === 'connected') resetAutoSync()
+    if (state.status === 'connected') {
+      resetAutoSync()
+      // Pedido feito na sessao anterior nao vai mais ser respondido: o lote
+      // chegaria a um socket que nao existe mais.
+      resetRequests()
+    }
     broadcast('whatsapp:state', state)
   })
 
   ipcMain.handle('whatsapp:getState', () => whatsapp.getState())
+  ipcMain.handle('whatsapp:dismissRelinkNotice', () => whatsapp.dismissRelinkNotice())
+
+  /**
+   * Bloco de diagnostico copiavel.
+   *
+   * Os problemas de sincronizacao sao invisiveis sem o arquivo de log, e pedir
+   * para alguem achar %APPDATA% e ler JSON nao e um pedido razoavel. O servico
+   * ja devolve o numero mascarado; aqui so entram contagens e caminhos.
+   */
+  ipcMain.handle('whatsapp:diagnostics', (): WaDiagnostics => ({
+    appVersion: app.getVersion(),
+    ...whatsapp.diagnostics(),
+    historySync: getHistorySyncState(),
+    historyBatches: recentHistoryBatches(),
+    historyRequests: recentRequests().map((r) => ({
+      requestId: r.requestId,
+      sentAt: r.sentAt,
+      answeredAt: r.answeredAt,
+      inserted: r.inserted,
+      status: r.status
+    })),
+    chats: countChats(),
+    messages: countAllMessages(),
+    // Enquanto `lidChats` for maior que zero, ha conversa que o app nao
+    // consegue atribuir a ninguem — e a pergunta que este bloco existe para
+    // responder sem precisar do arquivo de log.
+    lidChats: unmappedLidChats(),
+    lidMapped: countLidMappings(),
+    logPath: getLogPath(),
+    waLogLevel: WA_LEVEL
+  }))
+
+  ipcMain.handle('whatsapp:getVersionOverride', () => getWaVersionOverride())
+  ipcMain.handle('whatsapp:setVersionOverride', (_e, v: [number, number, number] | null) => {
+    setWaVersionOverride(v)
+    // O cache guardaria a versao recusada e a proxima conexao ignoraria a
+    // escolha do usuario — o mesmo cuidado que o tratamento do 405 ja tem.
+    setJson('wa.versionCache', null)
+  })
   ipcMain.handle('whatsapp:connect', () => whatsapp.connect())
   ipcMain.handle('whatsapp:disconnect', () => whatsapp.disconnect())
   ipcMain.handle('whatsapp:logout', () => whatsapp.logout())
@@ -421,6 +472,16 @@ export function registerIpc(): void {
   // minutos sem sinal de vida na tela.
   inboxEvents.on('syncProgress', (s: HistorySyncState) => broadcast('inbox:syncProgress', s))
   inboxEvents.on('leadSync', (s: ChatSyncState) => broadcast('inbox:leadSync', s))
+  /**
+   * Resposta de historico que chegou depois de a tela ja ter desistido.
+   *
+   * O aparelho responde quando consegue, as vezes minutos depois. Sem este
+   * aviso o usuario ficaria com a ultima frase que leu ("ainda nao chegou")
+   * enquanto as mensagens ja estavam na conversa.
+   */
+  inboxEvents.on('historyLate', (p: { chatJid: string; inserted: number }) =>
+    broadcast('inbox:historyLate', p)
+  )
 
   ipcMain.handle(
     'inbox:chats',
@@ -462,13 +523,19 @@ export function registerIpc(): void {
    * Pede ao WhatsApp o historico anterior ao que ja temos.
    *
    * A tela so chama isto quando o banco local acabou. O `fetchOlderMessages`
-   * ainda aplica um cooldown proprio: duas defesas, porque rajada de requisicao
+   * ainda serializa os pedidos com folga entre eles, porque rajada de requisicao
    * ao servidor do WhatsApp e o padrao que faz o numero ser bloqueado.
+   *
+   * `waitForSlotMs: 0` de proposito: isto nasce de um gesto de rolagem. Segurar
+   * a rolagem por minutos esperando uma vaga na fila seria pior do que nao fazer
+   * nada — e o usuario pode simplesmente rolar de novo.
    */
   ipcMain.handle('inbox:requestOlder', async (_e, chatJid: string) => {
     const anchor = oldestAnchor(chatJid)
     if (!anchor) return false
-    return (await whatsapp.fetchOlderMessages(anchor)).sent
+    const pedido = await whatsapp.fetchOlderMessages(anchor, 50, { waitForSlotMs: 0 })
+    if (pedido.sent) recordRequest(chatJid, pedido.requestId)
+    return pedido.sent
   })
   ipcMain.handle('inbox:markRead', async (_e, chatJid: string) => {
     markRead(chatJid)

@@ -18,11 +18,107 @@ export type WhatsappStatus =
   | 'connected'
   | 'loggedOut' // sessao invalidada: precisa de novo QR
 
+/**
+ * Quanto historico a sessao atual consegue receber do WhatsApp.
+ *
+ * `'legacy'` = pareada por uma versao do app que se anunciava como navegador, e
+ * a um navegador o WhatsApp manda so os ultimos ~3 meses. Refazer o pareamento
+ * passa a valer ~1 ano. `null` = nao ha sessao.
+ *
+ * Isto e decidido NO PAREAMENTO e nao muda a cada login, por isso nao ha como
+ * corrigir sozinho: so um QR novo renegocia.
+ */
+export type HistoryPairing = 'full' | 'legacy'
+
 export interface WhatsappState {
   status: WhatsappStatus
   qrDataUrl: string | null
   me: { id: string; name: string | null } | null
   lastError: string | null
+  historyPairing: HistoryPairing | null
+  /** O usuario ja fechou o aviso de repareamento desta sessao. */
+  relinkNoticeDismissed: boolean
+  /**
+   * O servidor recusou parear este numero como aplicativo de desktop.
+   *
+   * Quando isso acontece, sugerir "refaca o pareamento para ganhar mais
+   * historico" vira conselho falso: o app so consegue parear como navegador, e
+   * navegador recebe a janela curta. Ver `pairingProfile`.
+   */
+  desktopPairingRefused: boolean
+}
+
+/**
+ * Bloco de diagnostico que o usuario copia e manda junto com o relato.
+ *
+ * PORQUE EXISTE: os problemas de sincronizacao sao invisiveis sem o arquivo de
+ * log — "o WhatsApp esta mandando historico?" e "com que plataforma esta sessao
+ * se pareou?" nao tem resposta na tela. Pedir para alguem achar o log em
+ * %APPDATA% e ler JSON nao e um pedido razoavel.
+ *
+ * NAO CARREGA: corpo de mensagem, jid de contato nem material de autenticacao.
+ * O numero conectado vai mascarado. Isto e para ser colado num chat de suporte.
+ */
+export interface WaDiagnostics {
+  appVersion: string
+  status: WhatsappStatus
+  lastError: string | null
+  /** Numero conectado, mascarado (`5511****4321`). */
+  me: string | null
+  waVersion: string | null
+  /** De onde veio a versao: online, cache, override manual, fallback. */
+  waVersionSource: string | null
+  historyPairing: HistoryPairing | null
+  pairing: {
+    browser: string
+    platform: 'desktop' | 'web'
+    confirmed: boolean
+    at: number
+    waVersion: string | null
+  } | null
+  reconnectAttempts: number
+  /** Pedidos de historico esperando a vez na fila de envio. */
+  historyQueueDepth: number
+  historySync: HistorySyncState
+  historyBatches: HistoryBatchLog[]
+  historyRequests: HistoryRequestLog[]
+  chats: number
+  messages: number
+  /** Conversas ainda endereçadas por LID que nao sabemos traduzir. */
+  lidChats: number
+  /** Pares LID -> telefone ja conhecidos. */
+  lidMapped: number
+  /**
+   * Pares aprendidos por CONSULTA nesta sessao.
+   *
+   * Separado do `lidMapped` de proposito: se ficar em zero com a varredura
+   * rodando, o caminho USync nao esta devolvendo LID nenhum nesta versao do
+   * Baileys, e a traducao depende so do que vem nas mensagens.
+   */
+  lidLearned: number
+  logPath: string
+  waLogLevel: string
+}
+
+/** Um lote de `messaging-history.set` que chegou. So contagens, nunca jids. */
+export interface HistoryBatchLog {
+  at: number
+  syncType: string
+  requestId: string | null
+  messages: number
+  inserted: number
+  chats: number
+  progress: number | null
+  isLatest: boolean
+}
+
+/** Um pedido de historico sob demanda que saiu daqui. */
+export interface HistoryRequestLog {
+  requestId: string | null
+  sentAt: number
+  answeredAt: number | null
+  inserted: number
+  status: 'aguardando' | 'respondido' | 'expirado'
 }
 
 export interface WaCheckResult {
@@ -95,15 +191,31 @@ export interface HistorySyncState {
   messages: number
 }
 
-/** Resultado de um pedido de historico sob demanda de UMA conversa. */
-export interface ChatSyncResult {
-  jid: string
-  /** Mensagens novas gravadas nesta sincronizacao. */
-  fetched: number
-  /** Chegou ate a janela pedida (7/30 dias). */
-  reachedTarget: boolean
-  /** O WhatsApp nao tem mais passado desta conversa. */
-  exhausted: boolean
+/**
+ * Como uma sincronizacao sob demanda TERMINOU.
+ *
+ * PORQUE E UM TIPO E NAO UM PUNHADO DE BOOLEANOS: a combinacao anterior
+ * permitia estados que a tela nao sabia traduzir, e o pior deles — "saiu do
+ * laco sem ter pedido nada" — caia justamente na frase de sucesso. Pior ainda,
+ * "nao consegui enviar o pedido" e "o celular nao respondeu" acabavam na mesma
+ * mensagem, acusando o aparelho de um problema que era daqui. Aqui todo fim de
+ * caminho tem nome e o `describeSync` e exaustivo pelo tipo.
+ */
+export type ChatSyncOutcome =
+  /** Alcancou a janela pedida (7/30 dias). */
+  | 'reachedTarget'
+  /** O celular RESPONDEU e nao ha mais passado nesta conversa. */
+  | 'exhausted'
+  /** Trouxe mensagens; ainda ha passado alem do que pegamos. */
+  | 'fetched'
+  /**
+   * O pedido saiu e a resposta ainda nao chegou. NAO e erro.
+   *
+   * Quem responde pedido de historico antigo e o APARELHO pareado, montando e
+   * subindo um pacote — pode levar minutos. O pedido continua vivo no registro
+   * e o lote e creditado quando chegar, sem novo clique.
+   */
+  | 'awaitingPhone'
   /**
    * Nao ha ancora: nenhuma mensagem local que o celular consiga localizar.
    *
@@ -111,27 +223,32 @@ export interface ChatSyncResult {
    * ao enviar — e essas linhas nao carregam o carimbo nem o id que o aparelho
    * conhece. Ver `oldestAnchor`.
    */
-  noAnchor: boolean
+  | 'noAnchor'
   /** O WhatsApp nao estava conectado. */
-  offline: boolean
-  /**
-   * O celular nao respondeu ao pedido dentro do prazo.
-   *
-   * Quem responde pedido de historico antigo e o APARELHO pareado, nao o
-   * servidor: se ele esta desligado, sem internet ou com o WhatsApp fechado, o
-   * pedido fica sem resposta. Nao confundir com `exhausted` — aqui nao sabemos
-   * se ha mais historico, so que ninguem respondeu.
-   */
-  timedOut: boolean
-  /**
-   * O pedido nem chegou a sair (falha ao falar com o WhatsApp).
-   *
-   * Diferente de `timedOut`: ali o pedido saiu e ninguem respondeu. Sem essa
-   * separacao, "nao consegui pedir" e "pedi e o celular ficou calado" davam a
-   * mesma mensagem na tela — e sao problemas de lugares diferentes.
-   */
-  requestFailed: boolean
+  | 'offline'
+  /** Nao conseguimos ENVIAR o pedido. Problema daqui, nunca do aparelho. */
+  | 'requestFailed'
+  /** A fila de pedidos nao liberou a vez a tempo. Tambem nao e o aparelho. */
+  | 'busy'
+
+/** Resultado de um pedido de historico sob demanda de UMA conversa. */
+export interface ChatSyncResult {
+  jid: string
+  /** Mensagens novas gravadas nesta sincronizacao. */
+  fetched: number
+  outcome: ChatSyncOutcome
+  /** Pedidos desta conversa ainda sem resposta quando esta chamada terminou. */
+  pendingRequests: number
 }
+
+/** Por que a fila da base de leads parou antes do fim. */
+export type LeadSyncStop =
+  /** Pedidos enviados, respostas ainda nao chegaram. */
+  | 'phoneQuiet'
+  /** Nao conseguimos enviar o pedido — problema daqui. */
+  | 'requestFailed'
+  | 'offline'
+  | 'busy'
 
 /** Andamento da sincronizacao completa das conversas da base de leads. */
 export interface ChatSyncState {
@@ -143,8 +260,13 @@ export interface ChatSyncState {
   jid: string | null
   /** Mensagens novas gravadas na rodada. */
   fetched: number
-  /** A fila parou porque o celular deixou de responder. */
-  stalled: boolean
+  /**
+   * Por que a fila parou, ou null se terminou normalmente / foi cancelada.
+   *
+   * Substituiu um `stalled: boolean` documentado como "o celular deixou de
+   * responder" — que a fila levantava tambem quando o pedido nem tinha saido.
+   */
+  stoppedReason: LeadSyncStop | null
 }
 
 /** Arquivo escolhido pelo usuario para enviar. */
@@ -465,6 +587,13 @@ export interface DisparApi {
     connect: () => Promise<void>
     disconnect: () => Promise<void>
     logout: () => Promise<void>
+    /** Fecha o aviso de repareamento sem mexer na conexao. */
+    dismissRelinkNotice: () => Promise<void>
+    /** Bloco copiavel para o usuario mandar junto com um relato de problema. */
+    diagnostics: () => Promise<WaDiagnostics>
+    getVersionOverride: () => Promise<[number, number, number] | null>
+    /** Valvula de escape para o 405. `null` limpa e volta ao automatico. */
+    setVersionOverride: (v: [number, number, number] | null) => Promise<void>
     /** Assina mudancas de estado. Retorna a funcao de unsubscribe. */
     onState: (cb: (state: WhatsappState) => void) => () => void
   }
@@ -582,6 +711,8 @@ export interface DisparApi {
     cancelLeadSync: () => Promise<void>
     leadSyncState: () => Promise<ChatSyncState>
     onLeadSync: (cb: (s: ChatSyncState) => void) => () => void
+    /** Lote de historico creditado depois de a tela ja ter parado de esperar. */
+    onHistoryLate: (cb: (p: { chatJid: string; inserted: number }) => void) => () => void
     /** Andamento da sincronizacao de historico. */
     syncState: () => Promise<HistorySyncState>
     onSyncProgress: (cb: (s: HistorySyncState) => void) => () => void

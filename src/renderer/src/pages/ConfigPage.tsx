@@ -9,10 +9,12 @@ import {
   ScrollText,
   RefreshCw,
   PanelBottom,
-  Columns3
+  Columns3,
+  Wrench
 } from 'lucide-react'
 import type { AiSettings, BackgroundSettings, CrmSettings, SendingDefaults } from '@shared/types'
 import { AI_PROVIDERS } from '@shared/aiProviders'
+import { parseWaVersion, formatWaVersion } from '@shared/waVersion'
 import { PageBody, PageHeader, Card, Button, Input, Select, Toggle } from '../components/ui'
 import WhatsappCard from '../components/WhatsappCard'
 import { useWhatsapp } from '../useWhatsapp'
@@ -56,6 +58,8 @@ export default function ConfigPage(): JSX.Element {
   const [background, setBackground] = useState<BackgroundSettings | null>(null)
   const [crm, setCrm] = useState<CrmSettings | null>(null)
   const [savedFlag, setSavedFlag] = useState('')
+  const [waVersion, setWaVersion] = useState('')
+  const [waVersionErro, setWaVersionErro] = useState<string | null>(null)
 
   useEffect(() => {
     void (async () => {
@@ -63,12 +67,32 @@ export default function ConfigPage(): JSX.Element {
       setAi(await window.api.settings.getAi())
       setBackground(await window.api.settings.getBackground())
       setCrm(await window.api.settings.getCrm())
+      setWaVersion(formatWaVersion(await window.api.whatsapp.getVersionOverride()))
     })()
   }, [])
 
   function flash(msg: string): void {
     setSavedFlag(msg)
     setTimeout(() => setSavedFlag(''), 2200)
+  }
+
+  /**
+   * Grava a versao fixa ao sair do campo.
+   *
+   * Texto invalido NAO grava nada: gravar `[NaN, NaN, NaN]` faria o proximo
+   * handshake sair com lixo, e o sintoma seria um 405 que parece o mesmo
+   * problema que esta valvula deveria resolver.
+   */
+  async function salvarWaVersion(): Promise<void> {
+    const bruto = waVersion.trim()
+    const parsed = parseWaVersion(bruto)
+    if (bruto && !parsed) {
+      setWaVersionErro('Formato invalido. Use tres numeros, como 2.3000.1035194821.')
+      return
+    }
+    setWaVersionErro(null)
+    await window.api.whatsapp.setVersionOverride(parsed)
+    flash(parsed ? 'Versao fixada' : 'Versao automatica')
   }
 
   async function saveSending(): Promise<void> {
@@ -287,6 +311,26 @@ export default function ConfigPage(): JSX.Element {
             >
               Procurar atualizacoes
             </Button>
+          </div>
+        </Card>
+
+        <Card>
+          <SectionTitle icon={Wrench} title="Avancado: versao do WhatsApp Web" />
+          <p className="text-sm text-ink-secondary [text-wrap:pretty]">
+            O app anuncia uma versao do WhatsApp Web ao conectar e a descobre sozinho. Quando o
+            WhatsApp passa a recusar a conexao com o codigo <strong>405</strong>, fixar uma versao
+            aceita aqui resolve sem precisar de uma atualizacao do app. Deixe em branco para voltar
+            ao automatico. A mudanca vale na proxima conexao.
+          </p>
+          <div className="mt-4 max-w-xs">
+            <Input
+              label="Versao fixa"
+              placeholder="2.3000.1035194821"
+              value={waVersion}
+              onChange={(e) => setWaVersion(e.target.value)}
+              onBlur={() => void salvarWaVersion()}
+              hint={waVersionErro ?? 'Tres numeros separados por ponto.'}
+            />
           </div>
         </Card>
 

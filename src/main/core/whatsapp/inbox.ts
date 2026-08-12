@@ -14,6 +14,7 @@ import {
 import { addOptOut } from '../../repos/optOuts'
 import { handleInbound } from '../crm/leads'
 import { isOptOutRequest, jidToE164 } from './optOutDetect'
+import { canonicalJid, isLid, harvestGroupLid } from './lid'
 import { scoped } from '../../logger'
 import { saveNow, withBulkWrite } from '../../db'
 import { saveMedia } from './mediaStore'
@@ -196,7 +197,23 @@ function shouldAutoDownload(media: MediaInfo): boolean {
 /* ── Entrada de mensagens ────────────────────────────────────────────────── */
 
 interface WaMessageLike {
-  key?: { id?: string | null; remoteJid?: string | null; fromMe?: boolean | null }
+  key?: {
+    id?: string | null
+    remoteJid?: string | null
+    fromMe?: boolean | null
+    /**
+     * Telefone por tras do `remoteJid` quando ele e um LID.
+     *
+     * O Baileys preenche isto a partir do envelope (`sender_pn` na stanza). So
+     * vem nas mensagens RECEBIDAS — as `fromMe` chegam sem, e por isso o par e
+     * gravado no `lid_map` assim que aparece. Ver `canonicalJid`.
+     */
+    senderPn?: string | null
+    /** LID de quem falou, em mensagem de grupo. */
+    participant?: string | null
+    /** Telefone de quem falou, em mensagem de grupo. Ver `harvestGroupLid`. */
+    participantPn?: string | null
+  }
   message?: WaMessageContent | null
   pushName?: string | null
   messageTimestamp?: number | Long | null
@@ -304,7 +321,10 @@ export function handleUpsert(msgs: WaMessageLike[], opts: UpsertOptions = {}): v
 
 interface ParsedMessage {
   input: InsertMessageInput
+  /** Sempre o telefone: e a chave da conversa. */
   jid: string
+  /** Endereco de protocolo, quando o servidor endereça esta conversa por LID. */
+  lid: string | null
   direction: MessageDirection
   ts: number
   text: string | null
@@ -315,11 +335,38 @@ interface ParsedMessage {
 }
 
 function parseOne(msg: WaMessageLike): ParsedMessage | null {
-  const jid = msg.key?.remoteJid
-  if (isIgnorableJid(jid)) return null
+  const bruto = msg.key?.remoteJid
+
+  /**
+   * O par LID -> telefone vem de graca aqui, ANTES do descarte.
+   *
+   * A mensagem de grupo continua sendo ignorada (ruido para prospeccao), mas a
+   * chave dela traz `participant` + `participantPn` — e no log real sao 42 pares
+   * distintos, contra 17 vindos de conversa 1:1. Descartar a mensagem sem colher
+   * o par era jogar fora a maior fonte de traducao que temos.
+   */
+  if (msg.key) harvestGroupLid(msg.key)
+
+  if (isIgnorableJid(bruto)) return null
+
+  /**
+   * A conversa e sempre chaveada pelo TELEFONE, nunca pelo LID.
+   *
+   * Sem isto a mesma pessoa vira duas conversas: a que o disparo criou pelo
+   * numero e a que a resposta dela criou pelo LID — e so a primeira casa com a
+   * base de leads e com o CRM.
+   */
+  const jid = canonicalJid(bruto, { senderPn: msg.key?.senderPn })
+  if (!jid) {
+    // LID de quem ainda nao sabemos o telefone. Deixar entrar com o LID cru e
+    // o que produzia a duplicata; a varredura por USync resolve e a mensagem
+    // volta pelo historico depois.
+    log.warn('mensagem de um LID ainda sem telefone conhecido', { lid: bruto })
+    return null
+  }
 
   const id = msg.key?.id
-  if (!id || !jid) return null
+  if (!id) return null
 
   const text = extractText(msg.message)
   const media = describeMedia(msg.message)
@@ -353,6 +400,7 @@ function parseOne(msg: WaMessageLike): ParsedMessage | null {
       rawProto: media ? (bridge?.encode(msg) ?? null) : null
     },
     jid,
+    lid: isLid(bruto) ? (bruto ?? null) : null,
     direction,
     ts,
     text,
@@ -370,7 +418,11 @@ function afterInsert(one: ParsedMessage, opts: UpsertOptions): void {
   upsertChat(jid, {
     name: direction === 'in' ? one.pushName : null,
     lastMessage: preview,
-    lastTs: ts
+    lastTs: ts,
+    // Guardado para o que sai daqui: o `fetchMessageHistory` manda o `chatJid`
+    // verbatim, entao pedir historico pelo telefone numa conversa que o
+    // aparelho conhece por LID e mais uma forma de nao receber resposta.
+    lid: one.lid
   })
 
   // Mensagem que entrou de verdade no banco (nao um reenvio do que ja tinhamos).
@@ -493,9 +545,16 @@ export function handleMessagesUpdate(
     const update = item.update as { status?: number | string | null } | undefined
     const status = mapStatus(update?.status)
     if (!status) continue
-    if (advanceMessageStatus(id, status) && item.key?.remoteJid) {
-      inboxEvents.emit('changed', { chatJid: item.key.remoteJid })
-    }
+    if (!advanceMessageStatus(id, status)) continue
+    /**
+     * O evento precisa citar a conversa CANONICA.
+     *
+     * A tela filtra por igualdade (`chatJid === active`), entao um `@lid` aqui
+     * seria um jid que nao existe em lista nenhuma — o ack de entrega chegaria
+     * e a bolha nao mudaria de estado.
+     */
+    const jid = canonicalJid(item.key?.remoteJid)
+    if (jid) inboxEvents.emit('changed', { chatJid: jid })
   }
 }
 
@@ -513,8 +572,11 @@ export function handleContacts(
   withBulkWrite(() => {
     let touched = false
     for (const contact of contacts) {
-      const jid = contact.id
-      if (isIgnorableJid(jid) || !jid) continue
+      if (isIgnorableJid(contact.id)) continue
+      // A agenda nao traz `senderPn`: um LID daqui so e traduzivel pelo mapa.
+      // Sem traducao o nome iria para uma conversa que nao existe.
+      const jid = canonicalJid(contact.id)
+      if (!jid) continue
       const name = contact.name || contact.notify
       if (!name) continue
       upsertChat(jid, { name }, { create: false })
@@ -548,6 +610,35 @@ const HISTORY_SYNC_TYPES = [
 export function historySyncTypeName(t: number | null | undefined): string {
   if (t == null) return 'nao informado'
   return HISTORY_SYNC_TYPES[t] ?? `desconhecido(${t})`
+}
+
+/**
+ * Os ultimos lotes de historico que chegaram.
+ *
+ * PORQUE GUARDAR: "o WhatsApp esta mandando historico?" e a pergunta central
+ * quando alguem relata que a inbox nao bate com o celular, e ela so era
+ * respondivel abrindo o arquivo de log. Aqui vira algo que o usuario consegue
+ * copiar e mandar junto com o relato.
+ *
+ * Guarda CONTAGEM de conversas, nunca os jids: este bloco existe para ser
+ * colado num chat de suporte.
+ */
+export interface HistoryBatchLog {
+  at: number
+  syncType: string
+  requestId: string | null
+  messages: number
+  inserted: number
+  chats: number
+  progress: number | null
+  isLatest: boolean
+}
+
+const BATCH_LOG_LIMIT = 10
+let batchLog: HistoryBatchLog[] = []
+
+export function recentHistoryBatches(limit = BATCH_LOG_LIMIT): HistoryBatchLog[] {
+  return batchLog.slice(-limit).reverse()
 }
 
 /**
@@ -587,10 +678,19 @@ export function handleHistorySet(payload: {
   }
 
   const mensagens = payload.messages?.length ?? 0
+  const novas = [...gravadas.values()].reduce((a, b) => a + b, 0)
+  /**
+   * Os jids do lote, ja canonicalizados.
+   *
+   * Eles sao o criterio de casamento pedido↔resposta quando o WhatsApp nao
+   * preenche o `peerDataRequestSessionId` (ver `historyRequests`). O pedido sai
+   * pela conversa canonica, entao o lote tem que falar a mesma lingua — senao
+   * uma resposta que chegou seria lida como "o celular nao respondeu".
+   */
   const jidsDoLote = [
     ...new Set(
       (payload.messages ?? [])
-        .map((m) => m.key?.remoteJid)
+        .map((m) => canonicalJid(m.key?.remoteJid, { senderPn: m.key?.senderPn }))
         .filter((j): j is string => Boolean(j) && !isIgnorableJid(j))
     )
   ]
@@ -600,7 +700,7 @@ export function handleHistorySet(payload: {
     conversas: payload.chats?.length ?? 0,
     contatos: payload.contacts?.length ?? 0,
     mensagens,
-    novas: [...gravadas.values()].reduce((a, b) => a + b, 0),
+    novas,
     progresso: payload.progress ?? null,
     ultimoLote: payload.isLatest ?? false,
     respostaDoPedido: payload.peerDataRequestSessionId ?? null,
@@ -611,6 +711,18 @@ export function handleHistorySet(payload: {
     jids: jidsDoLote.slice(0, 10),
     maisJids: Math.max(0, jidsDoLote.length - 10)
   })
+
+  batchLog.push({
+    at: Date.now(),
+    syncType: historySyncTypeName(payload.syncType),
+    requestId: payload.peerDataRequestSessionId ?? null,
+    messages: mensagens,
+    inserted: novas,
+    chats: jidsDoLote.length,
+    progress: typeof payload.progress === 'number' ? Math.round(payload.progress) : null,
+    isLatest: payload.isLatest === true
+  })
+  if (batchLog.length > BATCH_LOG_LIMIT) batchLog = batchLog.slice(-BATCH_LOG_LIMIT)
 
   /**
    * O celular RESPONDEU.
@@ -658,11 +770,20 @@ function applyHistorySet(payload: {
 }): void {
   withBulkWrite(() => {
     for (const chat of payload.chats ?? []) {
-      const jid = chat.id
-      if (isIgnorableJid(jid) || !jid) continue
+      if (isIgnorableJid(chat.id)) continue
+      /**
+       * A lista de conversas do lote NAO traz `senderPn`.
+       *
+       * Um LID daqui so e traduzivel pelo mapa, e sem traducao a conversa nao
+       * pode ser criada — seria a duplicata de novo, agora vinda do historico.
+       * Quando a varredura por USync resolver o LID, o proximo lote a cria.
+       */
+      const jid = canonicalJid(chat.id)
+      if (!jid) continue
       const ts = toNumber(chat.conversationTimestamp)
       upsertChat(jid, {
         name: chat.name ?? null,
+        lid: isLid(chat.id) ? chat.id : null,
         ...(ts ? { lastTs: ts < 1e12 ? ts * 1000 : ts } : {})
       })
     }
@@ -674,7 +795,9 @@ function applyHistorySet(payload: {
     // a tela dizer "sincronizada desde tal data" e o botao de 7/30 dias saber
     // se ainda precisa pedir algo ao WhatsApp.
     for (const jid of new Set(
-      (payload.messages ?? []).map((m) => m.key?.remoteJid).filter((j): j is string => Boolean(j))
+      (payload.messages ?? [])
+        .map((m) => canonicalJid(m.key?.remoteJid, { senderPn: m.key?.senderPn }))
+        .filter((j): j is string => Boolean(j))
     )) {
       if (isIgnorableJid(jid)) continue
       const oldest = oldestMessage(jid)

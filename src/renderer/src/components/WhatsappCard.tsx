@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { QrCode, Loader2, LogOut, Unplug, Plug } from 'lucide-react'
+import { QrCode, Loader2, LogOut, Unplug, Plug, ClipboardCopy } from 'lucide-react'
 import type { WhatsappState, WhatsappStatus } from '@shared/types'
 import { Card, Button, Pill, StatusDot, Callout } from './ui'
 import { formatJid } from '../format'
@@ -22,7 +22,47 @@ const TONE: Record<WhatsappStatus, 'success' | 'warning' | 'danger' | 'idle'> = 
 
 export default function WhatsappCard({ state }: { state: WhatsappState }): JSX.Element {
   const [busy, setBusy] = useState(false)
-  const { status, qrDataUrl, me, lastError } = state
+  const {
+    status,
+    qrDataUrl,
+    me,
+    lastError,
+    historyPairing,
+    relinkNoticeDismissed,
+    desktopPairingRefused
+  } = state
+
+  /**
+   * Sessao pareada por uma versao anterior, que se anunciava como navegador.
+   *
+   * Nada esta quebrado — por isso o aviso e neutro e dispensavel, e o app NUNCA
+   * desconecta sozinho. Mas enquanto o pareamento nao for refeito o WhatsApp
+   * continua mandando so o recorte curto, e o usuario nao tem como adivinhar
+   * isso sozinho.
+   *
+   * `desktopPairingRefused` CALA o aviso: quando o servidor recusa parear este
+   * numero como aplicativo de desktop, refazer o pareamento nao traz historico
+   * nenhum a mais. Continuar sugerindo seria mandar o usuario repetir um
+   * trabalho que ja sabemos nao levar a lugar nenhum.
+   */
+  const sugerirRepareamento =
+    historyPairing === 'legacy' && !relinkNoticeDismissed && !desktopPairingRefused
+
+  const [copiado, setCopiado] = useState(false)
+
+  /**
+   * Diagnostico copiavel.
+   *
+   * O bloco nao carrega corpo de mensagem, jid de contato nem credencial, e o
+   * numero conectado vai mascarado — dito no texto ao lado, porque ninguem cola
+   * o que nao consegue conferir.
+   */
+  async function copiarDiagnostico(): Promise<void> {
+    const d = await window.api.whatsapp.diagnostics()
+    await navigator.clipboard.writeText(JSON.stringify(d, null, 2))
+    setCopiado(true)
+    setTimeout(() => setCopiado(false), 2500)
+  }
 
   async function run(fn: () => Promise<void>): Promise<void> {
     setBusy(true)
@@ -96,6 +136,16 @@ export default function WhatsappCard({ state }: { state: WhatsappState }): JSX.E
                 "Desconectar" mantem a sessao e reconecta sem QR. "Encerrar sessao" apaga as
                 credenciais e exige novo QR.
               </p>
+              <div className="mt-3">
+                <Button variant="secondary" onClick={() => void copiarDiagnostico()}>
+                  <ClipboardCopy size={16} /> {copiado ? 'Copiado' : 'Copiar diagnostico'}
+                </Button>
+                <p className="mt-2 text-xs text-ink-tertiary [text-wrap:pretty]">
+                  Copia um resumo tecnico da conexao (versao, plataforma do pareamento, ultimos
+                  lotes de historico) para voce colar ao relatar um problema. Nao inclui suas
+                  mensagens nem os numeros dos contatos, e o numero conectado vai mascarado.
+                </p>
+              </div>
             </>
           ) : (
             <>
@@ -117,6 +167,31 @@ export default function WhatsappCard({ state }: { state: WhatsappState }): JSX.E
           )}
         </div>
       </div>
+
+      {sugerirRepareamento && (
+        <div className="mt-4">
+          <Callout tone="neutral">
+            <p className="[text-wrap:pretty]">
+              Esta conexao foi pareada por uma versao anterior do app, que se identificava como
+              navegador — e a um navegador o WhatsApp envia cerca de <strong>3 meses</strong> de
+              historico. Refazendo o pareamento ele passa a enviar cerca de <strong>1 ano</strong>.
+            </p>
+            <p className="mt-2 [text-wrap:pretty]">
+              Suas conversas, mensagens, anexos, leads e campanhas <strong>nao sao apagados</strong>{' '}
+              — o app so troca as credenciais da conexao. Para refazer:{' '}
+              <strong>Encerrar sessao</strong> e depois <strong>Gerar QR e conectar</strong>. No
+              celular, o aparelho passara a aparecer como um Mac em Dispositivos conectados.
+            </p>
+            <button
+              type="button"
+              className="mt-2 text-xs underline underline-offset-2 hover:text-ink"
+              onClick={() => void window.api.whatsapp.dismissRelinkNotice()}
+            >
+              Nao mostrar de novo
+            </button>
+          </Callout>
+        </div>
+      )}
 
       {lastError && (
         <div className="mt-4">

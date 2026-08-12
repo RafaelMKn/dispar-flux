@@ -54,8 +54,26 @@ export function isOptOutRequest(body: string | null | undefined): boolean {
   return KEYWORDS.includes(norm)
 }
 
-/** Extrai o telefone E.164 a partir do JID do WhatsApp. */
+/**
+ * Extrai o telefone E.164 a partir do JID do WhatsApp.
+ *
+ * `@lid` NAO E TELEFONE. O WhatsApp esta migrando o endereçamento para LID
+ * (`71700301529149@lid`), um identificador opaco que nao tem relacao nenhuma
+ * com o numero — o telefone verdadeiro vem separado, no `senderPn` da chave da
+ * mensagem.
+ *
+ * Sem esta guarda o LID passava direto: 14 digitos passam no teste de
+ * comprimento e viravam `+71700301529149`. O estrago era grande e silencioso —
+ * quem respondia SAIR numa conversa LID **nao era descadastrado** (o telefone
+ * real nunca entrava na `opt_outs`, que e global a todas as bases) e ainda
+ * gravava um numero inexistente na tabela. Ver tambem `resolveLead`, que
+ * dependia daqui para achar o lead e por isso nunca movia o cartao.
+ *
+ * Devolver `null` faz quem chama tratar como "nao sei o telefone", que e a
+ * verdade — e o caminho certo e canonicalizar o jid na entrada (ver `lid.ts`).
+ */
 export function jidToE164(jid: string): string | null {
+  if (jid.endsWith('@lid')) return null
   const digits = jid.split(':')[0].split('@')[0].replace(/\D/g, '')
   if (digits.length < 10) return null
   return `+${digits}`

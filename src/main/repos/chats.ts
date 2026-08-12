@@ -72,7 +72,17 @@ export interface UpsertChatOptions {
 
 export function upsertChat(
   jid: string,
-  patch: { name?: string | null; lastMessage?: string | null; lastTs?: number },
+  patch: {
+    name?: string | null
+    lastMessage?: string | null
+    lastTs?: number
+    /**
+     * Endereco de protocolo, quando o servidor endereça esta conversa por LID.
+     * `null`/ausente nunca APAGA um lid ja conhecido — a ausencia costuma ser so
+     * um caminho que nao tinha essa informacao, nao a prova de que ela mudou.
+     */
+    lid?: string | null
+  },
   opts: UpsertChatOptions = {}
 ): void {
   const existing = getDb().select().from(chats).where(eq(chats.jid, jid)).get()
@@ -89,7 +99,8 @@ export function upsertChat(
         // Nao apaga um nome ja conhecido com null.
         name: patch.name ?? existing.name,
         lastMessage: isNewer ? (patch.lastMessage ?? existing.lastMessage) : existing.lastMessage,
-        lastTs: Math.max(patch.lastTs ?? 0, existing.lastTs ?? 0) || null
+        lastTs: Math.max(patch.lastTs ?? 0, existing.lastTs ?? 0) || null,
+        lid: patch.lid ?? existing.lid
       })
       .where(eq(chats.jid, jid))
       .run()
@@ -107,7 +118,8 @@ export function upsertChat(
         // que o update so avanca o `lastTs` (o historico real, mais antigo,
         // nunca conseguia corrigir).
         lastTs: patch.lastTs ?? null,
-        unread: 0
+        unread: 0,
+        lid: patch.lid ?? null
       })
       .run()
   }
@@ -371,6 +383,79 @@ export function clearUnprovenFullSync(): number {
 }
 
 /**
+ * Funde as conversas que o endereçamento LID partiu em duas.
+ *
+ * O QUE ACONTECEU: o WhatsApp passou a endereçar conversas por LID
+ * (`71700301529149@lid`) em vez do numero, e o app usava o jid cru como chave.
+ * Resultado: a mesma pessoa com duas linhas — a que o disparo criou pelo numero
+ * e a que a resposta dela criou pelo LID. So a primeira casava com a base de
+ * leads e com o CRM; a segunda ficava fora da fila de sincronizacao e com o
+ * "numero" errado na tela.
+ *
+ * Roda uma vez, no boot, com o mapa que ja conseguimos montar. Conversa LID sem
+ * traducao conhecida fica onde esta — a varredura por USync resolve depois, e o
+ * proximo boot funde. O par no `lid_map` NAO e apagado: ele continua sendo a
+ * traducao das mensagens que ainda vao chegar por aquele LID.
+ */
+export function mergeLidChats(pares: { lid: string; jid: string }[]): number {
+  if (pares.length === 0) return 0
+  const db = getDb()
+  let fundidas = 0
+
+  withBulkWrite(() => {
+    for (const { lid, jid } of pares) {
+      const origem = db.select().from(chats).where(eq(chats.jid, lid)).get()
+      if (!origem) continue
+
+      const destino = db.select().from(chats).where(eq(chats.jid, jid)).get()
+
+      /**
+       * Mensagens primeiro, conversa depois: nao ha FK nem cascade no schema,
+       * entao a ordem e por nossa conta. `id` ja e o `wa_message_id`, e a PK,
+       * entao mover e idempotente — o que existir dos dois lados nao duplica.
+       */
+      db.run(sql`UPDATE OR IGNORE messages SET chat_jid = ${jid} WHERE chat_jid = ${lid}`)
+      db.run(sql`DELETE FROM messages WHERE chat_jid = ${lid}`)
+
+      if (destino) {
+        db.run(sql`
+          UPDATE chats SET
+            unread = ${(destino.unread ?? 0) + (origem.unread ?? 0)},
+            name = coalesce(${destino.name}, ${origem.name}),
+            last_ts = max(coalesce(${destino.lastTs}, 0), coalesce(${origem.lastTs}, 0)),
+            last_message = coalesce(${(destino.lastTs ?? 0) >= (origem.lastTs ?? 0) ? destino.lastMessage : origem.lastMessage}, ${destino.lastMessage}),
+            -- O passado mais antigo dos dois e o que a conversa de fato tem.
+            synced_from = min(
+              coalesce(${destino.syncedFrom}, ${origem.syncedFrom}),
+              coalesce(${origem.syncedFrom}, ${destino.syncedFrom})
+            ),
+            -- "Completa" so se AMBOS os lados provaram estar completos.
+            synced_full = ${destino.syncedFull === 1 && origem.syncedFull === 1 ? 1 : 0},
+            lid = ${lid},
+            -- O arquivo do avatar tem o nome derivado do jid antigo. Em vez de
+            -- renomear, zeramos e deixamos a varredura baixar de novo.
+            avatar_path = NULL,
+            avatar_ts = NULL
+          WHERE jid = ${jid}
+        `)
+        db.run(sql`DELETE FROM chats WHERE jid = ${lid}`)
+      } else {
+        // Nao havia conversa pelo telefone: a propria linha vira a canonica.
+        db.run(sql`
+          UPDATE chats SET jid = ${jid}, lid = ${lid}, avatar_path = NULL, avatar_ts = NULL
+          WHERE jid = ${lid}
+        `)
+      }
+
+      // O CRM pode ter gravado o LID como jid do lead (ver `resolveLead`).
+      db.run(sql`UPDATE OR IGNORE crm_leads SET jid = ${jid} WHERE jid = ${lid}`)
+      fundidas += 1
+    }
+  })
+  return fundidas
+}
+
+/**
  * Apaga a data inventada das conversas que nunca tiveram mensagem.
  *
  * Versoes anteriores criavam a conversa com `last_ts = Date.now()` — inclusive
@@ -407,6 +492,25 @@ export function totalUnread(): number {
     getDb()
       .select({ n: sql<number>`coalesce(sum(unread), 0)` })
       .from(chats)
+      .get()?.n ?? 0
+  )
+}
+
+/** Totais do banco. Usados no diagnostico: dimensionam o que o app ja recebeu. */
+export function countChats(): number {
+  return (
+    getDb()
+      .select({ n: sql<number>`count(*)` })
+      .from(chats)
+      .get()?.n ?? 0
+  )
+}
+
+export function countAllMessages(): number {
+  return (
+    getDb()
+      .select({ n: sql<number>`count(*)` })
+      .from(messages)
       .get()?.n ?? 0
   )
 }
@@ -676,7 +780,13 @@ export function oldestMessage(
 /** Ancora de um pedido de historico: a tupla que o celular precisa resolver. */
 export interface HistoryAnchor {
   id: string
+  /**
+   * O endereco que vai NO FIO — o LID quando o servidor endereça a conversa
+   * assim, o telefone caso contrario. Ver a nota em `oldestAnchor`.
+   */
   remoteJid: string
+  /** A chave da conversa aqui dentro: sempre o telefone. So para log. */
+  chatJid: string
   fromMe: boolean
   ts: number
 }
@@ -714,9 +824,25 @@ export function oldestAnchor(chatJid: string): HistoryAnchor | null {
     .limit(1)
     .get()
   if (!row?.waMessageId || row.waTs == null) return null
+  /**
+   * O ENDEREÇO QUE VAI NO FIO E O DO SERVIDOR, nao a nossa chave.
+   *
+   * A conversa e chaveada pelo telefone — e o que a mantem unica e casada com a
+   * base de leads. Mas o `fetchMessageHistory` manda o `chatJid` verbatim
+   * (conferido no Baileys 6.7.23 e tambem no 7.0.0-rc14, que nao resolve
+   * LID/PN nesse ponto). Se o aparelho conhece a conversa por LID e mandarmos o
+   * telefone, ele nao acha a mensagem e nao responde nada — mais uma variante
+   * do silencio que ja custou duas correcoes neste modulo.
+   */
+  const lid = getDb()
+    .select({ lid: chats.lid })
+    .from(chats)
+    .where(eq(chats.jid, chatJid))
+    .get()?.lid
   return {
     id: row.waMessageId,
-    remoteJid: chatJid,
+    remoteJid: lid ?? chatJid,
+    chatJid,
     fromMe: row.direction === 'out',
     ts: row.waTs
   }
