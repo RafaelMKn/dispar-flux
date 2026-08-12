@@ -56,8 +56,36 @@ export const LEGACY_BROWSER: BrowserTriple = ['Ubuntu', 'Chrome', '120.0.0.0']
  * tinha ido parar em `'Ubuntu'`.
  *
  * Efeito visivel: em "Dispositivos conectados" o celular passa a listar um Mac.
+ *
+ * A versao do SO e a MESMA que o `Browsers.macOS` do proprio Baileys usa
+ * (`14.4.1`). Antes daqui saia um `10.15.7` inventado — macOS Catalina, de 2019 —
+ * e um cliente desktop se dizendo tao antigo e exatamente o tipo de detalhe que
+ * um servidor pode recusar. Nao ha por que divergir do que a biblioteca manda.
  */
-export const FULL_HISTORY_BROWSER: BrowserTriple = ['Mac OS', 'Desktop', '10.15.7']
+export const FULL_HISTORY_BROWSER: BrowserTriple = ['Mac OS', 'Desktop', '14.4.1']
+
+/**
+ * Quantas vezes tentamos parear como desktop antes de cair para a identidade
+ * legada.
+ *
+ * PORQUE ISTO EXISTE: o caminho de pareamento NOVO so foi exercitado pela
+ * primeira vez em producao na 0.3.4, e o servidor derrubou o stream com 428
+ * antes mesmo de emitir o QR — em loop, sem o usuario conseguir conectar de
+ * jeito nenhum. Um app de disparo que nao consegue parear esta quebrado; o
+ * historico maior e um bonus, nao pode ser condicao para funcionar.
+ */
+export const PAIRING_ATTEMPTS_BEFORE_FALLBACK = 3
+
+/**
+ * Que identidade tentar neste pareamento, dado quantas ja falharam.
+ *
+ * Depois do teto, volta para a identidade legada — que e empiricamente conhecida
+ * por parear. O usuario conecta e perde so a janela maior de historico, o que e
+ * infinitamente melhor que nao conectar.
+ */
+export function pairingBrowserForAttempt(attempt: number): BrowserTriple {
+  return attempt < PAIRING_ATTEMPTS_BEFORE_FALLBACK ? FULL_HISTORY_BROWSER : LEGACY_BROWSER
+}
 
 /** O que sabemos sobre COMO a sessao atual foi pareada. Settings: `wa.pairing`. */
 export interface PairingRecord {
@@ -96,9 +124,11 @@ export interface PairingRecord {
  */
 export function resolvePairingBrowser(
   record: PairingRecord | null,
-  paired: boolean
+  paired: boolean,
+  /** Tentativas de pareamento que ja falharam sem sequer emitir QR. */
+  failedPairAttempts = 0
 ): BrowserTriple {
-  if (!paired) return FULL_HISTORY_BROWSER
+  if (!paired) return pairingBrowserForAttempt(failedPairAttempts)
   if (record?.platform === 'desktop') return record.browser
   return LEGACY_BROWSER
 }

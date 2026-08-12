@@ -36,6 +36,7 @@ import {
   resolvePairingBrowser,
   pairingKind,
   newPairingRecord,
+  PAIRING_ATTEMPTS_BEFORE_FALLBACK,
   type PairingRecord
 } from './pairingProfile'
 
@@ -269,6 +270,16 @@ class WhatsappService extends EventEmitter {
   /** Pares LID -> telefone aprendidos por consulta nesta sessao (diagnostico). */
   private lidLearned = 0
   /**
+   * Tentativas de PAREAMENTO que morreram antes de o QR aparecer.
+   *
+   * Contador proprio, separado do `reconnectAttempts`: aquele e zerado a cada
+   * clique do usuario em "conectar", e se o fallback de identidade dependesse
+   * dele nunca chegaria a acontecer — o usuario clicaria para sempre.
+   */
+  private failedPairAttempts = 0
+  /** Este socket chegou a emitir QR? Distingue "recusado" de "ninguem leu". */
+  private sawQrThisSocket = false
+  /**
    * Fila dos pedidos de historico antigo.
    *
    * Antes isto era um booleano derrubado por `setTimeout`, e quem chegasse com
@@ -393,7 +404,8 @@ class WhatsappService extends EventEmitter {
      * novo se apresenta como cliente desktop, que e a unica forma de o
      * `syncFullHistory` abaixo valer alguma coisa.
      */
-    const browser = resolvePairingBrowser(getPairingRecord(), this.paired)
+    const browser = resolvePairingBrowser(getPairingRecord(), this.paired, this.failedPairAttempts)
+    this.sawQrThisSocket = false
 
     /**
      * O registro nasce ANTES do socket, e nao depois de conectar.
@@ -410,7 +422,8 @@ class WhatsappService extends EventEmitter {
       version: version.join('.'),
       versionSource: source,
       paired: this.paired,
-      browser: browser[0]
+      browser: browser[0],
+      tentativaDePareamento: this.paired ? undefined : this.failedPairAttempts + 1
     })
 
     const sock = makeWASocket({
@@ -620,11 +633,16 @@ class WhatsappService extends EventEmitter {
     if (qr) {
       // O QR expira e o Baileys emite um novo automaticamente.
       const qrDataUrl = await QRCode.toDataURL(qr, { margin: 1, width: 320 })
+      // O servidor aceitou a identidade que anunciamos: o que acontecer daqui
+      // para a frente e com o usuario, nao com o handshake.
+      this.sawQrThisSocket = true
+      this.failedPairAttempts = 0
       this.patch({ status: 'pairing', qrDataUrl })
     }
 
     if (connection === 'open') {
       this.reconnectAttempts = 0
+      this.failedPairAttempts = 0
       // O pareamento vingou: o registro deixa de ser uma aposta e vira historico.
       const record = getPairingRecord()
       if (record && !record.confirmed) {
@@ -654,6 +672,32 @@ class WhatsappService extends EventEmitter {
 
     if (connection === 'close') {
       const statusCode = (lastDisconnect?.error as BoomLike | undefined)?.output?.statusCode
+      /**
+       * Pareamento que morre ANTES do QR e um caso proprio.
+       *
+       * Sem credenciais e sem QR emitido, o servidor recusou a identidade que
+       * anunciamos — nao adianta reconectar identico para sempre, que foi o loop
+       * de 428 que deixou o usuario sem conseguir parear. Contamos a tentativa
+       * para o `resolvePairingBrowser` poder cair na identidade legada.
+       */
+      if (!this.paired && !this.sawQrThisSocket && !this.intentionalClose) {
+        this.failedPairAttempts += 1
+        const proximaEhLegada = this.failedPairAttempts >= PAIRING_ATTEMPTS_BEFORE_FALLBACK
+        log.warn('pareamento recusado antes de emitir o QR', {
+          codigo: statusCode ?? 'desconhecido',
+          tentativa: this.failedPairAttempts,
+          proximaIdentidade: proximaEhLegada ? 'legada' : 'desktop'
+        })
+        if (proximaEhLegada) {
+          this.patch({
+            lastError:
+              'O WhatsApp recusou a conexao como aplicativo de desktop. Tentando de novo ' +
+              'como navegador — voce continua conseguindo parear, mas o historico inicial ' +
+              'vem menor (cerca de 3 meses).'
+          })
+        }
+      }
+
       const acao = decideReconnect(statusCode, {
         intentional: this.intentionalClose,
         attempts: this.reconnectAttempts

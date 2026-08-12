@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
+  pairingBrowserForAttempt,
+  PAIRING_ATTEMPTS_BEFORE_FALLBACK,
   resolvePairingBrowser,
   pairingKind,
   newPairingRecord,
@@ -92,5 +94,39 @@ describe('newPairingRecord', () => {
 
   it('nasce nao confirmado: o 515 reabre o socket antes do primeiro open', () => {
     expect(newPairingRecord(FULL_HISTORY_BROWSER, null).confirmed).toBe(false)
+  })
+})
+
+describe('fallback de identidade no pareamento', () => {
+  it('insiste na identidade desktop nas primeiras tentativas', () => {
+    for (let i = 0; i < PAIRING_ATTEMPTS_BEFORE_FALLBACK; i += 1) {
+      expect(pairingBrowserForAttempt(i)).toEqual(FULL_HISTORY_BROWSER)
+    }
+  })
+
+  it('depois do teto, cai para a identidade legada', () => {
+    /**
+     * UM APP DE DISPARO QUE NAO CONSEGUE PAREAR ESTA QUEBRADO. Na 0.3.4 o
+     * servidor derrubou o stream com 428 antes de emitir o QR, em loop, e o
+     * usuario ficou sem conseguir conectar de jeito nenhum. O historico maior e
+     * um bonus — nao pode ser condicao para o app funcionar.
+     */
+    expect(pairingBrowserForAttempt(PAIRING_ATTEMPTS_BEFORE_FALLBACK)).toEqual(LEGACY_BROWSER)
+    expect(pairingBrowserForAttempt(99)).toEqual(LEGACY_BROWSER)
+  })
+
+  it('resolvePairingBrowser leva as tentativas em conta', () => {
+    expect(resolvePairingBrowser(null, false, 0)).toEqual(FULL_HISTORY_BROWSER)
+    expect(resolvePairingBrowser(null, false, PAIRING_ATTEMPTS_BEFORE_FALLBACK)).toEqual(
+      LEGACY_BROWSER
+    )
+    // Sessao JA pareada nao e afetada por tentativa nenhuma.
+    expect(resolvePairingBrowser(null, true, 99)).toEqual(LEGACY_BROWSER)
+  })
+
+  it('a versao do SO e a mesma que o Baileys usa', () => {
+    // Antes daqui saia um 10.15.7 inventado (macOS de 2019). Um cliente desktop
+    // se dizendo tao antigo e o tipo de detalhe que um servidor pode recusar.
+    expect(FULL_HISTORY_BROWSER[2]).toBe('14.4.1')
   })
 })
