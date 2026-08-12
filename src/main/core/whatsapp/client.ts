@@ -37,6 +37,7 @@ import {
   pairingKind,
   newPairingRecord,
   PAIRING_ATTEMPTS_BEFORE_FALLBACK,
+  pairingLadderStart,
   type PairingRecord
 } from './pairingProfile'
 
@@ -86,6 +87,14 @@ const AUTH_DIR = () => join(app.getPath('userData'), 'wa-auth')
 const PAIRING_KEY = 'wa.pairing'
 /** O usuario ja dispensou o aviso de repareamento desta sessao? */
 const RELINK_DISMISSED_KEY = 'wa.relinkNoticeDismissed'
+/**
+ * Quando o servidor recusou o pareamento como aplicativo desktop.
+ *
+ * Guardado porque muda o que o app pode PROMETER: sem a sub-plataforma desktop
+ * o WhatsApp so manda a janela curta de historico, e insistir com o usuario para
+ * refazer o pareamento passaria a ser um conselho falso.
+ */
+const DESKTOP_REFUSED_KEY = 'wa.desktopPairingRefusedAt'
 
 function getPairingRecord(): PairingRecord | null {
   return getJson<PairingRecord | null>(PAIRING_KEY, null)
@@ -240,7 +249,10 @@ export type HistoryRequest =
 class WhatsappService extends EventEmitter {
   private sock: WASocket | null = null
   /** Os campos derivados ficam fora daqui: `getState` os calcula na hora. */
-  private state: Omit<WhatsappState, 'historyPairing' | 'relinkNoticeDismissed'> = {
+  private state: Omit<
+    WhatsappState,
+    'historyPairing' | 'relinkNoticeDismissed' | 'desktopPairingRefused'
+  > = {
     status: 'disconnected',
     qrDataUrl: null,
     me: null,
@@ -303,7 +315,8 @@ class WhatsappService extends EventEmitter {
     return {
       ...this.state,
       historyPairing: pairingKind(getPairingRecord(), this.hasStoredSession()),
-      relinkNoticeDismissed: getJson<boolean>(RELINK_DISMISSED_KEY, false)
+      relinkNoticeDismissed: getJson<boolean>(RELINK_DISMISSED_KEY, false),
+      desktopPairingRefused: getJson<number | null>(DESKTOP_REFUSED_KEY, null) != null
     }
   }
 
@@ -404,7 +417,17 @@ class WhatsappService extends EventEmitter {
      * novo se apresenta como cliente desktop, que e a unica forma de o
      * `syncFullHistory` abaixo valer alguma coisa.
      */
-    const browser = resolvePairingBrowser(getPairingRecord(), this.paired, this.failedPairAttempts)
+    /**
+     * A escada de identidades comeca DEPOIS do desktop quando ele ja foi
+     * recusado nesta conta: repeti-la a cada pareamento so faria o usuario
+     * esperar quatro falhas e um backoff para chegar no mesmo lugar.
+     */
+    const ladderStart = pairingLadderStart(getJson<number | null>(DESKTOP_REFUSED_KEY, null))
+    const browser = resolvePairingBrowser(
+      getPairingRecord(),
+      this.paired,
+      Math.max(this.failedPairAttempts, ladderStart)
+    )
     this.sawQrThisSocket = false
 
     /**
@@ -689,11 +712,14 @@ class WhatsappService extends EventEmitter {
           proximaIdentidade: proximaEhLegada ? 'legada' : 'desktop'
         })
         if (proximaEhLegada) {
-          this.patch({
-            lastError:
-              'O WhatsApp recusou a conexao como aplicativo de desktop. Tentando de novo ' +
-              'como navegador — voce continua conseguindo parear, mas o historico inicial ' +
-              'vem menor (cerca de 3 meses).'
+          /**
+           * Registra a recusa: e o que impede o app de continuar prometendo ao
+           * usuario um historico maior que o servidor nao entrega, e o que evita
+           * repetir a escada inteira no proximo pareamento.
+           */
+          setJson(DESKTOP_REFUSED_KEY, Date.now())
+          log.warn('o WhatsApp recusou o pareamento como desktop; seguindo como navegador', {
+            tentativas: this.failedPairAttempts
           })
         }
       }
@@ -830,6 +856,9 @@ class WhatsappService extends EventEmitter {
      */
     setJson(PAIRING_KEY, null)
     setJson(RELINK_DISMISSED_KEY, false)
+    // A recusa do desktop NAO e apagada junto: ela e do servidor sobre esta
+    // conta, nao da sessao. Apagar aqui faria o proximo pareamento repetir a
+    // escada inteira de falhas para chegar no mesmo lugar.
     this.emit('state', this.getState())
   }
 
@@ -856,6 +885,7 @@ class WhatsappService extends EventEmitter {
     reconnectAttempts: number
     historyQueueDepth: number
     lidLearned: number
+    desktopPairingRefused: boolean
   } {
     const record = getPairingRecord()
     return {
@@ -877,7 +907,8 @@ class WhatsappService extends EventEmitter {
         : null,
       reconnectAttempts: this.reconnectAttempts,
       historyQueueDepth: this.historyQueue.depth,
-      lidLearned: this.lidLearned
+      lidLearned: this.lidLearned,
+      desktopPairingRefused: getJson<number | null>(DESKTOP_REFUSED_KEY, null) != null
     }
   }
 

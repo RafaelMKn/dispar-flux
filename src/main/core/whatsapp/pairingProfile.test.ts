@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   pairingBrowserForAttempt,
+  pairingLadderStart,
+  DESKTOP_REFUSAL_TTL_MS,
+  WINDOWS_BROWSER,
   PAIRING_ATTEMPTS_BEFORE_FALLBACK,
   resolvePairingBrowser,
   pairingKind,
@@ -98,10 +101,13 @@ describe('newPairingRecord', () => {
 })
 
 describe('fallback de identidade no pareamento', () => {
-  it('insiste na identidade desktop nas primeiras tentativas', () => {
-    for (let i = 0; i < PAIRING_ATTEMPTS_BEFORE_FALLBACK; i += 1) {
-      expect(pairingBrowserForAttempt(i)).toEqual(FULL_HISTORY_BROWSER)
-    }
+  it('tenta as duas chaves do PLATFORM_MAP antes de desistir do desktop', () => {
+    // 'Mac OS' foi recusado com 428 nesta conta; 'Windows' e o unico outro valor
+    // que o Baileys mapeia para uma sub-plataforma desktop.
+    expect(pairingBrowserForAttempt(0)).toEqual(FULL_HISTORY_BROWSER)
+    expect(pairingBrowserForAttempt(1)).toEqual(FULL_HISTORY_BROWSER)
+    expect(pairingBrowserForAttempt(2)).toEqual(WINDOWS_BROWSER)
+    expect(pairingBrowserForAttempt(3)).toEqual(WINDOWS_BROWSER)
   })
 
   it('depois do teto, cai para a identidade legada', () => {
@@ -128,5 +134,25 @@ describe('fallback de identidade no pareamento', () => {
     // Antes daqui saia um 10.15.7 inventado (macOS de 2019). Um cliente desktop
     // se dizendo tao antigo e o tipo de detalhe que um servidor pode recusar.
     expect(FULL_HISTORY_BROWSER[2]).toBe('14.4.1')
+  })
+})
+
+describe('memoria da recusa', () => {
+  it('sem recusa registrada, a escada comeca do topo', () => {
+    expect(pairingLadderStart(null)).toBe(0)
+  })
+
+  it('recusa recente pula direto para a identidade que pareia', () => {
+    /**
+     * Repetir a escada inteira a cada pareamento faria o usuario esperar quatro
+     * falhas e um backoff para chegar exatamente no mesmo lugar.
+     */
+    expect(pairingLadderStart(Date.now() - 1000)).toBe(PAIRING_ATTEMPTS_BEFORE_FALLBACK)
+    expect(pairingBrowserForAttempt(pairingLadderStart(Date.now() - 1000))).toEqual(LEGACY_BROWSER)
+  })
+
+  it('recusa antiga expira: isso e decisao do lado deles e pode mudar', () => {
+    const antiga = Date.now() - DESKTOP_REFUSAL_TTL_MS - 1
+    expect(pairingLadderStart(antiga)).toBe(0)
   })
 })

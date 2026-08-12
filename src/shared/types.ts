@@ -38,6 +38,14 @@ export interface WhatsappState {
   historyPairing: HistoryPairing | null
   /** O usuario ja fechou o aviso de repareamento desta sessao. */
   relinkNoticeDismissed: boolean
+  /**
+   * O servidor recusou parear este numero como aplicativo de desktop.
+   *
+   * Quando isso acontece, sugerir "refaca o pareamento para ganhar mais
+   * historico" vira conselho falso: o app so consegue parear como navegador, e
+   * navegador recebe a janela curta. Ver `pairingProfile`.
+   */
+  desktopPairingRefused: boolean
 }
 
 /**

@@ -59,9 +59,17 @@ identificou **naquele pareamento**:
 | Cliente desktop (0.3.1 em diante) | cerca de **1 ano**      |
 
 Isso e negociado **uma unica vez**, no pareamento, e nao muda a cada vez que o app conecta.
-Se voce ja usava o Dispar Flux antes da 0.3.1, sua conexao continua na faixa curta ate voce
-refazer o pareamento — e o card **Conexao WhatsApp**, em Configuracoes, avisa quando esse e
-o caso.
+
+> [!AVISO]
+> **Na pratica, o WhatsApp pode recusar a identidade de desktop.** Em testes reais o
+> servidor derrubou a conexao (codigo 428) nas tentativas como desktop e so aceitou o
+> pareamento como navegador. O app tenta as duas identidades de desktop e, se ambas forem
+> recusadas, conecta como navegador — voce pareia normalmente, mas com a janela de ~3 meses.
+>
+> Quando isso acontece, o app **para de sugerir** que voce refaca o pareamento: refazer nao
+> traria historico nenhum a mais. O campo `desktopPairingRefused` do **Copiar diagnostico**
+> mostra se foi esse o caso. Ele volta a tentar sozinho depois de 30 dias, porque a decisao
+> e do lado do WhatsApp e pode mudar.
 
 > [!NOTA]
 > **Refazer o pareamento nao apaga nada seu.** Encerrar a sessao remove so as credenciais da

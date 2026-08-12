@@ -9,7 +9,8 @@ const INITIAL: WhatsappState = {
   // `null` ate o main responder: nao ha por que sugerir repareamento antes de
   // saber se existe sessao.
   historyPairing: null,
-  relinkNoticeDismissed: false
+  relinkNoticeDismissed: false,
+  desktopPairingRefused: false
 }
 
 /**

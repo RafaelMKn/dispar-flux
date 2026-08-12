@@ -22,7 +22,15 @@ const TONE: Record<WhatsappStatus, 'success' | 'warning' | 'danger' | 'idle'> = 
 
 export default function WhatsappCard({ state }: { state: WhatsappState }): JSX.Element {
   const [busy, setBusy] = useState(false)
-  const { status, qrDataUrl, me, lastError, historyPairing, relinkNoticeDismissed } = state
+  const {
+    status,
+    qrDataUrl,
+    me,
+    lastError,
+    historyPairing,
+    relinkNoticeDismissed,
+    desktopPairingRefused
+  } = state
 
   /**
    * Sessao pareada por uma versao anterior, que se anunciava como navegador.
@@ -31,8 +39,14 @@ export default function WhatsappCard({ state }: { state: WhatsappState }): JSX.E
    * desconecta sozinho. Mas enquanto o pareamento nao for refeito o WhatsApp
    * continua mandando so o recorte curto, e o usuario nao tem como adivinhar
    * isso sozinho.
+   *
+   * `desktopPairingRefused` CALA o aviso: quando o servidor recusa parear este
+   * numero como aplicativo de desktop, refazer o pareamento nao traz historico
+   * nenhum a mais. Continuar sugerindo seria mandar o usuario repetir um
+   * trabalho que ja sabemos nao levar a lugar nenhum.
    */
-  const sugerirRepareamento = historyPairing === 'legacy' && !relinkNoticeDismissed
+  const sugerirRepareamento =
+    historyPairing === 'legacy' && !relinkNoticeDismissed && !desktopPairingRefused
 
   const [copiado, setCopiado] = useState(false)
 
