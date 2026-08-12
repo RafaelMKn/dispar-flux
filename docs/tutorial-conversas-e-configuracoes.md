@@ -78,9 +78,9 @@ Isso e negociado **uma unica vez**, no pareamento, e nao muda a cada vez que o a
 > pacote novo nao duplica o que voce ja tem — ele so preenche o que faltava.
 >
 > Para refazer: **Configuracoes → Conexao WhatsApp → Encerrar sessao → Gerar QR e conectar**.
-> Depois disso, o aparelho vai listar o Dispar Flux como um **Mac** em Dispositivos
-> conectados. E so o nome da plataforma que o app anuncia — e justamente ela que faz o
-> WhatsApp liberar o pacote maior.
+> Se o WhatsApp aceitar a identidade de desktop, o aparelho passa a listar o Dispar Flux
+> como um **Mac** (ou **Windows**) em Dispositivos conectados; se recusar, ele aparece como
+> navegador, do jeito de sempre. Ver o aviso acima.
 
 ### Contato aparecendo duas vezes
 
