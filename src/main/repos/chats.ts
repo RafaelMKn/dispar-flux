@@ -72,7 +72,17 @@ export interface UpsertChatOptions {
 
 export function upsertChat(
   jid: string,
-  patch: { name?: string | null; lastMessage?: string | null; lastTs?: number },
+  patch: {
+    name?: string | null
+    lastMessage?: string | null
+    lastTs?: number
+    /**
+     * Endereco de protocolo, quando o servidor endereça esta conversa por LID.
+     * `null`/ausente nunca APAGA um lid ja conhecido — a ausencia costuma ser so
+     * um caminho que nao tinha essa informacao, nao a prova de que ela mudou.
+     */
+    lid?: string | null
+  },
   opts: UpsertChatOptions = {}
 ): void {
   const existing = getDb().select().from(chats).where(eq(chats.jid, jid)).get()
@@ -89,7 +99,8 @@ export function upsertChat(
         // Nao apaga um nome ja conhecido com null.
         name: patch.name ?? existing.name,
         lastMessage: isNewer ? (patch.lastMessage ?? existing.lastMessage) : existing.lastMessage,
-        lastTs: Math.max(patch.lastTs ?? 0, existing.lastTs ?? 0) || null
+        lastTs: Math.max(patch.lastTs ?? 0, existing.lastTs ?? 0) || null,
+        lid: patch.lid ?? existing.lid
       })
       .where(eq(chats.jid, jid))
       .run()
@@ -107,7 +118,8 @@ export function upsertChat(
         // que o update so avanca o `lastTs` (o historico real, mais antigo,
         // nunca conseguia corrigir).
         lastTs: patch.lastTs ?? null,
-        unread: 0
+        unread: 0,
+        lid: patch.lid ?? null
       })
       .run()
   }
