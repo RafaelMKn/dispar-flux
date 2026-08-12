@@ -202,17 +202,30 @@ interface WaMessageLike {
     remoteJid?: string | null
     fromMe?: boolean | null
     /**
-     * Telefone por tras do `remoteJid` quando ele e um LID.
+     * O OUTRO endereco desta mesma conversa, dito pelo servidor no envelope.
      *
-     * O Baileys preenche isto a partir do envelope (`sender_pn` na stanza). So
-     * vem nas mensagens RECEBIDAS — as `fromMe` chegam sem, e por isso o par e
-     * gravado no `lid_map` assim que aparece. Ver `canonicalJid`.
+     * CUIDADO — ISTO E BIDIRECIONAL, e nao "o telefone". O Baileys 7.x monta o
+     * campo a partir do `addressing_mode` da stanza: conversa endereçada por LID
+     * traz aqui o TELEFONE; conversa endereçada pelo telefone traz aqui o LID.
+     * Tratar sempre como telefone gravaria um LID na chave da conversa — a
+     * duplicata ao contrario. Quem decide a direcao e `canonicalJid`, pelo
+     * formato dos dois lados.
+     *
+     * Ate o 6.7.23 isto eram dois campos de mao unica (`senderPn`,
+     * `participantPn`) que so existiam no sentido LID -> telefone. A renomeacao
+     * nao quebra o typecheck (a chave e tipada aqui, nao pelo Baileys), entao
+     * esquecer este campo faria a traducao de LID secar EM SILENCIO.
+     *
+     * So vem nas mensagens RECEBIDAS — as `fromMe` chegam sem, e por isso o par
+     * e gravado no `lid_map` assim que aparece.
      */
-    senderPn?: string | null
-    /** LID de quem falou, em mensagem de grupo. */
+    remoteJidAlt?: string | null
+    /** Quem falou, em mensagem de grupo. Pode ser o LID ou o telefone. */
     participant?: string | null
-    /** Telefone de quem falou, em mensagem de grupo. Ver `harvestGroupLid`. */
-    participantPn?: string | null
+    /** O outro endereco de quem falou, em grupo. Ver `harvestGroupLid`. */
+    participantAlt?: string | null
+    /** `'lid'` ou `'pn'`. So para log: a direcao se decide pelo formato. */
+    addressingMode?: string | null
   }
   message?: WaMessageContent | null
   pushName?: string | null
@@ -341,7 +354,7 @@ function parseOne(msg: WaMessageLike): ParsedMessage | null {
    * O par LID -> telefone vem de graca aqui, ANTES do descarte.
    *
    * A mensagem de grupo continua sendo ignorada (ruido para prospeccao), mas a
-   * chave dela traz `participant` + `participantPn` — e no log real sao 42 pares
+   * chave dela traz `participant` + `participantAlt` — e no log real sao 42 pares
    * distintos, contra 17 vindos de conversa 1:1. Descartar a mensagem sem colher
    * o par era jogar fora a maior fonte de traducao que temos.
    */
@@ -356,7 +369,7 @@ function parseOne(msg: WaMessageLike): ParsedMessage | null {
    * numero e a que a resposta dela criou pelo LID — e so a primeira casa com a
    * base de leads e com o CRM.
    */
-  const jid = canonicalJid(bruto, { senderPn: msg.key?.senderPn })
+  const jid = canonicalJid(bruto, { alt: msg.key?.remoteJidAlt })
   if (!jid) {
     // LID de quem ainda nao sabemos o telefone. Deixar entrar com o LID cru e
     // o que produzia a duplicata; a varredura por USync resolve e a mensagem
@@ -573,7 +586,7 @@ export function handleContacts(
     let touched = false
     for (const contact of contacts) {
       if (isIgnorableJid(contact.id)) continue
-      // A agenda nao traz `senderPn`: um LID daqui so e traduzivel pelo mapa.
+      // A agenda nao traz endereco alternativo: um LID daqui so e traduzivel pelo mapa.
       // Sem traducao o nome iria para uma conversa que nao existe.
       const jid = canonicalJid(contact.id)
       if (!jid) continue
@@ -690,7 +703,7 @@ export function handleHistorySet(payload: {
   const jidsDoLote = [
     ...new Set(
       (payload.messages ?? [])
-        .map((m) => canonicalJid(m.key?.remoteJid, { senderPn: m.key?.senderPn }))
+        .map((m) => canonicalJid(m.key?.remoteJid, { alt: m.key?.remoteJidAlt }))
         .filter((j): j is string => Boolean(j) && !isIgnorableJid(j))
     )
   ]
@@ -772,7 +785,7 @@ function applyHistorySet(payload: {
     for (const chat of payload.chats ?? []) {
       if (isIgnorableJid(chat.id)) continue
       /**
-       * A lista de conversas do lote NAO traz `senderPn`.
+       * A lista de conversas do lote NAO traz endereco alternativo.
        *
        * Um LID daqui so e traduzivel pelo mapa, e sem traducao a conversa nao
        * pode ser criada — seria a duplicata de novo, agora vinda do historico.
@@ -796,7 +809,7 @@ function applyHistorySet(payload: {
     // se ainda precisa pedir algo ao WhatsApp.
     for (const jid of new Set(
       (payload.messages ?? [])
-        .map((m) => canonicalJid(m.key?.remoteJid, { senderPn: m.key?.senderPn }))
+        .map((m) => canonicalJid(m.key?.remoteJid, { alt: m.key?.remoteJidAlt }))
         .filter((j): j is string => Boolean(j))
     )) {
       if (isIgnorableJid(jid)) continue

@@ -37,15 +37,15 @@ describe('canonicalJid', () => {
     expect(canonicalJid(pn)).toBe(pn)
   })
 
-  it('resolve pelo senderPn que vem na chave da mensagem', () => {
+  it('resolve pelo endereco alternativo que vem na chave da mensagem', () => {
     const lid = freshLid()
     const pn = freshPn()
-    expect(canonicalJid(lid, { senderPn: pn })).toBe(pn)
+    expect(canonicalJid(lid, { alt: pn })).toBe(pn)
   })
 
   it('APRENDE ao resolver, para a mensagem fromMe seguinte funcionar', () => {
     /**
-     * O ponto todo do modulo. Mensagem `fromMe: true` NAO traz `senderPn` — no
+     * O ponto todo do modulo. Mensagem `fromMe: true` NAO traz o alternativo — no
      * log real, 29 dos 46 LIDs so apareciam assim. Se o par nao fosse gravado
      * na primeira mensagem recebida, as nossas continuariam sem dono e a
      * conversa continuaria partida em duas.
@@ -53,7 +53,7 @@ describe('canonicalJid', () => {
     const lid = freshLid()
     const pn = freshPn()
 
-    canonicalJid(lid, { senderPn: pn })
+    canonicalJid(lid, { alt: pn })
     // Agora sem pista nenhuma, como chega uma mensagem nossa:
     expect(canonicalJid(lid)).toBe(pn)
   })
@@ -64,14 +64,54 @@ describe('canonicalJid', () => {
     expect(canonicalJid(freshLid())).toBeNull()
   })
 
-  it('nao aceita um senderPn que tambem e LID', () => {
+  it('nao aceita um alternativo que tambem e LID', () => {
     const lid = freshLid()
-    expect(canonicalJid(lid, { senderPn: freshLid() })).toBeNull()
+    expect(canonicalJid(lid, { alt: freshLid() })).toBeNull()
   })
 
   it('null e undefined nao viram conversa', () => {
     expect(canonicalJid(null)).toBeNull()
     expect(canonicalJid(undefined)).toBeNull()
+  })
+
+  it('conversa por telefone APRENDE o LID que vem no alternativo', () => {
+    /**
+     * O sentido que so passou a existir no Baileys 7.x.
+     *
+     * Ate o 6.7.23 o campo era de mao unica (LID -> telefone) e so aparecia em
+     * conversa endereçada por LID. Agora, quando a conversa vem pelo numero, o
+     * alternativo traz o LID DELA — de graca, sem a consulta que o `sweepLids`
+     * precisa fazer ao servidor.
+     */
+    const pn = freshPn()
+    const lid = freshLid()
+
+    // A chave nao muda: telefone entra, telefone sai.
+    expect(canonicalJid(pn, { alt: lid })).toBe(pn)
+    // Mas o par ficou gravado, e uma mensagem futura por LID ja resolve.
+    expect(canonicalJid(lid)).toBe(pn)
+  })
+
+  it('NAO troca a chave de telefone por LID quando o alternativo e LID', () => {
+    /**
+     * A duplicata ao contrario, e o risco central da migracao para o 7.x: ler o
+     * alternativo como se fosse sempre o telefone gravaria um LID na chave da
+     * conversa — pior que o bug original, porque suja o banco.
+     */
+    const pn = freshPn()
+    const lid = freshLid()
+    expect(canonicalJid(pn, { alt: lid })).not.toBe(lid)
+  })
+
+  it('nao aceita um @hosted.lid no lugar do telefone', () => {
+    /**
+     * `@hosted.lid` e outro servidor do Baileys 7.x e NAO termina em `@lid`,
+     * entao a guarda antiga (`!isLid(...)`) o deixaria passar como se fosse
+     * numero. Exigir `@s.whatsapp.net` erra para o lado seguro: fica sem
+     * traducao por enquanto, em vez de com uma traducao errada para sempre.
+     */
+    const lid = freshLid()
+    expect(canonicalJid(lid, { alt: '71700301529149@hosted.lid' })).toBeNull()
   })
 })
 
@@ -98,7 +138,8 @@ describe('lidMap', () => {
 
   it('consulta USync nao sobrescreve o que veio do envelope', () => {
     /**
-     * `senderPn` e o servidor falando daquela conversa; o USync e uma pergunta
+     * `senderPn` e o servidor falando daquela conversa por conta propria; o
+     * USync e uma pergunta
      * nossa, que pode devolver o LID de um numero que a pessoa nao usa mais.
      */
     const lid = freshLid()
@@ -135,7 +176,7 @@ describe('sufixo de dispositivo', () => {
     const base = '71700301529149@lid'
     const comDispositivo = '71700301529149:23@lid'
 
-    canonicalJid(comDispositivo, { senderPn: pn })
+    canonicalJid(comDispositivo, { alt: pn })
 
     expect(canonicalJid(base)).toBe(pn)
     expect(canonicalJid(comDispositivo)).toBe(pn)
@@ -157,21 +198,34 @@ describe('harvestGroupLid', () => {
      */
     const lid = freshLid()
     const pn = freshPn()
-    harvestGroupLid({ participant: lid, participantPn: pn })
+    harvestGroupLid({ participant: lid, participantAlt: pn })
     expect(canonicalJid(lid)).toBe(pn)
   })
 
   it('ignora chave sem os dois lados do par', () => {
     const lid = freshLid()
     harvestGroupLid({ participant: lid })
-    harvestGroupLid({ participantPn: freshPn() })
+    harvestGroupLid({ participantAlt: freshPn() })
     harvestGroupLid({})
     expect(canonicalJid(lid)).toBeNull()
   })
 
-  it('nao aceita um participantPn que tambem e LID', () => {
+  it('nao aceita um par em que os dois lados sao LID', () => {
     const lid = freshLid()
-    harvestGroupLid({ participant: lid, participantPn: freshLid() })
+    harvestGroupLid({ participant: lid, participantAlt: freshLid() })
     expect(canonicalJid(lid)).toBeNull()
+  })
+
+  it('colhe o par tambem quando ele vem na ordem inversa', () => {
+    /**
+     * Em grupo o `participantAlt` e bidirecional igual ao `remoteJidAlt`: quem
+     * falou pode vir pelo telefone e o alternativo ser o LID. Decidir pela
+     * POSICAO em vez do formato perderia metade dos pares — ou, pior, gravaria
+     * o telefone como se fosse o LID.
+     */
+    const lid = freshLid()
+    const pn = freshPn()
+    harvestGroupLid({ participant: pn, participantAlt: lid })
+    expect(canonicalJid(lid)).toBe(pn)
   })
 })

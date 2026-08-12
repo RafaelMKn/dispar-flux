@@ -27,6 +27,7 @@ import {
   type HistoryAnchor
 } from '../../repos/chats'
 import { rememberLid, phonesNeedingLid, mappedLidChats, markLidProbed } from '../../repos/lidMap'
+import { isLid } from './lid'
 import { saveAvatar } from './mediaStore'
 import { webmToOggOpus } from './opusOgg'
 import { SerialQueue } from './requestQueue'
@@ -211,9 +212,11 @@ const AVATAR_GAP_MS = 400
 /**
  * Varredura de LID: mesmo cuidado de ritmo das fotos de perfil.
  *
- * O `onWhatsApp` aceita varios numeros por consulta, entao o custo por numero e
- * baixo — mas a folga entre lotes continua importando: quem varre a base inteira
- * de uma vez logo apos conectar tem o padrao de trafego de um robo.
+ * Tanto o `onWhatsApp` quanto o `getLIDsForPNs` aceitam varios numeros por
+ * consulta, entao o custo por numero e baixo — mas a folga entre lotes continua
+ * importando, e mais ainda desde o 7.x: cada lote agora custa DUAS idas a rede
+ * (existe? e qual o LID?) em vez de uma. Quem varre a base inteira de uma vez
+ * logo apos conectar tem o padrao de trafego de um robo.
  */
 const LID_SWEEP_BATCH = 200
 const LID_SWEEP_CHUNK = 20
@@ -266,10 +269,12 @@ class WhatsappService extends EventEmitter {
   /**
    * A sessao ja completou o pareamento?
    *
-   * Usamos `creds.me.id` e NAO `creds.registered`: verificamos que o Baileys
-   * 6.7.23 mantem `registered: false` mesmo numa sessao pareada e funcionando.
-   * Confiar em `registered` faria o tratamento de 405 apagar uma sessao valida
-   * e exigir novo QR sem necessidade.
+   * Usamos `creds.me.id` e NAO `creds.registered`: o Baileys so levanta o
+   * `registered` no fluxo de codigo de pareamento (`link_code_pairing_ref`),
+   * que este app nao usa — quem pareia por QR fica com `registered: false` para
+   * sempre, mesmo com a sessao funcionando. Confirmado no 6.7.23 e reconferido
+   * no 7.0.0-rc14 (`Socket/messages-recv.js`). Confiar em `registered` faria o
+   * tratamento de 405 apagar uma sessao valida e exigir novo QR sem necessidade.
    */
   private paired = false
   private lastVersion: WaVersion | null = null
@@ -382,6 +387,7 @@ class WhatsappService extends EventEmitter {
       sock.ev.removeAllListeners('contacts.upsert')
       sock.ev.removeAllListeners('contacts.update')
       sock.ev.removeAllListeners('messaging-history.set')
+      sock.ev.removeAllListeners('lid-mapping.update')
     } catch (e) {
       log.warn('falha ao desligar os ouvintes do socket anterior', e)
     }
@@ -480,10 +486,17 @@ class WhatsappService extends EventEmitter {
       /**
        * Declarado, e nao herdado.
        *
-       * O padrao do Baileys e `() => !!syncFullHistory` (`lib/Socket/index.js`),
-       * entao o processamento dos lotes ON_DEMAND — que e o que a busca sob
-       * demanda depende — vinha de carona numa flag sobre outro assunto. Mexer
-       * numa desligava a outra em silencio.
+       * No 6.7.23 o padrao era `() => !!syncFullHistory`, entao o processamento
+       * dos lotes ON_DEMAND — que e do que a busca sob demanda depende — vinha
+       * de carona numa flag sobre outro assunto, e mexer numa desligava a outra
+       * em silencio. No 7.0.0-rc14 o padrao virou
+       * `({ syncType }) => syncType !== FULL` (`lib/Defaults/index.js`), que
+       * descartaria justamente o pacote grande do pareamento.
+       *
+       * Os dois padroes recusam algo que queremos; declarar nao muda nada aqui e
+       * nos mantem imunes a proxima troca. O proprio Baileys 7.x agora avisa que
+       * recusar TODOS os tipos o impede de ver os mapeamentos LID iniciais e leva
+       * a session error — o `true` nos deixa do lado certo disso.
        */
       shouldSyncHistoryMessage: () => true,
       markOnlineOnConnect: false,
@@ -593,6 +606,27 @@ class WhatsappService extends EventEmitter {
         log.error('falha ao sincronizar historico', e)
       }
     })
+
+    /**
+     * O servidor anunciando um par LID -> telefone por conta propria.
+     *
+     * Evento novo do Baileys 7.x, e a fonte de melhor procedencia que existe:
+     * e o proprio WhatsApp dizendo o par, sem nos termos perguntado. Por isso
+     * entra como `senderPn` e nao como `usync` — ver a regra de precedencia em
+     * `repos/lidMap`.
+     *
+     * Chega em momentos que nenhuma das outras fontes cobre (o servidor emite
+     * quando aprende o par), entao e de graca e complementa a varredura.
+     */
+    sock.ev.on('lid-mapping.update', (par) => {
+      try {
+        if (!par?.lid || !par?.pn) return
+        rememberLid(par.lid, par.pn, 'senderPn')
+        this.lidLearned += 1
+      } catch (e) {
+        log.warn('falha ao gravar mapeamento de LID anunciado pelo servidor', e)
+      }
+    })
   }
 
   /**
@@ -620,8 +654,15 @@ class WhatsappService extends EventEmitter {
       download: async (raw) => {
         const { proto, downloadMediaMessage } = await loadBaileys()
         const msg = proto.WebMessageInfo.decode(Buffer.from(raw, 'base64'))
+        /**
+         * O `decode` devolve a chave como opcional; o `WAMessage` do 7.x a exige.
+         *
+         * A diferenca e so de tipo: `raw_proto` so e gravado a partir de uma
+         * mensagem que o Baileys entregou (ver inbox.ts), e essa sempre tem
+         * chave. Mesmo molde do cast em `encode`, logo acima.
+         */
         const data = (await downloadMediaMessage(
-          msg,
+          msg as Parameters<typeof downloadMediaMessage>[0],
           'buffer',
           {},
           {
@@ -924,33 +965,30 @@ class WhatsappService extends EventEmitter {
    * Devolve o `jid` que a API retornar — nunca construimos o jid a mao, porque
    * e justamente isso que resolve o 9o digito dos numeros brasileiros.
    *
-   * DE QUEBRA, APRENDE O LID. O `onWhatsApp` do Baileys ja monta a consulta
-   * USync com `.withLIDProtocol()` e devolve `{ jid, exists, lid }` — o campo
-   * estava sendo descartado aqui. E a segunda fonte de traducao LID→telefone, e
-   * a unica que alcança as conversas em que so vimos mensagens nossas (o
-   * `senderPn` do envelope so vem no que RECEBEMOS: no log real, 29 dos 46 LIDs
-   * so apareciam assim).
+   * DE QUEBRA, APRENDE O LID — em duas etapas desde o Baileys 7.x.
+   *
+   * O `onWhatsApp` do 6.7.23 devolvia `{ jid, exists, lid }` e o LID vinha de
+   * carona na mesma consulta. No 7.x a assinatura encolheu para
+   * `{ jid, exists }`: a consulta USync de LID virou responsabilidade do
+   * `LIDMappingStore`, que o socket expoe em `signalRepository.lidMapping`.
+   *
+   * A ORDEM IMPORTA. O `getLIDsForPNs` recebe JID, nao E.164, e este app tem
+   * uma regra de nunca montar jid a mao — e o `onWhatsApp` que resolve o 9o
+   * digito dos numeros brasileiros (ver `core/contacts/phone.ts`). Por isso
+   * perguntamos primeiro quem existe e so entao pedimos o LID dos jids que o
+   * SERVIDOR devolveu. Sao duas idas a rede onde antes havia uma, e por isso o
+   * espaçamento do `sweepLids` continua valendo.
+   *
+   * O store ainda e melhor que o campo antigo: ele responde do cache em memoria
+   * ou do proprio auth state antes de consultar, entao a segunda etapa muitas
+   * vezes nao chega a sair da maquina.
    */
   async checkNumbers(phones: string[]): Promise<WaCheckResult[]> {
     const sock = this.socket
     if (!sock) throw new Error('WhatsApp nao esta conectado.')
 
     const results = await sock.onWhatsApp(...phones)
-    for (const r of results ?? []) {
-      /**
-       * O servidor pode devolver o LID como jid completo ou so os digitos.
-       *
-       * O parser do Baileys entrega `node.attrs.val` cru, e nao ha garantia de
-       * formato. Exigir o sufixo `@lid` fazia a varredura inteira descartar tudo
-       * em silencio caso viessem digitos — e o log nao tinha como mostrar isso.
-       */
-      const bruto = typeof r.lid === 'string' ? r.lid.trim() : ''
-      if (!bruto || !r.jid) continue
-      const lid = bruto.includes('@') ? bruto : `${bruto}@lid`
-      if (!lid.endsWith('@lid')) continue
-      rememberLid(lid, r.jid, 'usync')
-      this.lidLearned += 1
-    }
+    await this.learnLids(results?.map((r) => r.jid) ?? [])
     return phones.map((phoneE164) => {
       const digits = phoneE164.replace(/\D/g, '')
       const hit = results?.find((r) => {
@@ -967,6 +1005,38 @@ class WhatsappService extends EventEmitter {
   }
 
   /**
+   * Pergunta ao Baileys o LID destes telefones e grava o que vier.
+   *
+   * O `getLIDsForPNs` resolve em cascata — cache em memoria, depois o auth
+   * state, e so entao a consulta USync `.withLIDProtocol()` ao servidor —, e
+   * devolve `{ pn, lid }` ja com o sufixo de dispositivo casado. Devolver
+   * `null` significa que nenhum dos numeros tinha LID: e resultado legitimo,
+   * nao erro.
+   *
+   * Falhar aqui NAO pode derrubar quem chamou: o `checkNumbers` tem como
+   * trabalho principal dizer se o numero existe no WhatsApp, e a fila de
+   * disparo depende dessa resposta. O LID e um bonus da mesma viagem.
+   */
+  private async learnLids(jids: string[]): Promise<void> {
+    const alvos = jids.filter((j) => j && !isLid(j))
+    if (alvos.length === 0) return
+
+    const sock = this.socket
+    if (!sock) return
+
+    try {
+      const pares = await sock.signalRepository.lidMapping.getLIDsForPNs(alvos)
+      for (const par of pares ?? []) {
+        if (!par?.lid || !par?.pn || !isLid(par.lid)) continue
+        rememberLid(par.lid, par.pn, 'usync')
+        this.lidLearned += 1
+      }
+    } catch (e) {
+      log.warn('nao foi possivel consultar o LID de um lote de numeros', e)
+    }
+  }
+
+  /**
    * Descobre o LID dos numeros que ja temos, aos poucos.
    *
    * Roda em segundo plano depois de conectar, no mesmo molde do
@@ -974,9 +1044,12 @@ class WhatsappService extends EventEmitter {
    * apos o handshake e exatamente o padrao de trafego que chama atencao do
    * anti-spam.
    *
-   * Existe porque o `senderPn` do envelope so cobre as conversas em que
-   * RECEBEMOS algo. Sem esta varredura, uma conversa em que so disparamos ficaria
-   * para sempre sem traducao, e as mensagens dela continuariam sem dono.
+   * Existe porque o endereco alternativo do envelope so aparece em MENSAGEM.
+   * O 7.x melhorou o alcance dele — agora tambem entrega o LID de uma conversa
+   * endereçada pelo telefone, o que o 6.7.23 nunca fez —, mas continua sendo
+   * preciso ter trocado mensagem. Sem esta varredura, um numero que ainda nao
+   * virou conversa ficaria para sempre sem traducao, e a resposta dele chegaria
+   * por um LID sem dono.
    */
   private async sweepLids(): Promise<void> {
     if (this.lidSweepRunning) return

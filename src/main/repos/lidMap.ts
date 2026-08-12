@@ -40,6 +40,15 @@ const fromEnvelope = new Set<string>()
 
 let loaded = false
 
+/**
+ * De onde veio o par.
+ *
+ * `senderPn` = o servidor falando sem ser perguntado (o endereco alternativo do
+ * envelope, hoje `key.remoteJidAlt`, e o evento `lid-mapping.update`);
+ * `usync` = pergunta nossa. O nome e historico — era o campo do Baileys 6.7.23
+ * que virou `remoteJidAlt` no 7.x — e fica como esta porque ja existe gravado na
+ * base dos usuarios.
+ */
 export type LidSource = 'senderPn' | 'usync'
 
 function load(): void {
@@ -56,10 +65,10 @@ function load(): void {
 /**
  * Guarda o par, se ele for novidade ou vier de fonte melhor.
  *
- * `senderPn` ganha de `usync`: o primeiro vem no proprio envelope da mensagem,
- * dito pelo servidor sobre aquela conversa; o segundo e uma consulta nossa, que
- * pode devolver o LID de um numero que a pessoa nao usa mais. Sem esta regra,
- * uma varredura em segundo plano poderia sobrescrever um mapeamento certo.
+ * `senderPn` ganha de `usync`: o primeiro e o servidor falando daquela conversa
+ * por conta propria; o segundo e uma consulta nossa, que pode devolver o LID de
+ * um numero que a pessoa nao usa mais. Sem esta regra, uma varredura em segundo
+ * plano poderia sobrescrever um mapeamento certo.
  */
 export function rememberLid(lidBruto: string, jid: string, source: LidSource): void {
   load()

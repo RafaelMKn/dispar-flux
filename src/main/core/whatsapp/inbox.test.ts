@@ -562,7 +562,7 @@ describe('endereçamento LID', () => {
 
     handleUpsert([
       {
-        key: { id: `L${counter}`, remoteJid: lid, fromMe: false, senderPn: pn },
+        key: { id: `L${counter}`, remoteJid: lid, fromMe: false, remoteJidAlt: pn },
         message: { conversation: 'oi' },
         messageTimestamp: 1_700_000_000
       }
@@ -581,7 +581,7 @@ describe('endereçamento LID', () => {
     const pn = freshJid()
     handleUpsert([
       {
-        key: { id: `L${counter}`, remoteJid: lid, fromMe: false, senderPn: pn },
+        key: { id: `L${counter}`, remoteJid: lid, fromMe: false, remoteJidAlt: pn },
         message: { conversation: 'oi' },
         messageTimestamp: 1_700_000_000
       }
@@ -589,18 +589,57 @@ describe('endereçamento LID', () => {
     expect(getChat(pn)?.lid).toBe(lid)
   })
 
-  it('mensagem NOSSA, que nao traz senderPn, usa o mapa aprendido antes', () => {
+  it('conversa endereçada pelo TELEFONE aprende o LID sem passar a falar por ele', () => {
+    /**
+     * O Baileys 7.x passou a entregar o LID tambem quando a conversa vem pelo
+     * numero. Sao duas coisas distintas, e misturar as duas quebraria o que hoje
+     * funciona:
+     *
+     * - o MAPA aprende (e o que evita a duplicata quando a mesma pessoa
+     *   responder por LID mais tarde);
+     * - `chats.lid` NAO e preenchido. Essa coluna decide por qual endereco o app
+     *   FALA — recibo de leitura, presenca, pedido de historico (`protocolJid`).
+     *   A prova de que o servidor aceita o LID ali e ele ter usado o LID; se a
+     *   conversa chega pelo numero, o numero e o endereco que funciona.
+     */
+    const pn = freshJid()
+    const lid = freshLid()
+
+    handleUpsert([
+      {
+        key: { id: `PN${(counter += 1)}`, remoteJid: pn, fromMe: false, remoteJidAlt: lid },
+        message: { conversation: 'oi' },
+        messageTimestamp: 1_700_000_000
+      }
+    ] as Parameters<typeof handleUpsert>[0])
+
+    expect(countMessages(pn)).toBe(1)
+    expect(getChat(pn)?.lid).toBeNull()
+    // Mas o par ficou aprendido: uma mensagem por LID agora cai na mesma conversa.
+    handleUpsert([
+      {
+        key: { id: `LD${(counter += 1)}`, remoteJid: lid, fromMe: false },
+        message: { conversation: 'de novo' },
+        messageTimestamp: 1_700_000_100
+      }
+    ] as Parameters<typeof handleUpsert>[0])
+
+    expect(countMessages(pn)).toBe(2)
+    expect(getChat(lid)).toBeUndefined()
+  })
+
+  it('mensagem NOSSA, que nao traz o alternativo, usa o mapa aprendido antes', () => {
     /**
      * No log real, 29 dos 46 LIDs so apareciam em mensagens `fromMe` — que nao
-     * carregam `senderPn`. Sem aprender o par na mensagem recebida, essas
-     * ficariam sem dono para sempre.
+     * carregam o endereco alternativo. Sem aprender o par na mensagem recebida,
+     * essas ficariam sem dono para sempre.
      */
     const lid = freshLid()
     const pn = freshJid()
 
     handleUpsert([
       {
-        key: { id: `IN${counter}`, remoteJid: lid, fromMe: false, senderPn: pn },
+        key: { id: `IN${counter}`, remoteJid: lid, fromMe: false, remoteJidAlt: pn },
         message: { conversation: 'oi' },
         messageTimestamp: 1_700_000_000
       }
@@ -632,7 +671,7 @@ describe('endereçamento LID', () => {
     expect(getChat(lid)).toBeUndefined()
   })
 
-  it('o mapa ja gravado resolve um LID sem senderPn nenhum', () => {
+  it('o mapa ja gravado resolve um LID sem alternativo nenhum', () => {
     const lid = freshLid()
     const pn = freshJid()
     rememberLid(lid, pn, 'usync')
