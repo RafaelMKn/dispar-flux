@@ -3,6 +3,8 @@ out/
 dist/
 *.log
 *.tsbuildinfo
+# Config temporario que o electron-vite gera a cada `npm run dev`.
+electron.vite.config.*.mjs
 .DS_Store
 .env
 .env.*
