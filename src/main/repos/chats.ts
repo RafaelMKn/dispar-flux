@@ -780,7 +780,13 @@ export function oldestMessage(
 /** Ancora de um pedido de historico: a tupla que o celular precisa resolver. */
 export interface HistoryAnchor {
   id: string
+  /**
+   * O endereco que vai NO FIO — o LID quando o servidor endereça a conversa
+   * assim, o telefone caso contrario. Ver a nota em `oldestAnchor`.
+   */
   remoteJid: string
+  /** A chave da conversa aqui dentro: sempre o telefone. So para log. */
+  chatJid: string
   fromMe: boolean
   ts: number
 }
@@ -836,6 +842,7 @@ export function oldestAnchor(chatJid: string): HistoryAnchor | null {
   return {
     id: row.waMessageId,
     remoteJid: lid ?? chatJid,
+    chatJid,
     fromMe: row.direction === 'out',
     ts: row.waTs
   }

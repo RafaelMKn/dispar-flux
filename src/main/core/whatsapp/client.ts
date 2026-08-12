@@ -1178,7 +1178,17 @@ class WhatsappService extends EventEmitter {
         tsMs
       )
       log.info('historico antigo solicitado ao celular', {
-        jid: oldest.remoteJid,
+        jid: oldest.chatJid,
+        /**
+         * O endereco que foi NO FIO, separado da conversa.
+         *
+         * Quando o WhatsApp endereça a conversa por LID, o pedido tem que sair
+         * com o LID (o `fetchMessageHistory` manda o `chatJid` verbatim). Sem
+         * separar os dois no log, "pedimos pela conversa certa?" e "pedimos no
+         * endereco certo?" ficam indistinguiveis — e as duas ja falharam em
+         * silencio antes.
+         */
+        enderecoProtocolo: oldest.remoteJid !== oldest.chatJid ? oldest.remoteJid : undefined,
         count,
         anterioresA: new Date(oldest.ts).toISOString(),
         // Vai cru no log de proposito: se um dia voltar a aparecer valor na casa
