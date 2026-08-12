@@ -19,7 +19,8 @@ import {
   clearUnprovenFullSync,
   setChatSync,
   getChatView,
-  leadChatsNeedingFullSync
+  leadChatsNeedingFullSync,
+  mergeLidChats
 } from './chats'
 
 beforeAll(async () => {
@@ -347,5 +348,95 @@ describe('conserto das datas herdadas', () => {
     expect(row?.lastTs).toBeNull()
     expect(row?.lastMessage).toBeNull()
     expect(clearPhantomChatDates()).toBe(0)
+  })
+})
+
+describe('mergeLidChats', () => {
+  it('junta as duas conversas sem duplicar mensagem e guarda o endereco de protocolo', () => {
+    /**
+     * O estrago que o usuario via: 46 conversas duplicadas na inbox. A mesma
+     * pessoa com duas linhas — a que o disparo criou pelo numero e a que a
+     * resposta dela criou pelo LID.
+     */
+    const pn = freshJid()
+    const lid = '71700301529149@lid'
+
+    upsertChat(pn, { lastMessage: 'do disparo', lastTs: 1_000_000 })
+    insertMessages([
+      { id: 'PN-1', chatJid: pn, direction: 'out', body: 'oi', ts: 1_000_000, waMessageId: 'PN-1' }
+    ])
+    upsertChat(lid, { lastMessage: 'resposta', lastTs: 2_000_000 })
+    insertMessages([
+      {
+        id: 'LID-1',
+        chatJid: lid,
+        direction: 'in',
+        body: 'oi de volta',
+        ts: 2_000_000,
+        waMessageId: 'LID-1'
+      }
+    ])
+
+    expect(mergeLidChats([{ lid, jid: pn }])).toBe(1)
+
+    expect(getChat(lid)).toBeUndefined()
+    expect(countMessages(pn)).toBe(2)
+    // O endereco de protocolo e preservado: e por ele que o pedido de historico
+    // e o recibo de leitura precisam sair.
+    expect(getChat(pn)?.lid).toBe(lid)
+  })
+
+  it('preserva o passado MAIS ANTIGO dos dois lados', () => {
+    const pn = freshJid()
+    const lid = '71700301529150@lid'
+    upsertChat(pn, { lastTs: 1_000_000 })
+    setChatSync(pn, { syncedFrom: 5_000_000 })
+    upsertChat(lid, { lastTs: 2_000_000 })
+    setChatSync(lid, { syncedFrom: 1_000_000 })
+
+    mergeLidChats([{ lid, jid: pn }])
+
+    // Perder isso faria a conversa pedir de novo um passado que ja temos.
+    expect(getChat(pn)?.syncedFrom).toBe(1_000_000)
+  })
+
+  it('"completa" so sobrevive se AMBOS os lados provaram estar completos', () => {
+    const pn = freshJid()
+    const lid = '71700301529151@lid'
+    upsertChat(pn, { lastTs: 1 })
+    setChatSync(pn, { syncedFrom: 1, syncedFull: true })
+    upsertChat(lid, { lastTs: 2 })
+    setChatSync(lid, { syncedFrom: 1, syncedFull: false })
+
+    mergeLidChats([{ lid, jid: pn }])
+
+    expect(getChat(pn)?.syncedFull).toBe(0)
+  })
+
+  it('sem conversa pelo telefone, a propria linha vira a canonica', () => {
+    const pn = freshJid()
+    const lid = '71700301529152@lid'
+    upsertChat(lid, { lastMessage: 'oi', lastTs: 3_000_000 })
+    insertMessages([
+      {
+        id: 'SO-LID-1',
+        chatJid: lid,
+        direction: 'in',
+        body: 'oi',
+        ts: 3_000_000,
+        waMessageId: 'SO-LID-1'
+      }
+    ])
+
+    expect(mergeLidChats([{ lid, jid: pn }])).toBe(1)
+
+    expect(getChat(lid)).toBeUndefined()
+    expect(getChat(pn)?.lid).toBe(lid)
+    expect(countMessages(pn)).toBe(1)
+  })
+
+  it('nao faz nada quando nao ha conversa LID para fundir', () => {
+    expect(mergeLidChats([{ lid: '99999999999999@lid', jid: freshJid() }])).toBe(0)
+    expect(mergeLidChats([])).toBe(0)
   })
 })

@@ -22,8 +22,10 @@ import {
   setAvatar,
   unreadIncomingIds,
   getMessageRow,
+  getChat,
   type HistoryAnchor
 } from '../../repos/chats'
+import { rememberLid, phonesNeedingLid } from '../../repos/lidMap'
 import { saveAvatar } from './mediaStore'
 import { webmToOggOpus } from './opusOgg'
 import { SerialQueue } from './requestQueue'
@@ -85,6 +87,18 @@ const RELINK_DISMISSED_KEY = 'wa.relinkNoticeDismissed'
 
 function getPairingRecord(): PairingRecord | null {
   return getJson<PairingRecord | null>(PAIRING_KEY, null)
+}
+
+/**
+ * O endereco pelo qual o SERVIDOR conhece esta conversa.
+ *
+ * A conversa e chaveada pelo telefone aqui dentro (e o que a mantem unica e
+ * casada com a base de leads), mas o WhatsApp pode endereça-la por LID. Recibo
+ * de leitura e presenca precisam sair no endereco dele, ou simplesmente nao
+ * chegam — sem erro nenhum, que e o pior tipo de falha nesta camada.
+ */
+function protocolJid(jid: string): string {
+  return getChat(jid)?.lid ?? jid
 }
 
 /**
@@ -184,6 +198,17 @@ const AVATAR_BATCH = 20
 const AVATAR_GAP_MS = 400
 
 /**
+ * Varredura de LID: mesmo cuidado de ritmo das fotos de perfil.
+ *
+ * O `onWhatsApp` aceita varios numeros por consulta, entao o custo por numero e
+ * baixo — mas a folga entre lotes continua importando: quem varre a base inteira
+ * de uma vez logo apos conectar tem o padrao de trafego de um robo.
+ */
+const LID_SWEEP_BATCH = 200
+const LID_SWEEP_CHUNK = 20
+const LID_SWEEP_GAP_MS = 1500
+
+/**
  * Folga minima entre dois pedidos de historico antigo.
  *
  * Rolar a conversa rapido para cima dispararia varios pedidos seguidos, e
@@ -238,6 +263,8 @@ class WhatsappService extends EventEmitter {
   private lastVersionSource: string | null = null
   /** Evita duas varreduras de foto de perfil concorrentes (reconexao rapida). */
   private avatarSweepRunning = false
+  /** Idem para a varredura de LID. */
+  private lidSweepRunning = false
   /**
    * Fila dos pedidos de historico antigo.
    *
@@ -617,6 +644,8 @@ class WhatsappService extends EventEmitter {
       void this.refreshAvatars().catch((e: unknown) =>
         log.warn('falha ao atualizar fotos de perfil', e)
       )
+      // Idem para a traducao dos LIDs que ainda nao conhecemos.
+      void this.sweepLids().catch((e: unknown) => log.warn('falha na varredura de LID', e))
       return
     }
 
@@ -814,12 +843,23 @@ class WhatsappService extends EventEmitter {
    *
    * Devolve o `jid` que a API retornar — nunca construimos o jid a mao, porque
    * e justamente isso que resolve o 9o digito dos numeros brasileiros.
+   *
+   * DE QUEBRA, APRENDE O LID. O `onWhatsApp` do Baileys ja monta a consulta
+   * USync com `.withLIDProtocol()` e devolve `{ jid, exists, lid }` — o campo
+   * estava sendo descartado aqui. E a segunda fonte de traducao LID→telefone, e
+   * a unica que alcança as conversas em que so vimos mensagens nossas (o
+   * `senderPn` do envelope so vem no que RECEBEMOS: no log real, 29 dos 46 LIDs
+   * so apareciam assim).
    */
   async checkNumbers(phones: string[]): Promise<WaCheckResult[]> {
     const sock = this.socket
     if (!sock) throw new Error('WhatsApp nao esta conectado.')
 
     const results = await sock.onWhatsApp(...phones)
+    for (const r of results ?? []) {
+      const lid = typeof r.lid === 'string' ? r.lid : null
+      if (lid?.endsWith('@lid') && r.jid) rememberLid(lid, r.jid, 'usync')
+    }
     return phones.map((phoneE164) => {
       const digits = phoneE164.replace(/\D/g, '')
       const hit = results?.find((r) => {
@@ -833,6 +873,40 @@ class WhatsappService extends EventEmitter {
         jid: hit?.exists ? hit.jid : null
       }
     })
+  }
+
+  /**
+   * Descobre o LID dos numeros que ja temos, aos poucos.
+   *
+   * Roda em segundo plano depois de conectar, no mesmo molde do
+   * `refreshAvatars` — e pela mesma razao: uma rajada de consultas USync logo
+   * apos o handshake e exatamente o padrao de trafego que chama atencao do
+   * anti-spam.
+   *
+   * Existe porque o `senderPn` do envelope so cobre as conversas em que
+   * RECEBEMOS algo. Sem esta varredura, uma conversa em que so disparamos ficaria
+   * para sempre sem traducao, e as mensagens dela continuariam sem dono.
+   */
+  private async sweepLids(): Promise<void> {
+    if (this.lidSweepRunning) return
+    this.lidSweepRunning = true
+    try {
+      const phones = phonesNeedingLid(LID_SWEEP_BATCH)
+      for (let i = 0; i < phones.length; i += LID_SWEEP_CHUNK) {
+        if (!this.socket) break
+        const lote = phones.slice(i, i + LID_SWEEP_CHUNK)
+        try {
+          await this.checkNumbers(lote)
+        } catch (e) {
+          log.warn('falha ao consultar LID de um lote de numeros', e)
+          break
+        }
+        await new Promise((r) => setTimeout(r, LID_SWEEP_GAP_MS))
+      }
+      if (phones.length > 0) log.info('varredura de LID concluida', { numeros: phones.length })
+    } finally {
+      this.lidSweepRunning = false
+    }
   }
 
   async sendText(jid: string, text: string): Promise<string | null> {
@@ -910,8 +984,10 @@ class WhatsappService extends EventEmitter {
     if (!sock) return
     const ids = unreadIncomingIds(jid)
     if (ids.length === 0) return
+    // Mesma regra da ancora: o recibo vai para o endereco que o servidor usa.
+    const alvo = protocolJid(jid)
     try {
-      await sock.readMessages(ids.map((id) => ({ remoteJid: jid, id, fromMe: false })))
+      await sock.readMessages(ids.map((id) => ({ remoteJid: alvo, id, fromMe: false })))
     } catch (e) {
       // Confirmacao de leitura e best-effort: falhar aqui nao pode impedir o
       // usuario de ler a conversa.
@@ -1080,11 +1156,12 @@ class WhatsappService extends EventEmitter {
   async sendTyping(jid: string, ms: number): Promise<void> {
     const sock = this.socket
     if (!sock) return
+    const alvo = protocolJid(jid)
     try {
-      await sock.presenceSubscribe(jid)
-      await sock.sendPresenceUpdate('composing', jid)
+      await sock.presenceSubscribe(alvo)
+      await sock.sendPresenceUpdate('composing', alvo)
       await new Promise((r) => setTimeout(r, ms))
-      await sock.sendPresenceUpdate('paused', jid)
+      await sock.sendPresenceUpdate('paused', alvo)
     } catch {
       // presenca e best-effort; nunca deve abortar um envio
     }

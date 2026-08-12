@@ -12,12 +12,19 @@
  *     }
  *     if (config.syncFullHistory && PLATFORM_MAP[config.browser[0]]) { ... }
  *
- * O app anunciava `['Ubuntu', 'Chrome', ...]`. `'Ubuntu'` NAO esta no mapa,
- * entao a sub-plataforma continuava `WEB_BROWSER` e o `syncFullHistory: true`
- * nao tinha efeito nenhum. Para o WhatsApp isto era um navegador — e a um
- * navegador ele manda cerca de 3 meses de historico, contra cerca de 1 ano para
- * um cliente desktop. Foi essa lacuna que empurrou o produto para a busca sob
- * demanda, que e o mecanismo nao confiavel do outro lado do problema.
+ * O app anunciava `['Ubuntu', 'Chrome', ...]`, e `'Ubuntu'` NAO esta no mapa —
+ * entao a sub-plataforma continuava `WEB_BROWSER`.
+ *
+ * O EFEITO ERA PELA METADE, e vale ser preciso: o `requireFullSync` viaja no
+ * `generateRegistrationNode` independente do `browser`, entao ele saia. Um log
+ * real de 15 dias mostra o pareamento trazendo ~65 mil mensagens com o progresso
+ * indo de 0 a 100. O que NAO acontecia era a sub-plataforma desktop — e e ela
+ * que decide o TAMANHO da janela. O mesmo log corrobora: a mensagem mais antiga
+ * que o app alcancou era de ~3 meses antes daquele pareamento, exatamente a
+ * janela de navegador, contra cerca de 1 ano de um cliente desktop.
+ *
+ * Foi essa lacuna que empurrou o produto para a busca sob demanda, que e o
+ * mecanismo nao confiavel do outro lado do problema.
  *
  * O TAMANHO DO HISTORICO E NEGOCIADO NO PAREAMENTO, nao a cada login: o
  * `requireFullSync` e o `historySyncConfig` viajam no `generateRegistrationNode`,

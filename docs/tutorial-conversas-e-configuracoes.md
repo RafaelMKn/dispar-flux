@@ -74,6 +74,19 @@ o caso.
 > conectados. E so o nome da plataforma que o app anuncia — e justamente ela que faz o
 > WhatsApp liberar o pacote maior.
 
+### Contato aparecendo duas vezes
+
+O WhatsApp esta trocando a forma de identificar as conversas: em vez do numero,
+ele passa a usar um identificador interno (um "LID"), que nao tem relacao nenhuma com
+o telefone. Enquanto o app nao sabia disso, a mesma pessoa podia virar **duas conversas** —
+uma com o numero e outra com um "numero" que na verdade era esse identificador.
+
+A partir da 0.3.2 o app junta as duas sozinho, e vai descobrindo a traducao conforme
+conversa e valida numeros. Nao ha nada a fazer: as conversas duplicadas somem ao abrir o app,
+e o historico das duas fica junto na que sobra. Se ainda restar alguma, ela some depois que o
+app conseguir descobrir de quem e aquele identificador — o **Copiar diagnostico** mostra
+quantas faltam, no campo `lidChats`.
+
 ### Buscar historico antigo
 
 Ha tres botoes diferentes, e a confusao entre eles e comum:

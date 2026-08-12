@@ -114,6 +114,25 @@ export function unmappedLidChats(): number {
 }
 
 /**
+ * Telefones da base que ainda nao tem LID conhecido.
+ *
+ * Alimenta a varredura por USync. Sao os numeros com quem podemos vir a
+ * conversar — se o WhatsApp endereçar a conversa por LID e nao soubermos
+ * traduzir, a mensagem fica sem dono.
+ */
+export function phonesNeedingLid(limit = 200): string[] {
+  load()
+  const rows = getDb().all<{ phone: string }>(
+    sql`SELECT DISTINCT phone_e164 AS phone FROM contacts
+        WHERE phone_e164 IS NOT NULL
+          AND (contacts.jid IS NULL
+               OR NOT EXISTS (SELECT 1 FROM lid_map m WHERE m.jid = contacts.jid))
+        LIMIT ${limit}`
+  )
+  return rows.map((r) => r.phone)
+}
+
+/**
  * Conversas endereçadas por LID que JA sabemos traduzir — o alvo do merge.
  *
  * O par NAO e apagado depois de fundir a conversa: ele continua sendo a unica

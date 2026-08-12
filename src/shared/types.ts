@@ -76,6 +76,10 @@ export interface WaDiagnostics {
   historyRequests: HistoryRequestLog[]
   chats: number
   messages: number
+  /** Conversas ainda endereçadas por LID que nao sabemos traduzir. */
+  lidChats: number
+  /** Pares LID -> telefone ja conhecidos. */
+  lidMapped: number
   logPath: string
   waLogLevel: string
 }

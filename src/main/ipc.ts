@@ -77,6 +77,7 @@ import {
   resetAutoSync
 } from './core/whatsapp/historySync'
 import { recordRequest, resetRequests, recentRequests } from './core/whatsapp/historyRequests'
+import { unmappedLidChats, countLidMappings } from './repos/lidMap'
 import {
   board,
   createStage,
@@ -230,6 +231,11 @@ export function registerIpc(): void {
     })),
     chats: countChats(),
     messages: countAllMessages(),
+    // Enquanto `lidChats` for maior que zero, ha conversa que o app nao
+    // consegue atribuir a ninguem — e a pergunta que este bloco existe para
+    // responder sem precisar do arquivo de log.
+    lidChats: unmappedLidChats(),
+    lidMapped: countLidMappings(),
     logPath: getLogPath(),
     waLogLevel: WA_LEVEL
   }))

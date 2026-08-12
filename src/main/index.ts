@@ -22,9 +22,11 @@ import {
   repairChatTimestamps,
   clearPhantomChatDates,
   clearUnprovenFullSync,
+  mergeLidChats,
   backfillServerTimestamps,
   refreshLeadFlags
 } from './repos/chats'
+import { mappedLidChats } from './repos/lidMap'
 import { getBackgroundSettings, shouldShowTrayNotice, getJson, setJson } from './settings'
 import { beginQuit, shouldHideOnClose } from './lifecycle'
 
@@ -215,6 +217,19 @@ async function bootstrap(): Promise<void> {
       log.info(`${desmarcadas} conversa(s) voltaram para a fila apos a revisao dos desfechos`)
     }
   }
+  /**
+   * Junta as conversas que o endereçamento LID partiu em duas.
+   *
+   * Roda com o mapa que ja conseguimos montar; conversa LID sem traducao fica
+   * onde esta e a varredura por USync resolve depois, fundindo no proximo boot.
+   * Por isso NAO ha flag one-shot aqui: enquanto sobrar LID por traduzir, ainda
+   * ha trabalho a fazer, e a funcao e barata quando nao ha nada a fundir.
+   */
+  const fundidas = mergeLidChats(mappedLidChats())
+  if (fundidas > 0) {
+    log.info(`${fundidas} conversa(s) duplicada(s) por LID foram unificadas`)
+  }
+
   log.info(`${refreshLeadFlags()} conversa(s) na base de leads`)
 
   // Sem isso o Windows nao mostra as notificacoes do app (ele as associa ao
