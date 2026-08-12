@@ -116,6 +116,14 @@ const BOOTSTRAP_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_lid_map_jid ON lid_map(jid);
 
+  -- Numeros que ja perguntamos ao servidor e que nao tem LID (ainda nao
+  -- migraram). Sem isto a varredura repetiria as mesmas 200 consultas USync a
+  -- cada conexao, para sempre.
+  CREATE TABLE IF NOT EXISTS lid_probe (
+    phone TEXT PRIMARY KEY,
+    at    INTEGER NOT NULL
+  );
+
   -- CRM (Fase 4)
   CREATE TABLE IF NOT EXISTS crm_stages (
     id         TEXT PRIMARY KEY,

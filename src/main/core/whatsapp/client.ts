@@ -23,9 +23,10 @@ import {
   unreadIncomingIds,
   getMessageRow,
   getChat,
+  mergeLidChats,
   type HistoryAnchor
 } from '../../repos/chats'
-import { rememberLid, phonesNeedingLid } from '../../repos/lidMap'
+import { rememberLid, phonesNeedingLid, mappedLidChats, markLidProbed } from '../../repos/lidMap'
 import { saveAvatar } from './mediaStore'
 import { webmToOggOpus } from './opusOgg'
 import { SerialQueue } from './requestQueue'
@@ -265,6 +266,8 @@ class WhatsappService extends EventEmitter {
   private avatarSweepRunning = false
   /** Idem para a varredura de LID. */
   private lidSweepRunning = false
+  /** Pares LID -> telefone aprendidos por consulta nesta sessao (diagnostico). */
+  private lidLearned = 0
   /**
    * Fila dos pedidos de historico antigo.
    *
@@ -808,6 +811,7 @@ class WhatsappService extends EventEmitter {
     pairing: WaDiagnostics['pairing']
     reconnectAttempts: number
     historyQueueDepth: number
+    lidLearned: number
   } {
     const record = getPairingRecord()
     return {
@@ -828,7 +832,8 @@ class WhatsappService extends EventEmitter {
           }
         : null,
       reconnectAttempts: this.reconnectAttempts,
-      historyQueueDepth: this.historyQueue.depth
+      historyQueueDepth: this.historyQueue.depth,
+      lidLearned: this.lidLearned
     }
   }
 
@@ -857,8 +862,19 @@ class WhatsappService extends EventEmitter {
 
     const results = await sock.onWhatsApp(...phones)
     for (const r of results ?? []) {
-      const lid = typeof r.lid === 'string' ? r.lid : null
-      if (lid?.endsWith('@lid') && r.jid) rememberLid(lid, r.jid, 'usync')
+      /**
+       * O servidor pode devolver o LID como jid completo ou so os digitos.
+       *
+       * O parser do Baileys entrega `node.attrs.val` cru, e nao ha garantia de
+       * formato. Exigir o sufixo `@lid` fazia a varredura inteira descartar tudo
+       * em silencio caso viessem digitos — e o log nao tinha como mostrar isso.
+       */
+      const bruto = typeof r.lid === 'string' ? r.lid.trim() : ''
+      if (!bruto || !r.jid) continue
+      const lid = bruto.includes('@') ? bruto : `${bruto}@lid`
+      if (!lid.endsWith('@lid')) continue
+      rememberLid(lid, r.jid, 'usync')
+      this.lidLearned += 1
     }
     return phones.map((phoneE164) => {
       const digits = phoneE164.replace(/\D/g, '')
@@ -892,18 +908,48 @@ class WhatsappService extends EventEmitter {
     this.lidSweepRunning = true
     try {
       const phones = phonesNeedingLid(LID_SWEEP_BATCH)
+      const antes = this.lidLearned
       for (let i = 0; i < phones.length; i += LID_SWEEP_CHUNK) {
         if (!this.socket) break
         const lote = phones.slice(i, i + LID_SWEEP_CHUNK)
         try {
           await this.checkNumbers(lote)
+          // Perguntamos por estes. Quem tinha LID entrou no mapa; quem nao
+          // tinha precisa ficar registrado, senao a proxima conexao refaz
+          // exatamente as mesmas consultas — para sempre, sem aprender nada.
+          markLidProbed(lote)
         } catch (e) {
           log.warn('falha ao consultar LID de um lote de numeros', e)
           break
         }
         await new Promise((r) => setTimeout(r, LID_SWEEP_GAP_MS))
       }
-      if (phones.length > 0) log.info('varredura de LID concluida', { numeros: phones.length })
+      const aprendidos = this.lidLearned - antes
+      if (phones.length > 0) {
+        /**
+         * `aprendidos` e o numero que decide se este caminho serve para alguma
+         * coisa. Antes o log so dizia quantos numeros foram CONSULTADOS, e
+         * "o servidor nao mandou LID" ficava indistinguivel de "o codigo
+         * descartou o que veio".
+         */
+        log.info('varredura de LID concluida', { consultados: phones.length, aprendidos })
+      }
+
+      /**
+       * FUNDIR AGORA, e nao so no proximo boot.
+       *
+       * O merge do bootstrap roda com a `lid_map` como ela estava na execucao
+       * anterior — numa maquina que acabou de atualizar, vazia. Sem esta segunda
+       * passada, a primeira execucao depois de atualizar nao conserta duplicata
+       * nenhuma e o usuario reinicia achando que nada foi corrigido. Foi
+       * exatamente o que aconteceu na 0.3.2.
+       */
+      const fundidas = mergeLidChats(mappedLidChats())
+      if (fundidas > 0) {
+        log.info(`${fundidas} conversa(s) duplicada(s) por LID foram unificadas`)
+        // A lista precisa se redesenhar sem o usuario reiniciar.
+        inboxEvents.emit('changed', { chatJid: '*' })
+      }
     } finally {
       this.lidSweepRunning = false
     }

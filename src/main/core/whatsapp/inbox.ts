@@ -14,7 +14,7 @@ import {
 import { addOptOut } from '../../repos/optOuts'
 import { handleInbound } from '../crm/leads'
 import { isOptOutRequest, jidToE164 } from './optOutDetect'
-import { canonicalJid, isLid } from './lid'
+import { canonicalJid, isLid, harvestGroupLid } from './lid'
 import { scoped } from '../../logger'
 import { saveNow, withBulkWrite } from '../../db'
 import { saveMedia } from './mediaStore'
@@ -209,6 +209,10 @@ interface WaMessageLike {
      * gravado no `lid_map` assim que aparece. Ver `canonicalJid`.
      */
     senderPn?: string | null
+    /** LID de quem falou, em mensagem de grupo. */
+    participant?: string | null
+    /** Telefone de quem falou, em mensagem de grupo. Ver `harvestGroupLid`. */
+    participantPn?: string | null
   }
   message?: WaMessageContent | null
   pushName?: string | null
@@ -332,6 +336,17 @@ interface ParsedMessage {
 
 function parseOne(msg: WaMessageLike): ParsedMessage | null {
   const bruto = msg.key?.remoteJid
+
+  /**
+   * O par LID -> telefone vem de graca aqui, ANTES do descarte.
+   *
+   * A mensagem de grupo continua sendo ignorada (ruido para prospeccao), mas a
+   * chave dela traz `participant` + `participantPn` — e no log real sao 42 pares
+   * distintos, contra 17 vindos de conversa 1:1. Descartar a mensagem sem colher
+   * o par era jogar fora a maior fonte de traducao que temos.
+   */
+  if (msg.key) harvestGroupLid(msg.key)
+
   if (isIgnorableJid(bruto)) return null
 
   /**

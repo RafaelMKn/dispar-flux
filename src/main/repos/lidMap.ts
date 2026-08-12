@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { getDb, scheduleSave } from '../db'
-import { lidMap } from '../db/schema'
+import { lidMap, lidProbe } from '../db/schema'
 
 /**
  * Mapa LID -> telefone.
@@ -15,7 +15,23 @@ import { lidMap } from '../db/schema'
  * ao sql.js por mensagem seria sentida na tela.
  */
 
-/** lid -> jid de telefone. */
+/**
+ * Tira o sufixo de dispositivo do endereco.
+ *
+ * `71700301529149:23@lid` e `71700301529149@lid` sao A MESMA PESSOA — o `:23` e
+ * so qual aparelho dela mandou. O log real tem 7 dos 46 LIDs aparecendo nas duas
+ * formas, e comparar por igualdade crua fazia esses nunca casarem: nem no mapa,
+ * nem na hora de fundir a conversa.
+ *
+ * O resto do codigo ja faz isso ha tempos pelo mesmo motivo — ver `jidToE164`
+ * (`optOutDetect.ts`) e `formatJid` (renderer).
+ */
+export function normalizeLid(lid: string): string {
+  const [user, dominio] = lid.split('@')
+  return dominio ? `${user.split(':')[0]}@${dominio}` : lid
+}
+
+/** lid (normalizado) -> jid de telefone. */
 const byLid = new Map<string, string>()
 /** jid de telefone -> lid. */
 const byJid = new Map<string, string>()
@@ -30,9 +46,10 @@ function load(): void {
   if (loaded) return
   loaded = true
   for (const row of getDb().select().from(lidMap).all()) {
-    byLid.set(row.lid, row.jid)
-    byJid.set(row.jid, row.lid)
-    if (row.source === 'senderPn') fromEnvelope.add(row.lid)
+    const lid = normalizeLid(row.lid)
+    byLid.set(lid, row.jid)
+    byJid.set(row.jid, lid)
+    if (row.source === 'senderPn') fromEnvelope.add(lid)
   }
 }
 
@@ -44,8 +61,9 @@ function load(): void {
  * pode devolver o LID de um numero que a pessoa nao usa mais. Sem esta regra,
  * uma varredura em segundo plano poderia sobrescrever um mapeamento certo.
  */
-export function rememberLid(lid: string, jid: string, source: LidSource): void {
+export function rememberLid(lidBruto: string, jid: string, source: LidSource): void {
   load()
+  const lid = normalizeLid(lidBruto)
   const atual = byLid.get(lid)
   if (atual === jid && (source === 'senderPn') === fromEnvelope.has(lid)) return
   if (atual && atual !== jid && fromEnvelope.has(lid) && source === 'usync') return
@@ -68,7 +86,7 @@ export function rememberLid(lid: string, jid: string, source: LidSource): void {
 /** Telefone por tras deste LID, ou null se ainda nao sabemos. */
 export function pnForLid(lid: string): string | null {
   load()
-  return byLid.get(lid) ?? null
+  return byLid.get(normalizeLid(lid)) ?? null
 }
 
 /** LID deste telefone, ou null. Usado para falar com o servidor. */
@@ -92,25 +110,30 @@ export function resetLidCache(): void {
 }
 
 /**
- * Conversas ainda endereçadas por LID que nao sabemos traduzir.
+ * Toda conversa cuja CHAVE ainda e um LID.
+ *
+ * Sao as linhas duplicadas: a mesma pessoa tem outra conversa pelo telefone.
+ * A resolucao acontece aqui em JS, e nao em SQL, por causa do sufixo de
+ * dispositivo — `71700301529149:23@lid` precisa achar o mapa gravado em
+ * `71700301529149@lid`, e escrever esse `substr`/`instr` em SQL so tornaria a
+ * regra dificil de ler sem ganhar nada (sao dezenas de linhas, nao milhares).
+ */
+function lidChats(): string[] {
+  return getDb()
+    .all<{ jid: string }>(sql`SELECT jid FROM chats WHERE jid LIKE '%@lid'`)
+    .map((r) => r.jid)
+}
+
+/**
+ * Conversas endereçadas por LID que ainda nao sabemos traduzir.
  *
  * E o que a varredura por USync tenta resolver, e o que o diagnostico mostra:
- * enquanto for maior que zero, ha mensagem que o app nao consegue atribuir a
+ * enquanto for maior que zero, ha conversa que o app nao consegue atribuir a
  * ninguem.
  */
 export function unmappedLidChats(): number {
   load()
-  return (
-    getDb()
-      .select({ n: sql<number>`count(*)` })
-      .from(sql`chats`)
-      .where(
-        sql`chats.jid LIKE '%@lid' AND NOT EXISTS (
-        SELECT 1 FROM lid_map m WHERE m.lid = chats.jid
-      )`
-      )
-      .get()?.n ?? 0
-  )
+  return lidChats().filter((jid) => !pnForLid(jid)).length
 }
 
 /**
@@ -127,22 +150,44 @@ export function phonesNeedingLid(limit = 200): string[] {
         WHERE phone_e164 IS NOT NULL
           AND (contacts.jid IS NULL
                OR NOT EXISTS (SELECT 1 FROM lid_map m WHERE m.jid = contacts.jid))
+          AND NOT EXISTS (SELECT 1 FROM lid_probe p WHERE p.phone = contacts.phone_e164)
         LIMIT ${limit}`
   )
   return rows.map((r) => r.phone)
 }
 
 /**
+ * Marca que ja perguntamos por estes numeros.
+ *
+ * Quem respondeu com LID entra no `lid_map` e sai da fila por ali; quem nao
+ * respondeu precisa deste registro, senao a varredura refaz as mesmas consultas
+ * a cada conexao — para sempre, e sem nunca aprender nada.
+ */
+export function markLidProbed(phones: string[]): void {
+  if (phones.length === 0) return
+  const at = Date.now()
+  const db = getDb()
+  for (const phone of phones) {
+    db.insert(lidProbe).values({ phone, at }).onConflictDoNothing().run()
+  }
+  scheduleSave()
+}
+
+/**
  * Conversas endereçadas por LID que JA sabemos traduzir — o alvo do merge.
  *
- * O par NAO e apagado depois de fundir a conversa: ele continua sendo a unica
- * forma de canonicalizar as mensagens que ainda vao chegar com aquele LID.
+ * Devolve a chave REAL da conversa (com sufixo de dispositivo, se houver), que e
+ * o que o merge precisa para achar a linha, junto do telefone canonico.
+ *
+ * O par no `lid_map` NAO e apagado depois de fundir: ele continua sendo a unica
+ * traducao das mensagens que ainda vao chegar por aquele LID.
  */
 export function mappedLidChats(): { lid: string; jid: string }[] {
   load()
-  return getDb()
-    .select({ lid: lidMap.lid, jid: lidMap.jid })
-    .from(lidMap)
-    .where(sql`EXISTS (SELECT 1 FROM chats c WHERE c.jid = ${lidMap.lid})`)
-    .all()
+  const pares: { lid: string; jid: string }[] = []
+  for (const chatJid of lidChats()) {
+    const pn = pnForLid(chatJid)
+    if (pn) pares.push({ lid: chatJid, jid: pn })
+  }
+  return pares
 }

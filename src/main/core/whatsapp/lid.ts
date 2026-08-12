@@ -1,4 +1,4 @@
-import { pnForLid, rememberLid } from '../../repos/lidMap'
+import { pnForLid, rememberLid, normalizeLid } from '../../repos/lidMap'
 
 /**
  * Traducao do endereçamento LID do WhatsApp para o telefone.
@@ -55,5 +55,29 @@ export function canonicalJid(
     return senderPn
   }
 
+  // `pnForLid` ja normaliza o sufixo de dispositivo: `x:23@lid` e `x@lid` sao a
+  // mesma pessoa, e no log real 7 dos 46 LIDs aparecem nas duas formas.
   return pnForLid(jid)
 }
+
+/**
+ * Colhe o par LID -> telefone que vem de graca numa mensagem de GRUPO.
+ *
+ * Mensagem de grupo traz `participant` (o LID de quem falou) e `participantPn`
+ * (o telefone) na mesma chave. O grupo em si continua sendo descartado — e ruido
+ * para uma ferramenta de prospeccao —, mas jogar o PAR fora junto era desperdicio:
+ * no log real sao 42 pares distintos, contra 17 que o `senderPn` de conversa 1:1
+ * resolve. Quem estiver num grupo com o usuario passa a ter a conversa direta ja
+ * traduzida na primeira mensagem.
+ */
+export function harvestGroupLid(key: {
+  participant?: string | null
+  participantPn?: string | null
+}): void {
+  const { participant, participantPn } = key
+  if (!participant || !participantPn) return
+  if (!isLid(participant) || isLid(participantPn)) return
+  rememberLid(participant, participantPn, 'senderPn')
+}
+
+export { normalizeLid }

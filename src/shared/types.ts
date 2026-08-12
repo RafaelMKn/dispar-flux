@@ -80,6 +80,14 @@ export interface WaDiagnostics {
   lidChats: number
   /** Pares LID -> telefone ja conhecidos. */
   lidMapped: number
+  /**
+   * Pares aprendidos por CONSULTA nesta sessao.
+   *
+   * Separado do `lidMapped` de proposito: se ficar em zero com a varredura
+   * rodando, o caminho USync nao esta devolvendo LID nenhum nesta versao do
+   * Baileys, e a traducao depende so do que vem nas mensagens.
+   */
+  lidLearned: number
   logPath: string
   waLogLevel: string
 }

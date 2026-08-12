@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import { initDb } from '../../db'
-import { isLid, canonicalJid } from './lid'
+import { isLid, canonicalJid, harvestGroupLid, normalizeLid } from './lid'
 import { rememberLid, pnForLid, lidForPn, resetLidCache } from '../../repos/lidMap'
 
 beforeAll(async () => {
@@ -120,5 +120,58 @@ describe('lidMap', () => {
     rememberLid(lid, certo, 'senderPn')
 
     expect(pnForLid(lid)).toBe(certo)
+  })
+})
+
+describe('sufixo de dispositivo', () => {
+  it('as duas formas do mesmo LID resolvem para o mesmo telefone', () => {
+    /**
+     * `71700301529149:23@lid` e `71700301529149@lid` sao A MESMA PESSOA — o `:23`
+     * so diz de qual aparelho dela veio. No log real, 7 dos 46 LIDs aparecem nas
+     * duas formas, e a comparacao crua fazia esses nunca casarem: nem no mapa,
+     * nem na hora de fundir a conversa.
+     */
+    const pn = freshPn()
+    const base = '71700301529149@lid'
+    const comDispositivo = '71700301529149:23@lid'
+
+    canonicalJid(comDispositivo, { senderPn: pn })
+
+    expect(canonicalJid(base)).toBe(pn)
+    expect(canonicalJid(comDispositivo)).toBe(pn)
+  })
+
+  it('normalizeLid tira so o dispositivo, preservando o resto', () => {
+    expect(normalizeLid('71700301529149:23@lid')).toBe('71700301529149@lid')
+    expect(normalizeLid('71700301529149@lid')).toBe('71700301529149@lid')
+    // Jid de telefone com dispositivo tambem: `me` chega assim (`...:14@...`).
+    expect(normalizeLid('555181360431:14@s.whatsapp.net')).toBe('555181360431@s.whatsapp.net')
+  })
+})
+
+describe('harvestGroupLid', () => {
+  it('colhe o par que a mensagem de grupo traz de graca', () => {
+    /**
+     * No log real sao 42 pares assim, contra 17 vindos de conversa 1:1. O grupo
+     * continua sendo descartado, mas o par nao.
+     */
+    const lid = freshLid()
+    const pn = freshPn()
+    harvestGroupLid({ participant: lid, participantPn: pn })
+    expect(canonicalJid(lid)).toBe(pn)
+  })
+
+  it('ignora chave sem os dois lados do par', () => {
+    const lid = freshLid()
+    harvestGroupLid({ participant: lid })
+    harvestGroupLid({ participantPn: freshPn() })
+    harvestGroupLid({})
+    expect(canonicalJid(lid)).toBeNull()
+  })
+
+  it('nao aceita um participantPn que tambem e LID', () => {
+    const lid = freshLid()
+    harvestGroupLid({ participant: lid, participantPn: freshLid() })
+    expect(canonicalJid(lid)).toBeNull()
   })
 })

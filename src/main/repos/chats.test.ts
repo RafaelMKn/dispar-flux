@@ -440,3 +440,62 @@ describe('mergeLidChats', () => {
     expect(mergeLidChats([])).toBe(0)
   })
 })
+
+describe('mergeLidChats — sufixo de dispositivo', () => {
+  it('funde as DUAS formas do mesmo LID na mesma conversa do telefone', () => {
+    /**
+     * `x@lid` e `x:23@lid` sao a mesma pessoa. Antes, comparando por igualdade
+     * crua, a segunda forma nunca casava e ficava para sempre como uma terceira
+     * conversa na inbox.
+     */
+    const pn = freshJid()
+    const base = '88800000000001@lid'
+    const comDispositivo = '88800000000001:23@lid'
+
+    upsertChat(pn, { lastMessage: 'do disparo', lastTs: 1_000 })
+    insertMessages([
+      { id: 'D-PN', chatJid: pn, direction: 'out', body: 'oi', ts: 1_000, waMessageId: 'D-PN' }
+    ])
+    upsertChat(base, { lastTs: 2_000 })
+    insertMessages([
+      { id: 'D-BASE', chatJid: base, direction: 'in', body: 'a', ts: 2_000, waMessageId: 'D-BASE' }
+    ])
+    upsertChat(comDispositivo, { lastTs: 3_000 })
+    insertMessages([
+      {
+        id: 'D-DEV',
+        chatJid: comDispositivo,
+        direction: 'in',
+        body: 'b',
+        ts: 3_000,
+        waMessageId: 'D-DEV'
+      }
+    ])
+
+    expect(
+      mergeLidChats([
+        { lid: base, jid: pn },
+        { lid: comDispositivo, jid: pn }
+      ])
+    ).toBe(2)
+
+    expect(getChat(base)).toBeUndefined()
+    expect(getChat(comDispositivo)).toBeUndefined()
+    expect(countMessages(pn)).toBe(3)
+  })
+
+  it('rodar o merge duas vezes nao duplica nem perde mensagem', () => {
+    // Ele roda no boot E ao fim da varredura de LID: precisa ser idempotente.
+    const pn = freshJid()
+    const lid = '88800000000002@lid'
+    upsertChat(pn, { lastTs: 1_000 })
+    upsertChat(lid, { lastTs: 2_000 })
+    insertMessages([
+      { id: 'IDEM-1', chatJid: lid, direction: 'in', body: 'x', ts: 2_000, waMessageId: 'IDEM-1' }
+    ])
+
+    expect(mergeLidChats([{ lid, jid: pn }])).toBe(1)
+    expect(mergeLidChats([{ lid, jid: pn }])).toBe(0)
+    expect(countMessages(pn)).toBe(1)
+  })
+})

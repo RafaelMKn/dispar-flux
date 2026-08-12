@@ -122,6 +122,18 @@ export const lidMap = sqliteTable('lid_map', {
   at: integer('at').notNull()
 })
 
+/**
+ * Numeros ja perguntados ao servidor que nao devolveram LID.
+ *
+ * Sao os contatos que ainda nao migraram para o endereçamento novo. Guardar isso
+ * evita que a varredura refaca as mesmas consultas USync a cada conexao —
+ * rajada repetida e justamente o padrao de trafego que o resto do app evita.
+ */
+export const lidProbe = sqliteTable('lid_probe', {
+  phone: text('phone').primaryKey(),
+  at: integer('at').notNull()
+})
+
 export const messages = sqliteTable('messages', {
   // id = waMessageId quando existe; garante idempotencia se o Baileys reemitir.
   id: text('id').primaryKey(),
