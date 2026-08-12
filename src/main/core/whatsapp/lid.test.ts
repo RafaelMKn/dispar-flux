@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import { initDb } from '../../db'
-import { isLid, canonicalJid, harvestGroupLid, normalizeLid } from './lid'
+import { isLid, canonicalJid, harvestGroupLid, normalizeLid, learnLidPair } from './lid'
 import { rememberLid, pnForLid, lidForPn, resetLidCache } from '../../repos/lidMap'
 
 beforeAll(async () => {
@@ -180,6 +180,31 @@ describe('sufixo de dispositivo', () => {
 
     expect(canonicalJid(base)).toBe(pn)
     expect(canonicalJid(comDispositivo)).toBe(pn)
+  })
+
+  it('o telefone e normalizado ao ser aprendido, nao so o LID', () => {
+    /**
+     * O `getPNsForLIDs` do Baileys 7.x devolve o telefone com o dispositivo
+     * SEMPRE colado — `555181360431:0@s.whatsapp.net`, inclusive quando e zero.
+     * O `rememberLid` normalizava so o lado do LID, entao o mapa passaria a
+     * apontar para um jid que nao existe em conversa nenhuma: o diagnostico
+     * mostraria a traducao como resolvida e o merge nao acharia a linha.
+     */
+    const lid = freshLid()
+    const pn = freshPn()
+
+    expect(learnLidPair(lid, `${pn.split('@')[0]}:0@s.whatsapp.net`, 'usync')).toBe(true)
+    expect(pnForLid(lid)).toBe(pn)
+    // E a chave que sai para a conversa tambem vem limpa.
+    expect(canonicalJid(lid)).toBe(pn)
+  })
+
+  it('o alternativo com dispositivo nao cria conversa paralela por aparelho', () => {
+    const lid = freshLid()
+    const pn = freshPn()
+    const comAparelho = `${pn.split('@')[0]}:17@s.whatsapp.net`
+
+    expect(canonicalJid(lid, { alt: comAparelho })).toBe(pn)
   })
 
   it('normalizeLid tira so o dispositivo, preservando o resto', () => {

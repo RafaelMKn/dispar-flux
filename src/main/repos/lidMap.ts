@@ -146,6 +146,21 @@ export function unmappedLidChats(): number {
 }
 
 /**
+ * As mesmas conversas do `unmappedLidChats`, mas os jids em vez da contagem.
+ *
+ * Alimenta a reconciliacao contra o store do Baileys (`getPNsForLIDs`), que e o
+ * unico caminho para o sentido LID -> telefone: a varredura por USync so sabe
+ * perguntar o LID de um numero que ja temos, e estas conversas sao justamente
+ * as de gente que nao esta na base.
+ */
+export function unmappedLidChatJids(limit = 500): string[] {
+  load()
+  return lidChats()
+    .filter((jid) => !pnForLid(jid))
+    .slice(0, limit)
+}
+
+/**
  * Telefones da base que ainda nao tem LID conhecido.
  *
  * Alimenta a varredura por USync. Sao os numeros com quem podemos vir a

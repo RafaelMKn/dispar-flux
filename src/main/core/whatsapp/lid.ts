@@ -63,6 +63,13 @@ function isPhoneJid(jid: string | null | undefined): boolean {
  * momento da migracao, e repetir a checagem em quatro lugares e como um
  * deles acabaria divergindo.
  *
+ * O TELEFONE E NORMALIZADO AQUI, e nao so o LID. O `rememberLid` ja tira o
+ * sufixo de dispositivo do lado do LID, mas deixava o telefone como veio — e o
+ * `getPNsForLIDs` do Baileys 7.x devolve `555181360431:0@s.whatsapp.net`, com o
+ * dispositivo SEMPRE colado, ate quando e zero. Guardar isso faria o mapa
+ * apontar para um jid que nao existe em conversa nenhuma: a traducao pareceria
+ * certa no diagnostico e nao casaria com nada na hora de fundir.
+ *
  * Devolve se o par foi aceito — quem varre lotes usa isso para contar.
  */
 export function learnLidPair(
@@ -72,7 +79,7 @@ export function learnLidPair(
 ): boolean {
   if (!lid || !pn) return false
   if (!isLid(lid) || !isPhoneJid(pn)) return false
-  rememberLid(lid, pn, source)
+  rememberLid(lid, normalizeLid(pn), source)
   return true
 }
 
@@ -126,8 +133,10 @@ export function canonicalJid(
   if (isPhoneJid(alt)) {
     // Aprende antes de usar: e o que faz a proxima mensagem `fromMe` desta
     // mesma conversa — que costuma vir sem o alternativo — ser resolvida.
-    rememberLid(jid, alt!, 'senderPn')
-    return alt!
+    learnLidPair(jid, alt, 'senderPn')
+    // Normalizado tambem no retorno: e a CHAVE da conversa saindo daqui, e um
+    // `:17` colado nela criaria uma conversa paralela por aparelho do contato.
+    return normalizeLid(alt!)
   }
 
   // `pnForLid` ja normaliza o sufixo de dispositivo: `x:23@lid` e `x@lid` sao a

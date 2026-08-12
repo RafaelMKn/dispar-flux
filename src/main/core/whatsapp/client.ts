@@ -26,7 +26,12 @@ import {
   mergeLidChats,
   type HistoryAnchor
 } from '../../repos/chats'
-import { phonesNeedingLid, mappedLidChats, markLidProbed } from '../../repos/lidMap'
+import {
+  phonesNeedingLid,
+  mappedLidChats,
+  markLidProbed,
+  unmappedLidChatJids
+} from '../../repos/lidMap'
 import { isLid, learnLidPair } from './lid'
 import { saveAvatar } from './mediaStore'
 import { webmToOggOpus } from './opusOgg'
@@ -221,6 +226,16 @@ const AVATAR_GAP_MS = 400
 const LID_SWEEP_BATCH = 200
 const LID_SWEEP_CHUNK = 20
 const LID_SWEEP_GAP_MS = 1500
+
+/**
+ * Quantas conversas orfas de LID reconciliamos por conexao.
+ *
+ * Teto bem mais alto que o da varredura porque aqui nao ha rede envolvida —
+ * `getPNsForLIDs` le cache e disco. O limite existe so para nao segurar o
+ * `connection: open` lendo milhares de arquivos de uma vez; o que sobrar sai na
+ * proxima conexao.
+ */
+const LID_RECONCILE_BATCH = 500
 
 /**
  * Folga minima entre dois pedidos de historico antigo.
@@ -1047,10 +1062,61 @@ class WhatsappService extends EventEmitter {
    * virou conversa ficaria para sempre sem traducao, e a resposta dele chegaria
    * por um LID sem dono.
    */
+  /**
+   * Pergunta ao Baileys o telefone das conversas que so conhecemos por LID.
+   *
+   * SENTIDO INVERSO do `sweepLids`, e o unico que alcança estas conversas: a
+   * varredura por USync so sabe perguntar o LID de um numero que ja temos, e
+   * estas sao de gente que nunca entrou na base — o contato que respondeu um
+   * disparo antigo, o numero que sumiu da agenda.
+   *
+   * NAO VAI A REDE. O `getPNsForLIDs` le o cache em memoria e o auth state, e
+   * nao tem consulta USync no caminho reverso. O que ele encontra ali foi
+   * gravado pelo proprio Baileys ao processar os `lidPnMappings` do historico e
+   * os envelopes — inclusive de execucoes anteriores, porque isso vive em disco
+   * junto das credenciais. E por isso que esta reconciliacao vale a pena rodar
+   * mesmo sem sincronizacao nova: o dado ja pode estar la, so nunca foi lido
+   * por nos.
+   *
+   * Existe porque uma base antiga acumulou conversa chaveada por LID de quando
+   * o app ainda nao canonicalizava (ate a 0.3.6): 774 de 895 conversas numa
+   * instalacao real. O `sweepLids` nunca teve como resolver essas.
+   */
+  private async reconcileLidChats(): Promise<number> {
+    const sock = this.socket
+    if (!sock) return 0
+
+    const orfas = unmappedLidChatJids(LID_RECONCILE_BATCH)
+    if (orfas.length === 0) return 0
+
+    let aprendidos = 0
+    try {
+      const pares = await sock.signalRepository.lidMapping.getPNsForLIDs(orfas)
+      for (const par of pares ?? []) {
+        if (learnLidPair(par?.lid, par?.pn, 'usync')) aprendidos += 1
+      }
+    } catch (e) {
+      log.warn('falha ao reconciliar conversas endereçadas por LID', e)
+      return 0
+    }
+
+    log.info('reconciliacao de conversas por LID', {
+      semDono: orfas.length,
+      aprendidos,
+      // Zero com `semDono` alto significa que nem o Baileys sabe de quem sao:
+      // so uma sincronizacao de historico nova traz esses pares.
+      restam: orfas.length - aprendidos
+    })
+    return aprendidos
+  }
+
   private async sweepLids(): Promise<void> {
     if (this.lidSweepRunning) return
     this.lidSweepRunning = true
     try {
+      // Antes da varredura: e de graca (nao vai a rede) e pode resolver de uma
+      // vez o passivo que a varredura por USync nunca alcança.
+      await this.reconcileLidChats()
       const phones = phonesNeedingLid(LID_SWEEP_BATCH)
       const antes = this.lidLearned
       for (let i = 0; i < phones.length; i += LID_SWEEP_CHUNK) {
