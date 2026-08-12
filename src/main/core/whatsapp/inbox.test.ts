@@ -343,7 +343,10 @@ describe('handleHistorySet', () => {
       chats: [{ id: lid }],
       contacts: [],
       lidPnMappings: [{ lid, pn }],
-      messages: [incoming(lid, { conversation: 'oi' }), incoming(lid, { conversation: 'tudo bem?' })]
+      messages: [
+        incoming(lid, { conversation: 'oi' }),
+        incoming(lid, { conversation: 'tudo bem?' })
+      ]
     } as never)
 
     expect(countMessages(pn)).toBe(2)
