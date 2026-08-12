@@ -26,8 +26,8 @@ import {
   mergeLidChats,
   type HistoryAnchor
 } from '../../repos/chats'
-import { rememberLid, phonesNeedingLid, mappedLidChats, markLidProbed } from '../../repos/lidMap'
-import { isLid } from './lid'
+import { phonesNeedingLid, mappedLidChats, markLidProbed } from '../../repos/lidMap'
+import { isLid, learnLidPair } from './lid'
 import { saveAvatar } from './mediaStore'
 import { webmToOggOpus } from './opusOgg'
 import { SerialQueue } from './requestQueue'
@@ -620,9 +620,7 @@ class WhatsappService extends EventEmitter {
      */
     sock.ev.on('lid-mapping.update', (par) => {
       try {
-        if (!par?.lid || !par?.pn) return
-        rememberLid(par.lid, par.pn, 'senderPn')
-        this.lidLearned += 1
+        if (learnLidPair(par?.lid, par?.pn, 'senderPn')) this.lidLearned += 1
       } catch (e) {
         log.warn('falha ao gravar mapeamento de LID anunciado pelo servidor', e)
       }
@@ -1027,9 +1025,7 @@ class WhatsappService extends EventEmitter {
     try {
       const pares = await sock.signalRepository.lidMapping.getLIDsForPNs(alvos)
       for (const par of pares ?? []) {
-        if (!par?.lid || !par?.pn || !isLid(par.lid)) continue
-        rememberLid(par.lid, par.pn, 'usync')
-        this.lidLearned += 1
+        if (learnLidPair(par?.lid, par?.pn, 'usync')) this.lidLearned += 1
       }
     } catch (e) {
       log.warn('nao foi possivel consultar o LID de um lote de numeros', e)

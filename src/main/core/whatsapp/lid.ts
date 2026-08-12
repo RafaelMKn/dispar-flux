@@ -1,4 +1,4 @@
-import { pnForLid, rememberLid, normalizeLid } from '../../repos/lidMap'
+import { pnForLid, rememberLid, normalizeLid, type LidSource } from '../../repos/lidMap'
 
 /**
  * Traducao do endereçamento LID do WhatsApp para o telefone.
@@ -51,6 +51,29 @@ export function isLid(jid: string | null | undefined): boolean {
  */
 function isPhoneJid(jid: string | null | undefined): boolean {
   return Boolean(jid?.endsWith('@s.whatsapp.net'))
+}
+
+/**
+ * Grava um par LID -> telefone vindo de fora, com a direcao conferida.
+ *
+ * PORQUE CENTRALIZADO: o Baileys 7.x oferece o par por quatro caminhos — o
+ * endereco alternativo do envelope, o evento `lid-mapping.update`, o
+ * `lidPnMappings` do lote de historico e os campos `lid`/`phoneNumber` do
+ * contato. Cada um deles ja chegou aqui com os lados trocados em algum
+ * momento da migracao, e repetir a checagem em quatro lugares e como um
+ * deles acabaria divergindo.
+ *
+ * Devolve se o par foi aceito — quem varre lotes usa isso para contar.
+ */
+export function learnLidPair(
+  lid: string | null | undefined,
+  pn: string | null | undefined,
+  source: LidSource
+): boolean {
+  if (!lid || !pn) return false
+  if (!isLid(lid) || !isPhoneJid(pn)) return false
+  rememberLid(lid, pn, source)
+  return true
 }
 
 /**
@@ -142,4 +165,4 @@ export function harvestGroupLid(key: {
   }
 }
 
-export { normalizeLid }
+export { normalizeLid, isPhoneJid }

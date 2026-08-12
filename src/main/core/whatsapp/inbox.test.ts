@@ -318,6 +318,74 @@ describe('handleUpsert', () => {
 })
 
 describe('handleHistorySet', () => {
+  /**
+   * `71700301529149@lid` — LIDs proprios para os testes de historico, para nao
+   * colidirem com os do bloco de LID mais abaixo no arquivo.
+   */
+  let lidCounter = 0
+  function freshHistLid(): string {
+    lidCounter += 1
+    return `8800301529${String(lidCounter).padStart(4, '0')}@lid`
+  }
+
+  it('usa o lidPnMappings do lote para salvar conversa endereçada por LID', () => {
+    /**
+     * O BUG QUE ISTO TRAVA: a mensagem de history sync sai de um blob protobuf,
+     * nao de uma stanza ao vivo — ela NAO tem `remoteJidAlt`. O unico jeito de
+     * saber de quem e aquela conversa e o `lidPnMappings` que o Baileys 7.x
+     * manda no mesmo lote. Ignorando esse campo, um lote real de 5000 mensagens
+     * aproveitava 8 conversas e descartava o resto em silencio.
+     */
+    const lid = freshHistLid()
+    const pn = freshJid()
+
+    handleHistorySet({
+      chats: [{ id: lid }],
+      contacts: [],
+      lidPnMappings: [{ lid, pn }],
+      messages: [incoming(lid, { conversation: 'oi' }), incoming(lid, { conversation: 'tudo bem?' })]
+    } as never)
+
+    expect(countMessages(pn)).toBe(2)
+    expect(getChat(pn)).toBeTruthy()
+    expect(getChat(lid)).toBeUndefined()
+  })
+
+  it('aplica o lidPnMappings ANTES das mensagens do mesmo lote', () => {
+    /**
+     * A ordem e o bug inteiro. `applyHistorySet` canonicaliza cada mensagem na
+     * hora em que a le, entao um par aprendido depois nao alcança o lote que
+     * acabou de ser descartado — e o par so chegaria pelo lote seguinte, que
+     * pode nunca vir. Aqui o par e a mensagem viajam juntos, e e a primeira
+     * (e unica) passada que tem que dar conta.
+     */
+    const lid = freshHistLid()
+    const pn = freshJid()
+
+    // Sem nenhum conhecimento previo: o mapa esta limpo por causa do beforeEach.
+    handleHistorySet({
+      lidPnMappings: [{ lid, pn }],
+      messages: [incoming(lid, { conversation: 'primeira passada' })]
+    } as never)
+
+    expect(countMessages(pn)).toBe(1)
+  })
+
+  it('ignora um lidPnMappings com os lados trocados', () => {
+    // Mesma disciplina do `canonicalJid`: quem e LID e quem e telefone se decide
+    // pelo formato. Aceitar a posicao gravaria um LID na chave da conversa.
+    const lid = freshHistLid()
+    const pn = freshJid()
+
+    handleHistorySet({
+      lidPnMappings: [{ lid: pn, pn: lid }],
+      messages: [incoming(lid, { conversation: 'nao deveria entrar' })]
+    } as never)
+
+    expect(getChat(lid)).toBeUndefined()
+    expect(countMessages(pn)).toBe(0)
+  })
+
   it('preenche conversa antiga sem marcar como nao lida nem disparar opt-out', () => {
     const jid = freshJid()
     handleHistorySet({
@@ -729,5 +797,31 @@ describe('endereçamento LID', () => {
     handleContacts([{ id: lid, name: 'Fulano' }])
 
     expect(getChat(pn)?.name).toBe('Fulano')
+  })
+
+  it('o contato do 7.x traz o par lid/phoneNumber e ensina o mapa sozinho', () => {
+    /**
+     * Quarta fonte de traducao, e a unica que chega junto da agenda: o `Contact`
+     * do Baileys 7.x tem `lid` e `phoneNumber` proprios. Sem le-los, um LID que
+     * so aparece na agenda continuaria sem dono ate a varredura alcança-lo.
+     *
+     * O par e colhido mesmo sem nome — este contato nao serviria para mais nada.
+     */
+    const lid = freshLid()
+    const pn = freshJid()
+
+    handleContacts([{ id: lid, lid, phoneNumber: pn }])
+
+    // A mensagem que chegar depois ja encontra a traducao pronta.
+    handleUpsert([
+      {
+        key: { id: `AG${(counter += 1)}`, remoteJid: lid, fromMe: false },
+        message: { conversation: 'oi' },
+        messageTimestamp: 1_700_000_000
+      }
+    ] as Parameters<typeof handleUpsert>[0])
+
+    expect(countMessages(pn)).toBe(1)
+    expect(getChat(lid)).toBeUndefined()
   })
 })
