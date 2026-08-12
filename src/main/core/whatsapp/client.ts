@@ -30,7 +30,8 @@ import {
   phonesNeedingLid,
   mappedLidChats,
   markLidProbed,
-  unmappedLidChatJids
+  unmappedLidChatJids,
+  unmappedLidChats
 } from '../../repos/lidMap'
 import { isLid, learnLidPair } from './lid'
 import { saveAvatar } from './mediaStore'
@@ -236,6 +237,13 @@ const LID_SWEEP_GAP_MS = 1500
  * proxima conexao.
  */
 const LID_RECONCILE_BATCH = 500
+
+/**
+ * Teto de passadas por conexao. 500 x 20 = 10 mil conversas, folgado para uma
+ * base real (a maior vista tinha 895 conversas no total) e ainda assim um freio
+ * caso algo passe a devolver orfas sem nunca resolve-las.
+ */
+const LID_RECONCILE_MAX_PASSES = 20
 
 /**
  * Folga minima entre dois pedidos de historico antigo.
@@ -1048,21 +1056,6 @@ class WhatsappService extends EventEmitter {
   }
 
   /**
-   * Descobre o LID dos numeros que ja temos, aos poucos.
-   *
-   * Roda em segundo plano depois de conectar, no mesmo molde do
-   * `refreshAvatars` — e pela mesma razao: uma rajada de consultas USync logo
-   * apos o handshake e exatamente o padrao de trafego que chama atencao do
-   * anti-spam.
-   *
-   * Existe porque o endereco alternativo do envelope so aparece em MENSAGEM.
-   * O 7.x melhorou o alcance dele — agora tambem entrega o LID de uma conversa
-   * endereçada pelo telefone, o que o 6.7.23 nunca fez —, mas continua sendo
-   * preciso ter trocado mensagem. Sem esta varredura, um numero que ainda nao
-   * virou conversa ficaria para sempre sem traducao, e a resposta dele chegaria
-   * por um LID sem dono.
-   */
-  /**
    * Pergunta ao Baileys o telefone das conversas que so conhecemos por LID.
    *
    * SENTIDO INVERSO do `sweepLids`, e o unico que alcança estas conversas: a
@@ -1086,30 +1079,86 @@ class WhatsappService extends EventEmitter {
     const sock = this.socket
     if (!sock) return 0
 
-    const orfas = unmappedLidChatJids(LID_RECONCILE_BATCH)
-    if (orfas.length === 0) return 0
+    const semDonoAntes = unmappedLidChats()
+    if (semDonoAntes === 0) return 0
 
     let aprendidos = 0
-    try {
-      const pares = await sock.signalRepository.lidMapping.getPNsForLIDs(orfas)
-      for (const par of pares ?? []) {
-        if (learnLidPair(par?.lid, par?.pn, 'usync')) aprendidos += 1
+    let consultados = 0
+
+    /**
+     * Passadas ate drenar, e nao um lote so por conexao.
+     *
+     * O lote existe para nao segurar o `connection: open` lendo milhares de
+     * arquivos de uma vez, mas parar no primeiro deixaria o usuario reiniciando
+     * o app para escoar o passivo — e sem nada no log dizendo que era preciso.
+     * Como aqui nao ha rede, o custo de continuar e I/O local: 500 conversas
+     * levaram ~1,5s numa base real.
+     *
+     * Para quando nao ha mais orfa, quando uma passada nao aprende nada (o
+     * Baileys tambem nao sabe de quem sao) ou no teto total.
+     */
+    for (let passada = 0; passada < LID_RECONCILE_MAX_PASSES; passada += 1) {
+      if (!this.socket) break
+
+      const orfas = unmappedLidChatJids(LID_RECONCILE_BATCH)
+      if (orfas.length === 0) break
+
+      let nesta = 0
+      try {
+        const pares = await sock.signalRepository.lidMapping.getPNsForLIDs(orfas)
+        for (const par of pares ?? []) {
+          if (learnLidPair(par?.lid, par?.pn, 'usync')) nesta += 1
+        }
+      } catch (e) {
+        log.warn('falha ao reconciliar conversas endereçadas por LID', e)
+        break
       }
-    } catch (e) {
-      log.warn('falha ao reconciliar conversas endereçadas por LID', e)
-      return 0
+
+      consultados += orfas.length
+      aprendidos += nesta
+      // Nada aprendido nesta passada = as restantes tambem nao vao resolver, e
+      // a proxima consulta traria exatamente os mesmos jids.
+      if (nesta === 0) break
     }
 
+    if (consultados === 0) return 0
+
     log.info('reconciliacao de conversas por LID', {
-      semDono: orfas.length,
+      /** Quantas conversas estavam sem dono ANTES desta reconciliacao. */
+      semDono: semDonoAntes,
+      consultados,
       aprendidos,
-      // Zero com `semDono` alto significa que nem o Baileys sabe de quem sao:
-      // so uma sincronizacao de historico nova traz esses pares.
-      restam: orfas.length - aprendidos
+      /**
+       * O que continua sem dono no banco — recontado, e nao deduzido do lote.
+       *
+       * A primeira versao disto reportava `orfas.length - aprendidos`, que era o
+       * saldo de UM lote e nao do banco: com 774 orfas e teto de 500, o log
+       * dizia "restam 9" enquanto 283 seguiam quebradas. Numero de log que
+       * engana e pior que numero nenhum.
+       *
+       * Enquanto for maior que zero, nem o Baileys sabe de quem sao: so uma
+       * sincronizacao de historico nova traz esses pares.
+       */
+      restam: unmappedLidChats()
     })
     return aprendidos
   }
 
+  /**
+   * Descobre o LID dos numeros que ja temos, aos poucos.
+   *
+   * Roda em segundo plano depois de conectar, no mesmo molde do
+   * `refreshAvatars` — e pela mesma razao: uma rajada de consultas USync logo
+   * apos o handshake e exatamente o padrao de trafego que chama atencao do
+   * anti-spam.
+   *
+   * Existe porque o endereco alternativo do envelope so aparece em MENSAGEM.
+   * O 7.x melhorou o alcance dele — agora tambem entrega o LID de uma conversa
+   * endereçada pelo telefone, o que o 6.7.23 nunca fez —, mas continua sendo
+   * preciso ter trocado mensagem. Sem esta varredura, um numero que ainda nao
+   * virou conversa ficaria para sempre sem traducao, e a resposta dele chegaria
+   * por um LID sem dono.
+   */
   private async sweepLids(): Promise<void> {
     if (this.lidSweepRunning) return
     this.lidSweepRunning = true

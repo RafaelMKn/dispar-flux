@@ -153,7 +153,7 @@ export function unmappedLidChats(): number {
  * perguntar o LID de um numero que ja temos, e estas conversas sao justamente
  * as de gente que nao esta na base.
  */
-export function unmappedLidChatJids(limit = 500): string[] {
+export function unmappedLidChatJids(limit: number): string[] {
   load()
   return lidChats()
     .filter((jid) => !pnForLid(jid))
