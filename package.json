@@ -1,6 +1,6 @@
 {
   "name": "dispar-flux",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "App desktop open-source para gestao de campanhas no WhatsApp (Baileys embutido).",
   "author": {
     "name": "RafaelMKn",
@@ -26,7 +26,7 @@
     "release": "electron-vite build && electron-builder --win --config electron-builder.yml --publish always"
   },
   "dependencies": {
-    "baileys": "^6.7.23",
+    "baileys": "7.0.0-rc14",
     "drizzle-orm": "^0.38.3",
     "electron-updater": "^6.8.9",
     "libphonenumber-js": "^1.13.9",

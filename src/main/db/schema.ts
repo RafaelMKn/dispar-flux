@@ -106,18 +106,29 @@ export const chats = sqliteTable('chats', {
 /**
  * De qual telefone e cada LID.
  *
- * O WhatsApp entrega o par de duas formas, e as duas ja existem no Baileys
- * 6.7.23: o `senderPn` que vem junto da chave da mensagem (cobre so as
- * mensagens recebidas — as `fromMe` nao trazem) e o campo `lid` que o
- * `onWhatsApp` devolve ao validar um numero. Sem guardar isso, cada reinicio
- * recomeçaria do zero e a conversa voltaria a se partir em duas.
+ * O WhatsApp entrega o par por tres caminhos, todos no Baileys 7.x: o endereco
+ * alternativo que vem junto da chave da mensagem (`key.remoteJidAlt`, so nas
+ * recebidas — as `fromMe` nao trazem), o evento `lid-mapping.update`, e a
+ * consulta do `signalRepository.lidMapping`, que o `sweepLids` usa. Sem guardar
+ * isso, cada reinicio recomeçaria do zero e a conversa voltaria a se partir em
+ * duas.
+ *
+ * ESTA TABELA E NOSSA, e nao duplicata do `LIDMappingStore` do Baileys: aquele
+ * vive junto das credenciais (`userData/wa-auth`) e some quando a sessao e
+ * refeita, alem de nao servir ao merge de conversas nem ao diagnostico.
  */
 export const lidMap = sqliteTable('lid_map', {
   /** `71700301529149@lid` */
   lid: text('lid').primaryKey(),
   /** `555184579349@s.whatsapp.net` */
   jid: text('jid').notNull(),
-  /** Como descobrimos: 'senderPn' (do envelope) ou 'usync' (consulta). */
+  /**
+   * Como descobrimos: 'senderPn' (o servidor falando — envelope da mensagem ou
+   * evento) ou 'usync' (pergunta nossa). O nome `senderPn` e historico: era o
+   * campo do Baileys 6.7.23 que virou `remoteJidAlt` no 7.x. Fica como esta
+   * porque e dado ja gravado na base dos usuarios, e renomear exigiria migracao
+   * para nao mudar nada. Ver a regra de precedencia em `repos/lidMap`.
+   */
   source: text('source').notNull(),
   at: integer('at').notNull()
 })

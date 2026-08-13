@@ -14,7 +14,7 @@ import {
 import { addOptOut } from '../../repos/optOuts'
 import { handleInbound } from '../crm/leads'
 import { isOptOutRequest, jidToE164 } from './optOutDetect'
-import { canonicalJid, isLid, harvestGroupLid } from './lid'
+import { canonicalJid, isLid, harvestGroupLid, learnLidPair } from './lid'
 import { scoped } from '../../logger'
 import { saveNow, withBulkWrite } from '../../db'
 import { saveMedia } from './mediaStore'
@@ -202,17 +202,30 @@ interface WaMessageLike {
     remoteJid?: string | null
     fromMe?: boolean | null
     /**
-     * Telefone por tras do `remoteJid` quando ele e um LID.
+     * O OUTRO endereco desta mesma conversa, dito pelo servidor no envelope.
      *
-     * O Baileys preenche isto a partir do envelope (`sender_pn` na stanza). So
-     * vem nas mensagens RECEBIDAS — as `fromMe` chegam sem, e por isso o par e
-     * gravado no `lid_map` assim que aparece. Ver `canonicalJid`.
+     * CUIDADO — ISTO E BIDIRECIONAL, e nao "o telefone". O Baileys 7.x monta o
+     * campo a partir do `addressing_mode` da stanza: conversa endereçada por LID
+     * traz aqui o TELEFONE; conversa endereçada pelo telefone traz aqui o LID.
+     * Tratar sempre como telefone gravaria um LID na chave da conversa — a
+     * duplicata ao contrario. Quem decide a direcao e `canonicalJid`, pelo
+     * formato dos dois lados.
+     *
+     * Ate o 6.7.23 isto eram dois campos de mao unica (`senderPn`,
+     * `participantPn`) que so existiam no sentido LID -> telefone. A renomeacao
+     * nao quebra o typecheck (a chave e tipada aqui, nao pelo Baileys), entao
+     * esquecer este campo faria a traducao de LID secar EM SILENCIO.
+     *
+     * So vem nas mensagens RECEBIDAS — as `fromMe` chegam sem, e por isso o par
+     * e gravado no `lid_map` assim que aparece.
      */
-    senderPn?: string | null
-    /** LID de quem falou, em mensagem de grupo. */
+    remoteJidAlt?: string | null
+    /** Quem falou, em mensagem de grupo. Pode ser o LID ou o telefone. */
     participant?: string | null
-    /** Telefone de quem falou, em mensagem de grupo. Ver `harvestGroupLid`. */
-    participantPn?: string | null
+    /** O outro endereco de quem falou, em grupo. Ver `harvestGroupLid`. */
+    participantAlt?: string | null
+    /** `'lid'` ou `'pn'`. So para log: a direcao se decide pelo formato. */
+    addressingMode?: string | null
   }
   message?: WaMessageContent | null
   pushName?: string | null
@@ -289,6 +302,39 @@ export interface UpsertOptions {
  * Idempotente: usa o id da mensagem como chave primaria, entao reemissao pelo
  * Baileys (comum apos reconexao) nao duplica nada.
  */
+/**
+ * LIDs sem traducao vistos no lote atual, e quantas mensagens cada um custou.
+ *
+ * Vive no modulo, e nao numa variavel local, porque quem descobre o problema e
+ * o `parseOne`, la no fundo, e quem sabe onde o lote termina e o `handleUpsert`.
+ */
+const lidsSemTelefone = new Map<string, number>()
+
+/** Resume num log so o que foi descartado por falta de traducao. */
+function flushLidsSemTelefone(): void {
+  if (lidsSemTelefone.size === 0) return
+
+  const conversas = lidsSemTelefone.size
+  const mensagens = [...lidsSemTelefone.values()].reduce((a, b) => a + b, 0)
+  /**
+   * Os piores primeiro, e so alguns.
+   *
+   * Uma conversa antiga com milhares de mensagens e o caso que vale investigar;
+   * a que perdeu duas nao muda decisao nenhuma e so encheria a linha.
+   */
+  const piores = [...lidsSemTelefone.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([lid, n]) => `${lid} (${n})`)
+
+  lidsSemTelefone.clear()
+  log.warn('mensagens descartadas por LID sem telefone conhecido', {
+    conversas,
+    mensagens,
+    piores
+  })
+}
+
 export function handleUpsert(msgs: WaMessageLike[], opts: UpsertOptions = {}): void {
   // Uma so gravacao em disco para o lote inteiro: o `saveNow` exporta o banco
   // completo, e faze-lo por mensagem era o que travava a sincronizacao.
@@ -302,6 +348,7 @@ export function handleUpsert(msgs: WaMessageLike[], opts: UpsertOptions = {}): v
         log.error('falha ao processar mensagem', e)
       }
     }
+    flushLidsSemTelefone()
     if (parsed.length === 0) return
 
     const byId = new Map(parsed.map((p) => [p.input.id, p]))
@@ -341,7 +388,7 @@ function parseOne(msg: WaMessageLike): ParsedMessage | null {
    * O par LID -> telefone vem de graca aqui, ANTES do descarte.
    *
    * A mensagem de grupo continua sendo ignorada (ruido para prospeccao), mas a
-   * chave dela traz `participant` + `participantPn` — e no log real sao 42 pares
+   * chave dela traz `participant` + `participantAlt` — e no log real sao 42 pares
    * distintos, contra 17 vindos de conversa 1:1. Descartar a mensagem sem colher
    * o par era jogar fora a maior fonte de traducao que temos.
    */
@@ -356,12 +403,19 @@ function parseOne(msg: WaMessageLike): ParsedMessage | null {
    * numero e a que a resposta dela criou pelo LID — e so a primeira casa com a
    * base de leads e com o CRM.
    */
-  const jid = canonicalJid(bruto, { senderPn: msg.key?.senderPn })
+  const jid = canonicalJid(bruto, { alt: msg.key?.remoteJidAlt })
   if (!jid) {
-    // LID de quem ainda nao sabemos o telefone. Deixar entrar com o LID cru e
-    // o que produzia a duplicata; a varredura por USync resolve e a mensagem
-    // volta pelo historico depois.
-    log.warn('mensagem de um LID ainda sem telefone conhecido', { lid: bruto })
+    /**
+     * LID de quem ainda nao sabemos o telefone. Deixar entrar com o LID cru e
+     * o que produzia a duplicata; a varredura resolve e a mensagem volta pelo
+     * historico depois.
+     *
+     * CONTADO, E NAO LOGADO AQUI: uma linha por mensagem descartada produzia
+     * um log de milhoes de caracteres num lote de historico (73 mil mensagens),
+     * inutilizando justamente o arquivo que serve para diagnosticar isto. O
+     * resumo por lote sai em `flushLidsSemTelefone`.
+     */
+    lidsSemTelefone.set(bruto!, (lidsSemTelefone.get(bruto!) ?? 0) + 1)
     return null
   }
 
@@ -559,6 +613,38 @@ export function handleMessagesUpdate(
 }
 
 /**
+ * Contato como o Baileys 7.x o entrega, na agenda e no lote de historico.
+ *
+ * Os campos `lid` e `phoneNumber` sao novos e vem preenchidos pelo proprio
+ * servidor — ver `learnLidPair` em `handleContacts`.
+ */
+interface HistoryContact {
+  id?: string | null
+  name?: string | null
+  notify?: string | null
+  lid?: string | null
+  phoneNumber?: string | null
+}
+
+/**
+ * Guarda os pares LID -> telefone que vieram junto do lote de historico.
+ *
+ * Devolve quantos foram aceitos. O numero vai para o log porque e ele que
+ * distingue "o WhatsApp nao mandou par nenhum" de "mandou e nos descartamos" —
+ * dois problemas diferentes que, sem isto, produziam exatamente o mesmo
+ * sintoma: milhares de linhas de "LID ainda sem telefone conhecido".
+ */
+function ingestLidPnMappings(
+  pares: { lid?: string | null; pn?: string | null }[] | undefined
+): number {
+  let aprendidos = 0
+  for (const par of pares ?? []) {
+    if (learnLidPair(par?.lid, par?.pn, 'senderPn')) aprendidos += 1
+  }
+  return aprendidos
+}
+
+/**
  * Nomes vindos de `contacts.upsert` / `contacts.update`.
  *
  * NAO cria conversa. Isto aqui e a agenda do celular: milhares de numeros que
@@ -566,16 +652,23 @@ export function handleMessagesUpdate(
  * de conversas vazias — e todas datadas de hoje, porque nao havia mensagem
  * nenhuma para dar a data. Nome sem conversa so serve quando a conversa existe.
  */
-export function handleContacts(
-  contacts: { id?: string | null; name?: string | null; notify?: string | null }[]
-): void {
+export function handleContacts(contacts: HistoryContact[]): void {
   withBulkWrite(() => {
     let touched = false
     for (const contact of contacts) {
+      /**
+       * O contato do 7.x carrega o par: `lid` e `phoneNumber` sao campos dele.
+       *
+       * Colhido ANTES do descarte, e antes do `canonicalJid` abaixo — inclusive
+       * quando o contato nao tem nome e nao serviria para mais nada. E a quarta
+       * fonte de traducao, e a unica que chega junto da agenda.
+       */
+      learnLidPair(contact.lid, contact.phoneNumber, 'senderPn')
+
       if (isIgnorableJid(contact.id)) continue
-      // A agenda nao traz `senderPn`: um LID daqui so e traduzivel pelo mapa.
-      // Sem traducao o nome iria para uma conversa que nao existe.
-      const jid = canonicalJid(contact.id)
+      // O `id` do contato pode ser o LID; a traducao vem da linha acima ou do
+      // mapa. Sem traducao o nome iria para uma conversa que nao existe.
+      const jid = canonicalJid(contact.id, { alt: contact.phoneNumber ?? contact.lid })
       if (!jid) continue
       const name = contact.name || contact.notify
       if (!name) continue
@@ -653,8 +746,23 @@ export function handleHistorySet(payload: {
     name?: string | null
     conversationTimestamp?: number | Long | null
   }[]
-  contacts?: { id?: string | null; name?: string | null; notify?: string | null }[]
+  contacts?: HistoryContact[]
   messages?: WaMessageLike[]
+  /**
+   * Pares LID -> telefone que vem NO PROPRIO LOTE. Baileys 7.x.
+   *
+   * ESTA E A UNICA FONTE DE TRADUCAO DO HISTORICO, e por isso ela e aplicada
+   * antes de qualquer mensagem ser lida. A mensagem de history sync sai de um
+   * blob protobuf, e nao de uma stanza ao vivo — o `extractAddressingContext`
+   * do Baileys nunca roda nela, entao ela NAO tem `remoteJidAlt`. Sem ler este
+   * campo, toda conversa endereçada por LID no historico e descartada por falta
+   * de dono: 5000 mensagens num lote, 8 conversas aproveitadas.
+   *
+   * O Baileys monta a lista de tres origens (`phoneNumberToLidMappings`, o
+   * `pnJid`/`lidJid` de cada conversa e um fallback que extrai o telefone do
+   * `userReceipt`), entao ler `chat.pnJid` aqui seria redundante.
+   */
+  lidPnMappings?: { lid?: string | null; pn?: string | null }[]
   /** 0..100 informado pelo WhatsApp; null nos lotes sob demanda. */
   progress?: number | null
   /** true no ultimo lote da sincronizacao inicial. */
@@ -664,6 +772,16 @@ export function handleHistorySet(payload: {
   /** Enum `HistorySync.HistorySyncType` do protocolo. 6 = ON_DEMAND. */
   syncType?: number | null
 }): void {
+  /**
+   * PRIMEIRO os pares, DEPOIS as mensagens.
+   *
+   * A ordem e o ponto todo: `applyHistorySet` canonicaliza cada mensagem na
+   * hora em que a le, entao um par aprendido depois nao alcança o lote que
+   * acabou de ser descartado. O WhatsApp manda os dois juntos justamente para
+   * isso funcionar numa passada so.
+   */
+  const paresAprendidos = ingestLidPnMappings(payload.lidPnMappings)
+
   /** Quantas mensagens realmente entraram, por conversa. */
   const gravadas = new Map<string, number>()
   const contarGravadas = (p: { chatJid: string }): void => {
@@ -690,7 +808,7 @@ export function handleHistorySet(payload: {
   const jidsDoLote = [
     ...new Set(
       (payload.messages ?? [])
-        .map((m) => canonicalJid(m.key?.remoteJid, { senderPn: m.key?.senderPn }))
+        .map((m) => canonicalJid(m.key?.remoteJid, { alt: m.key?.remoteJidAlt }))
         .filter((j): j is string => Boolean(j) && !isIgnorableJid(j))
     )
   ]
@@ -702,6 +820,9 @@ export function handleHistorySet(payload: {
     mensagens,
     novas,
     progresso: payload.progress ?? null,
+    // Zero aqui num lote cheio de conversa @lid e o sintoma de que o campo
+    // `lidPnMappings` parou de chegar — o resto do lote vai ser descartado.
+    lidsAprendidos: paresAprendidos,
     ultimoLote: payload.isLatest ?? false,
     respostaDoPedido: payload.peerDataRequestSessionId ?? null,
     // Os jids do lote entram no log porque e por eles que a espera do
@@ -772,7 +893,7 @@ function applyHistorySet(payload: {
     for (const chat of payload.chats ?? []) {
       if (isIgnorableJid(chat.id)) continue
       /**
-       * A lista de conversas do lote NAO traz `senderPn`.
+       * A lista de conversas do lote NAO traz endereco alternativo.
        *
        * Um LID daqui so e traduzivel pelo mapa, e sem traducao a conversa nao
        * pode ser criada — seria a duplicata de novo, agora vinda do historico.
@@ -796,7 +917,7 @@ function applyHistorySet(payload: {
     // se ainda precisa pedir algo ao WhatsApp.
     for (const jid of new Set(
       (payload.messages ?? [])
-        .map((m) => canonicalJid(m.key?.remoteJid, { senderPn: m.key?.senderPn }))
+        .map((m) => canonicalJid(m.key?.remoteJid, { alt: m.key?.remoteJidAlt }))
         .filter((j): j is string => Boolean(j))
     )) {
       if (isIgnorableJid(jid)) continue
