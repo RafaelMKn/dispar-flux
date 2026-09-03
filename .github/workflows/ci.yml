@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -7,19 +7,73 @@ on:
 
 jobs:
   validate-baseline:
+    name: Validate Baseline & Governance
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Developer Certificate of Origin (DCO)
+        run: |
+          echo "Verifying Developer Certificate of Origin (DCO) sign-off..."
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            COMMITS=$(git rev-list "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}")
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
+            COMMITS=$(git rev-list "${{ github.event.before }}..${{ github.sha }}")
+          else
+            COMMITS=$(git rev-list -n 1 "${{ github.sha }}")
+          fi
+
+          if [ -z "$COMMITS" ]; then
+            COMMITS="${{ github.sha }}"
+          fi
+
+          FAILED=0
+          for commit in $COMMITS; do
+            msg=$(git log -1 --format=%B "$commit")
+            echo "Checking commit $commit..."
+            if echo "$msg" | grep -qE "^Signed-off-by: .+ <.+@.+>"; then
+              echo "  [PASS] Valid DCO sign-off found in commit $commit"
+            else
+              echo "  [FAIL] Commit $commit is missing valid DCO sign-off (Signed-off-by: Name <email>)"
+              echo "  Commit message was:"
+              echo "$msg"
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "DCO validation failed. Please sign off all commits using 'git commit -s'."
+            exit 1
+          fi
+          echo "All checked commits passed DCO verification."
 
       - name: Validate baseline governance files and structure
         run: |
           echo "Checking baseline governance documents..."
-          test -f CONTEXT.md || { echo "CONTEXT.md missing"; exit 1; }
-          test -f LICENSE || { echo "LICENSE missing"; exit 1; }
-          test -f README.md || { echo "README.md missing"; exit 1; }
-          test -f CONTRIBUTING.md || { echo "CONTRIBUTING.md missing"; exit 1; }
-          test -f DCO || { echo "DCO missing"; exit 1; }
+          test -s CONTEXT.md || { echo "CONTEXT.md missing or empty"; exit 1; }
+          test -s LICENSE || { echo "LICENSE missing or empty"; exit 1; }
+          grep -q "GNU AFFERO GENERAL PUBLIC LICENSE" LICENSE || { echo "LICENSE is not AGPL-3.0"; exit 1; }
+          test -s README.md || { echo "README.md missing or empty"; exit 1; }
+          test -s CONTRIBUTING.md || { echo "CONTRIBUTING.md missing or empty"; exit 1; }
+          test -s DCO || { echo "DCO missing or empty"; exit 1; }
+          test -s docs/plano-mestre-self-hosted-web.md || { echo "docs/plano-mestre-self-hosted-web.md missing or empty"; exit 1; }
           test -d docs/adr || { echo "docs/adr directory missing"; exit 1; }
-          test -f docs/plano-mestre-self-hosted-web.md || { echo "plano-mestre missing"; exit 1; }
+          test -s docs/adr/README.md || { echo "docs/adr/README.md missing or empty"; exit 1; }
+
+          echo "Checking all 63 ADRs (0001 to 0063)..."
+          for i in $(seq -f "%04g" 1 63); do
+            match=$(ls docs/adr/${i}-*.md 2>/dev/null || true)
+            if [ -z "$match" ]; then
+              echo "ADR ${i} missing"
+              exit 1
+            fi
+            if [ ! -s "$match" ]; then
+              echo "ADR ${i} ($match) is empty"
+              exit 1
+            fi
+          done
+          echo "All 63 ADRs verified successfully and are non-empty."
           echo "All baseline governance documents verified successfully."
