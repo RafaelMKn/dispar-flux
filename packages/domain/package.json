@@ -1,0 +1,15 @@
+{
+  "name": "@dispar-flux/domain",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Pure TypeScript domain models, entities, and business rules for Dispar Flux",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "license": "AGPL-3.0-only"
+}

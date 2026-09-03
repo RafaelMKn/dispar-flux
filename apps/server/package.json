@@ -1,0 +1,30 @@
+{
+  "name": "@dispar-flux/server",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Dispar Flux Modular Monolith HTTP & WebSocket Server",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@dispar-flux/auth": "*",
+    "@dispar-flux/campaigns": "*",
+    "@dispar-flux/contracts": "*",
+    "@dispar-flux/database": "*",
+    "@dispar-flux/domain": "*",
+    "@dispar-flux/migration": "*",
+    "@dispar-flux/security": "*",
+    "@dispar-flux/storage-local": "*",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.9",
+    "@types/ws": "^8.18.1"
+  },
+  "license": "AGPL-3.0-only"
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@dispar-flux/crm",
+  "version": "0.0.1",
+  "private": true,
+  "description": "CRM, Funnels, Leads, Calendar, and Follow-up Automation for Dispar Flux",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "dependencies": {
+    "@dispar-flux/domain": "*",
+    "@dispar-flux/contracts": "*",
+    "@dispar-flux/database": "*"
+  },
+  "license": "AGPL-3.0-only"
+}

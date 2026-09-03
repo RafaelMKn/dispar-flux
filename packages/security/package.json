@@ -1,0 +1,19 @@
+{
+  "name": "@dispar-flux/security",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Security hardening middlewares, rate limiting, CSP, CSRF, size limits, and PII sanitization for Dispar Flux",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.13.9"
+  },
+  "license": "AGPL-3.0-only"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@dispar-flux/migration",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Migration package importer and disaster recovery encrypted backup/restore for Dispar Flux",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "dependencies": {
+    "@dispar-flux/domain": "*",
+    "@dispar-flux/database": "*"
+  },
+  "license": "AGPL-3.0-only"
+}

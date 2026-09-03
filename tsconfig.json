@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true
+  },
+  "references": [
+    { "path": "./packages/domain" },
+    { "path": "./packages/contracts" },
+    { "path": "./packages/database" },
+    { "path": "./packages/security" },
+    { "path": "./packages/migration" },
+    { "path": "./packages/auth" },
+    { "path": "./packages/campaigns" },
+    { "path": "./packages/crm" },
+    { "path": "./packages/storage-local" },
+    { "path": "./packages/inbox" },
+    { "path": "./apps/server" }
+  ],
+  "files": []
+}

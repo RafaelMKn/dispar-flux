@@ -1,0 +1,70 @@
+# ==============================================================================
+# Dispar Flux - Production Docker Compose (ADR 0004, ADR 0049)
+# Isolated single-tenant architecture with internal network and Caddy reverse proxy
+# ==============================================================================
+
+name: dispar-flux
+
+services:
+  dispar-flux:
+    image: ghcr.io/rafaelmkn/dispar-flux:1.0.0
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+      - DATA_DIR=/data
+      - OPERATIONAL_TIMEZONE=${OPERATIONAL_TIMEZONE:-America/Sao_Paulo}
+      - RECOVERY_KEY=${RECOVERY_KEY}
+    volumes:
+      - dispar-flux-data:/data
+    networks:
+      - dispar-net
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1024M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - dispar-net
+    depends_on:
+      dispar-flux:
+        condition: service_healthy
+
+volumes:
+  dispar-flux-data:
+  caddy-data:
+    name: dispar-caddy-data
+  caddy-config:
+    name: dispar-caddy-config
+
+networks:
+  dispar-net:
+    name: dispar-flux-internal
+    driver: bridge

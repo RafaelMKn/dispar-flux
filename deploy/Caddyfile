@@ -1,0 +1,69 @@
+# ==============================================================================
+# Dispar Flux - Caddy Reverse Proxy Configuration (ADR 0049)
+# Automatic TLS, WebSocket proxying, security headers, compression, and size limits
+# ==============================================================================
+
+{$DOMAIN:localhost} {
+    # Automatic TLS management (Let's Encrypt / ZeroSSL or internal for localhost)
+    tls internal {
+        on_demand
+    }
+
+    # Enable modern HTTP/3, HTTP/2, and response compression
+    encode zstd gzip
+
+    # Request Body Size Limit (Prevent DOS, ADR 0049)
+    request_body {
+        max_size 32MB
+    }
+
+    # Security Headers (ADR 0049)
+    header {
+        # Prevent MIME-sniffing
+        X-Content-Type-Options nosniff
+
+        # Clickjacking mitigation
+        X-Frame-Options DENY
+
+        # Strict referrer policy
+        Referrer-Policy strict-origin-when-cross-origin
+
+        # HSTS (Strict Transport Security)
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+        # Content Security Policy (CSP)
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' wss: ws:; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none';"
+
+        # Cross-Origin Policies
+        Cross-Origin-Opener-Policy same-origin
+        Cross-Origin-Resource-Policy same-origin
+
+        # Disable browser features not needed
+        Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+
+        # Remove Server disclosure header
+        -Server
+    }
+
+    # Dedicated WebSocket endpoint for real-time messaging events
+    @websocket {
+        path /ws*
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+    reverse_proxy @websocket dispar-flux:3000
+
+    # Application reverse proxy
+    reverse_proxy dispar-flux:3000 {
+        # Forward client IP and original protocol
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up Host {host}
+    }
+
+    # Logging
+    log {
+        output stdout
+        format console
+    }
+}
