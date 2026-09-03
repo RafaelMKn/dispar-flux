@@ -12,13 +12,14 @@
     "apps/*"
   ],
   "scripts": {
-    "test": "tsx --test packages/*/tests/**/*.test.ts && node --test tests/gate-1.0.test.mjs",
+    "test": "tsx --test packages/*/tests/**/*.test.ts && node --test tests/phase1-gate.test.mjs && node --test tests/gate-1.0.test.mjs",
     "test:packages": "tsx --test packages/*/tests/**/*.test.ts",
     "test:gate": "node --test tests/gate-1.0.test.mjs",
     "test:gate:phase0": "node --test tests/phase0-gate.test.mjs",
-    "test:all": "tsx --test packages/*/tests/**/*.test.ts && node --test tests/gate-1.0.test.mjs",
+    "test:gate:phase1": "node --test tests/phase1-gate.test.mjs",
+    "test:all": "tsx --test packages/*/tests/**/*.test.ts && node --test tests/phase1-gate.test.mjs && node --test tests/gate-1.0.test.mjs",
     "typecheck": "tsc --build",
-    "build": "tsc --build"
+    "build": "tsc --build && npm --workspace=@dispar-flux/web run build"
   },
   "devDependencies": {
     "@types/node": "^22.13.9",
