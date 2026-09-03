@@ -77,3 +77,15 @@ jobs:
           done
           echo "All 63 ADRs verified successfully and are non-empty."
           echo "All baseline governance documents verified successfully."
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Phase 0 Gate Test Suite
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node --test tests/phase0-gate.test.mjs

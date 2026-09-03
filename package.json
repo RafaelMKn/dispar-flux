@@ -1,0 +1,12 @@
+{
+  "name": "dispar-flux",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Dispar Flux - Plataforma Web de Atendimento Multiatendente e Mensageria WhatsApp (Edição Comunitária AGPLv3)",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/phase0-gate.test.mjs",
+    "test:gate": "node --test tests/phase0-gate.test.mjs"
+  },
+  "license": "AGPL-3.0-only"
+}
