@@ -1,0 +1,25 @@
+﻿name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate baseline governance files and structure
+        run: |
+          echo "Checking baseline governance documents..."
+          test -f CONTEXT.md || { echo "CONTEXT.md missing"; exit 1; }
+          test -f LICENSE || { echo "LICENSE missing"; exit 1; }
+          test -f README.md || { echo "README.md missing"; exit 1; }
+          test -f CONTRIBUTING.md || { echo "CONTRIBUTING.md missing"; exit 1; }
+          test -f DCO || { echo "DCO missing"; exit 1; }
+          test -d docs/adr || { echo "docs/adr directory missing"; exit 1; }
+          test -f docs/plano-mestre-self-hosted-web.md || { echo "plano-mestre missing"; exit 1; }
+          echo "All baseline governance documents verified successfully."
