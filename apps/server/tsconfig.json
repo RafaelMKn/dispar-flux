@@ -12,6 +12,9 @@
     { "path": "../../packages/security" },
     { "path": "../../packages/auth" },
     { "path": "../../packages/campaigns" },
+    { "path": "../../packages/connector-baileys" },
+    { "path": "../../packages/crm" },
+    { "path": "../../packages/inbox" },
     { "path": "../../packages/migration" },
     { "path": "../../packages/storage-local" }
   ],

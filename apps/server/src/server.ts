@@ -61,6 +61,7 @@ import type {
   ReadyResponse,
   SystemStatusResponse,
 } from '@dispar-flux/contracts';
+import { handleApiRoutes } from './api-router.js';
 
 export interface ServerOptions {
   port?: number;
@@ -339,6 +340,10 @@ export class DisparFluxServer {
       this.sendJson(res, 200, openApiDoc);
       return;
     }
+
+    // --- Dynamic Business API Routes (WhatsApp, Bases, Campaigns, Inbox, CRM, Agenda, Cron) ---
+    const handledByApiRouter = await handleApiRoutes(this, req, res, pathname, method, url);
+    if (handledByApiRouter) return;
 
     // --- Authentication & Onboarding ---
     if (method === 'POST' && pathname === '/api/v1/auth/claim') {
@@ -806,6 +811,16 @@ export class DisparFluxServer {
 
   get database(): DatabaseConnection | null {
     return this.db;
+  }
+
+  broadcast(event: string, payload: unknown): void {
+    if (!this.wss) return;
+    const msg = JSON.stringify({ type: event, event, payload });
+    for (const client of this.wss.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(msg);
+      }
+    }
   }
 }
 

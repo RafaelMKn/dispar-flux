@@ -14,9 +14,12 @@
   "dependencies": {
     "@dispar-flux/auth": "*",
     "@dispar-flux/campaigns": "*",
+    "@dispar-flux/connector-baileys": "*",
     "@dispar-flux/contracts": "*",
+    "@dispar-flux/crm": "*",
     "@dispar-flux/database": "*",
     "@dispar-flux/domain": "*",
+    "@dispar-flux/inbox": "*",
     "@dispar-flux/migration": "*",
     "@dispar-flux/security": "*",
     "@dispar-flux/storage-local": "*",

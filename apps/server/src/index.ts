@@ -36,6 +36,14 @@ async function main() {
   }
 }
 
-if (process.argv[1] && (process.argv[1].endsWith('server/src/index.ts') || process.argv[1].endsWith('server/dist/index.js'))) {
+const normalizedArgv = process.argv[1]?.replace(/\\/g, '/');
+if (
+  normalizedArgv &&
+  (normalizedArgv.endsWith('server/src/index.ts') ||
+    normalizedArgv.endsWith('server/dist/index.js') ||
+    normalizedArgv.endsWith('dist/index.js') ||
+    normalizedArgv.endsWith('src/index.ts'))
+) {
   main();
 }
+

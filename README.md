@@ -1,4 +1,4 @@
-﻿# Dispar Flux
+# Dispar Flux
 
 Plataforma web *self-hosted* de mensageria ativa e relacionamento comercial (Edição Comunitária).
 
@@ -22,7 +22,8 @@ O Dispar Flux foi projetado para equipes que necessitam de soberania sobre sua b
 Toda a evolução do Dispar Flux é orientada por decisões registradas e vocabulário canônico:
 
 - **Linguagem Ubíqua:** [`CONTEXT.md`](CONTEXT.md) define os termos oficiais (Instalação, Organização, Conector, Lead, etc.). Termos proibidos e sinônimos ambíguos estão documentados para preservar consistência técnica e de produto.
-- **Plano Mestre da Plataforma Web:** [`docs/plano-mestre-self-hosted-web.md`](docs/plano-mestre-self-hosted-web.md) detalha as fases de entrega da versão web, modelo de dados, contratos REST/WebSocket e estratégia de migração.
+- **Plano Mestre da Plataforma Web:** [`docs/plano-mestre-self-hosted-web.md`](docs/plano-mestre-self-hosted-web.md) detalha a fundação arquitetural da versão web.
+- **Fases Restantes (Paridade 100% com Desktop):** [`docs/plano-fases-restantes-paridade-100-web.md`](docs/plano-fases-restantes-paridade-100-web.md) estabelece o roteiro de execução (Fases 10 a 18) para atingir 100% de paridade com todas as telas e recursos do app desktop no navegador.
 - **Arquitetura Self-Hosted e Modelo:** [`docs/arquitetura-self-hosted-e-monetizacao.md`](docs/arquitetura-self-hosted-e-monetizacao.md) descreve a separação entre a Edição Comunitária e Recursos Comerciais.
 - **Decisões de Arquitetura (ADRs):** [`docs/adr/`](docs/adr/) reúne os 63 registros de decisão arquitetural (ADR 0001 a ADR 0063).
 - **Design System:** [`docs/design-prompt.md`](docs/design-prompt.md) detalha diretrizes visuais e tokens de interface.

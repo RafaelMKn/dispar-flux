@@ -1,155 +1,72 @@
-import React from 'react';
-import { Header } from './components/Header';
-import { StatusBadge } from './components/StatusBadge';
-import { SystemMetrics } from './components/SystemMetrics';
-import { ReadinessPanel } from './components/ReadinessPanel';
-import { HealthPanel } from './components/HealthPanel';
-import { WebSocketPanel } from './components/WebSocketPanel';
-import { useSystemStatus } from './hooks/useSystemStatus';
-import { useWebSocket } from './hooks/useWebSocket';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import Sidebar from './components/Sidebar';
+import UpdateBanner from './components/UpdateBanner';
+import BasePage from './pages/BasePage';
+import DisparoPage from './pages/DisparoPage';
+import ConfigPage from './pages/ConfigPage';
+import InboxPage from './pages/InboxPage';
+import DocsPage from './pages/DocsPage';
+import KanbanPage from './pages/KanbanPage';
+import AgendaPage from './pages/AgendaPage';
+import CronPage from './pages/CronPage';
+import { useCallback, useEffect, useState } from 'react';
+import { useTheme } from './useTheme';
+import { useWhatsapp } from './useWhatsapp';
+import './services/api';
 
-export function App() {
-  const {
-    health,
-    ready,
-    system,
-    isLoading,
-    lastFetchedAt,
-    autoRefresh,
-    setAutoRefresh,
-    refresh,
-  } = useSystemStatus(5000);
+export function App(): JSX.Element {
+  const { theme, toggle } = useTheme();
+  const wa = useWhatsapp();
+  const [unread, setUnread] = useState(0);
 
-  const {
-    status: wsStatus,
-    events: wsEvents,
-    lastEventAt: wsLastEventAt,
-    reconnectAttempts: wsAttempts,
-    wsUrl,
-    reconnect: wsReconnect,
-    clearEvents: wsClearEvents,
-  } = useWebSocket();
+  const refreshUnread = useCallback(() => {
+    if (window.api?.inbox) {
+      void window.api.inbox.totalUnread().then(setUnread).catch(() => {});
+    }
+  }, []);
 
-  const isClaimed = system.data?.isClaimed;
-  const edition = system.data?.edition || 'community';
-  const version = system.data?.version || health.data?.version || '0.0.1';
+  useEffect(() => {
+    refreshUnread();
+    if (window.api?.inbox) {
+      return window.api.inbox.onChanged(refreshUnread);
+    }
+  }, [refreshUnread]);
+
+  useEffect(() => {
+    const interval = setInterval(refreshUnread, 10_000);
+    return () => clearInterval(interval);
+  }, [refreshUnread]);
 
   return (
-    <div className="app-container">
-      <Header
-        isClaimed={isClaimed}
-        edition={edition}
-        version={version}
-        autoRefresh={autoRefresh}
-        isLoading={isLoading}
-        lastFetchedAt={lastFetchedAt}
-        onToggleAutoRefresh={() => setAutoRefresh(!autoRefresh)}
-        onRefresh={refresh}
-      />
-
-      {/* Top Banner Status Bar */}
-      <div className="status-strip">
-        <div className="status-strip-item">
-          <span className="strip-label">Sistema:</span>
-          <StatusBadge
-            status={system.data ? 'Online' : 'Indisponível'}
-            variant={system.data ? 'success' : 'error'}
-            pulse={!!system.data}
-            size="sm"
+    <BrowserRouter>
+      <div className="flex h-screen w-screen flex-col overflow-hidden bg-surface-base font-sans text-base text-ink">
+        <UpdateBanner />
+        <div className="flex min-h-0 flex-1">
+          <Sidebar
+            theme={theme}
+            onToggleTheme={toggle}
+            connected={wa.status === 'connected'}
+            unread={unread}
           />
-        </div>
-
-        <div className="status-strip-item">
-          <span className="strip-label">Prontidão:</span>
-          <StatusBadge
-            status={ready.data?.status === 'ready' ? 'Pronto' : 'Não Pronto'}
-            variant={ready.data?.status === 'ready' ? 'success' : 'warning'}
-            pulse={ready.data?.status === 'ready'}
-            size="sm"
-          />
-        </div>
-
-        <div className="status-strip-item">
-          <span className="strip-label">Vitalidade:</span>
-          <StatusBadge
-            status={health.data?.status === 'ok' ? 'Saudável' : 'Atenção'}
-            variant={health.data?.status === 'ok' ? 'success' : 'error'}
-            pulse={health.data?.status === 'ok'}
-            size="sm"
-          />
-        </div>
-
-        <div className="status-strip-item">
-          <span className="strip-label">WebSocket:</span>
-          <StatusBadge
-            status={wsStatus === 'connected' ? 'Ao Vivo' : 'Desconectado'}
-            variant={wsStatus === 'connected' ? 'success' : 'warning'}
-            pulse={wsStatus === 'connected'}
-            size="sm"
-          />
+          <main className="min-w-0 flex-1 overflow-y-auto">
+            <Routes>
+              <Route path="/" element={<Navigate to="/disparo" replace />} />
+              <Route path="/inbox" element={<InboxPage />} />
+              <Route path="/disparo" element={<DisparoPage />} />
+              <Route path="/kanban" element={<KanbanPage />} />
+              <Route path="/agenda" element={<AgendaPage />} />
+              <Route path="/cron" element={<CronPage />} />
+              <Route path="/base" element={<BasePage />} />
+              <Route path="/config" element={<ConfigPage />} />
+              <Route path="/docs" element={<DocsPage />} />
+              <Route path="/docs/:slug" element={<DocsPage />} />
+              <Route path="*" element={<Navigate to="/disparo" replace />} />
+            </Routes>
+          </main>
         </div>
       </div>
-
-      <main className="dashboard-content">
-        <div className="dashboard-grid">
-          {/* Main System Status Card */}
-          <div className="grid-col-span-2">
-            <SystemMetrics
-              system={system.data}
-              error={system.error}
-              latencyMs={system.latencyMs}
-            />
-          </div>
-
-          {/* Database & Readiness Card */}
-          <div className="grid-col-1">
-            <ReadinessPanel
-              ready={ready.data}
-              error={ready.error}
-              latencyMs={ready.latencyMs}
-            />
-          </div>
-
-          {/* Healthcheck Card */}
-          <div className="grid-col-1">
-            <HealthPanel
-              health={health.data}
-              error={health.error}
-              latencyMs={health.latencyMs}
-            />
-          </div>
-
-          {/* WebSocket Card */}
-          <div className="grid-col-span-2">
-            <WebSocketPanel
-              status={wsStatus}
-              events={wsEvents}
-              lastEventAt={wsLastEventAt}
-              reconnectAttempts={wsAttempts}
-              wsUrl={wsUrl}
-              onReconnect={wsReconnect}
-              onClearEvents={wsClearEvents}
-            />
-          </div>
-        </div>
-      </main>
-
-      <footer className="app-footer">
-        <div className="footer-content">
-          <p>
-            <strong>Dispar Flux Community Edition</strong> — Licenciado sob GNU AGPLv3.
-            Desenvolvido para auto-hospedagem robusta em VPS.
-          </p>
-          <div className="footer-links">
-            <span>Invariante: 1 Instalação = 1 Organização</span>
-            <span>&bull;</span>
-            <span>SQLite WAL + Lock Exclusivo</span>
-            <span>&bull;</span>
-            <span>Conector Baileys Isolado</span>
-          </div>
-        </div>
-      </footer>
-    </div>
+    </BrowserRouter>
   );
 }
+
 export default App;

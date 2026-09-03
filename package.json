@@ -12,6 +12,11 @@
     "apps/*"
   ],
   "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "node scripts/dev.mjs",
+    "dev:web": "npm --workspace=@dispar-flux/web run dev",
+    "dev:server": "npm --workspace=@dispar-flux/server run start",
+    "start:server": "npm --workspace=@dispar-flux/server run start",
     "test": "tsx --test packages/*/tests/**/*.test.ts && node --test tests/phase1-gate.test.mjs && node --test tests/gate-1.0.test.mjs",
     "test:packages": "tsx --test packages/*/tests/**/*.test.ts",
     "test:gate": "node --test tests/gate-1.0.test.mjs",
