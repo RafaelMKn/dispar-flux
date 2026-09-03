@@ -1,4 +1,4 @@
-﻿# Dependencies
+# Dependencies
 node_modules/
 .pnp
 .pnp.js
@@ -31,7 +31,8 @@ storage/
 # WhatsApp / Baileys sessions
 auth_info/
 auth_info_baileys/
-sessions/
+/sessions/
+!packages/**/src/**/sessions/
 *.session
 
 # Logs
