@@ -250,6 +250,16 @@ describe('Baileys Connector: Adapter Lifecycle & Operations (ADR 0002, 0005, 001
       assert.equal(mockSocket!.sentMessages.length, 2);
       assert.equal(mockSocket!.sentMessages[1]?.content?.caption, 'Legenda da imagem');
       assert.deepEqual(mockSocket!.sentMessages[1]?.content?.image, { url: 'https://disparflux.test/banner.png' });
+
+      // 3. Send text message with 2 arguments and { text: '...' } content
+      const twoArgResult = await connector.sendMessage('conn-1', {
+        to: '5511998765432@s.whatsapp.net',
+        content: { text: 'Mensagem com formato de dois argumentos' },
+      });
+
+      assert.equal(twoArgResult.status, 'sent');
+      assert.equal(mockSocket!.sentMessages.length, 3);
+      assert.deepEqual(mockSocket!.sentMessages[2]?.content, { text: 'Mensagem com formato de dois argumentos' });
     });
   });
 
