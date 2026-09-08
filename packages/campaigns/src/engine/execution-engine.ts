@@ -12,6 +12,7 @@ import {
   type MessagingDispatcher,
   type ExecutionEngineOptions,
   type SleepFunction,
+  type SendMessageResult,
   mapRowToCampaign,
   mapRowToJob,
   type CampaignRow,
@@ -27,6 +28,8 @@ export class CampaignExecutionEngine {
   public readonly serialQueue: SerialAutomationQueue;
   private readonly sleepFn: SleepFunction;
   private readonly suppressionSalt?: string;
+  private readonly onJobProcessed?: (campaign: Campaign, job: CampaignJob, result: SendMessageResult) => void;
+  private readonly onCampaignCompleted?: (campaign: Campaign) => void;
   private readonly lastSentAtByConnection = new Map<string, number>();
 
   constructor(
@@ -38,6 +41,8 @@ export class CampaignExecutionEngine {
     this.serialQueue = new SerialAutomationQueue();
     this.sleepFn = options.sleepFn ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.suppressionSalt = options.suppressionSalt;
+    this.onJobProcessed = options.onJobProcessed;
+    this.onCampaignCompleted = options.onCampaignCompleted;
   }
 
   /**
@@ -239,6 +244,11 @@ export class CampaignExecutionEngine {
                 WHERE id = ?
               `)
               .run(now, now, campaignId);
+
+            if (this.onCampaignCompleted) {
+              const comp = this.campaignService.getCampaign(campaignId);
+              if (comp) this.onCampaignCompleted(comp);
+            }
           }
           break;
         }
@@ -291,6 +301,13 @@ export class CampaignExecutionEngine {
               WHERE id = ?
             `)
             .run(now, campaignId);
+
+          if (this.onJobProcessed) {
+            const updated = this.campaignService.getCampaign(campaignId);
+            if (updated) {
+              this.onJobProcessed(updated, job, { success: false, error: isEligible.reason });
+            }
+          }
 
           continue;
         }
@@ -362,6 +379,13 @@ export class CampaignExecutionEngine {
             .run(resolvedAt, campaignId);
 
           this.lastSentAtByConnection.set(currentCampaign.connectionId, Date.now());
+        }
+
+        if (this.onJobProcessed) {
+          const updated = this.campaignService.getCampaign(campaignId);
+          if (updated) {
+            this.onJobProcessed(updated, job, sendResult);
+          }
         }
       }
     });
