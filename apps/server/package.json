@@ -23,6 +23,8 @@
     "@dispar-flux/migration": "*",
     "@dispar-flux/security": "*",
     "@dispar-flux/storage-local": "*",
+    "@types/qrcode": "^1.5.6",
+    "qrcode": "^1.5.4",
     "ws": "^8.21.3"
   },
   "devDependencies": {

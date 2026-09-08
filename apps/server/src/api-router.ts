@@ -138,17 +138,24 @@ export async function handleApiRoutes(
   if (pathname === '/api/v1/whatsapp/status' && method === 'GET') {
     const connId = getConnectionId();
     const row = db.prepare('SELECT * FROM messaging_connections WHERE id = ?').get(connId) as any;
-    
-    const authDir = path.join(server.dataDir, 'wa-auth', connId);
-    const hasCreds = fs.existsSync(path.join(authDir, 'creds.json'));
 
-    const status = (server as any).whatsappState?.status || (hasCreds ? 'connected' : 'disconnected');
-    const qrDataUrl = (server as any).whatsappState?.qrDataUrl || null;
+    const connectorStatus = server.baileysConnector.getStatus(connId);
+    const status =
+      server.whatsappState?.status && server.whatsappState.status !== 'disconnected'
+        ? server.whatsappState.status
+        : connectorStatus !== 'disconnected'
+          ? connectorStatus
+          : row?.status || 'disconnected';
+
+    const qrDataUrl = server.whatsappState?.qrDataUrl || null;
+    const me =
+      server.whatsappState?.me ||
+      (row?.phone_number ? { id: row.phone_number, name: row.name } : null);
 
     sendJson(res, 200, {
       status,
       qrDataUrl,
-      me: row?.phone_number ? { id: row.phone_number, name: row.name } : null,
+      me,
       lastError: null,
       historyPairing: 'full',
       relinkNoticeDismissed: false,
@@ -158,34 +165,55 @@ export async function handleApiRoutes(
   }
 
   if (pathname === '/api/v1/whatsapp/connect' && method === 'POST') {
-    (server as any).whatsappState = {
-      status: 'pairing',
-      qrDataUrl: 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=DISPAR_FLUX_DEMO_QR_' + Date.now(),
-      me: null,
-    };
-    (server as any).broadcast('whatsapp:state', (server as any).whatsappState);
+    const connId = getConnectionId();
+    try {
+      await server.baileysConnector.connect(connId, { dataDir: server.dataDir, replaceExisting: true });
+    } catch (err) {
+      server.logger.error('Failed to initiate WhatsApp connection', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     sendJson(res, 200, { success: true, message: 'Connecting to WhatsApp' });
     return true;
   }
 
   if (pathname === '/api/v1/whatsapp/disconnect' && method === 'POST') {
-    (server as any).whatsappState = { status: 'disconnected', qrDataUrl: null, me: null };
-    (server as any).broadcast('whatsapp:state', (server as any).whatsappState);
+    const connId = getConnectionId();
+    try {
+      await server.baileysConnector.disconnect(connId);
+    } catch (err) {
+      server.logger.error('Failed to disconnect WhatsApp', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    server.whatsappState = { status: 'disconnected', qrDataUrl: null, me: null };
+    server.broadcast('whatsapp:state', server.whatsappState);
+    db.prepare("UPDATE messaging_connections SET status = 'disconnected', updated_at = ? WHERE id = ?").run(
+      new Date().toISOString(),
+      connId
+    );
     sendJson(res, 200, { success: true });
     return true;
   }
 
   if (pathname === '/api/v1/whatsapp/logout' && method === 'POST') {
     const connId = getConnectionId();
+    try {
+      await server.baileysConnector.disconnect(connId);
+    } catch {}
     const authDir = path.join(server.dataDir, 'wa-auth', connId);
     try {
       if (fs.existsSync(authDir)) {
         fs.rmSync(authDir, { recursive: true, force: true });
       }
     } catch {}
-    db.prepare("UPDATE messaging_connections SET status = 'disconnected', phone_number = NULL WHERE id = ?").run(connId);
-    (server as any).whatsappState = { status: 'disconnected', qrDataUrl: null, me: null };
-    (server as any).broadcast('whatsapp:state', (server as any).whatsappState);
+    const now = new Date().toISOString();
+    db.prepare("UPDATE messaging_connections SET status = 'disconnected', phone_number = NULL, jid = NULL, updated_at = ? WHERE id = ?").run(
+      now,
+      connId
+    );
+    server.whatsappState = { status: 'disconnected', qrDataUrl: null, me: null };
+    server.broadcast('whatsapp:state', server.whatsappState);
     sendJson(res, 200, { success: true });
     return true;
   }
@@ -723,6 +751,27 @@ export async function handleApiRoutes(
     const body = (await (server as any).sizeLimits.readJson(req)) as { text: string };
     const phone = '+' + jid.split('@')[0];
     const now = new Date().toISOString();
+    const connId = getConnectionId();
+
+    let externalId: string | null = null;
+    let messageStatus = 'delivered';
+
+    if (server.baileysConnector.getStatus(connId) === 'connected') {
+      try {
+        const sendResult = await server.baileysConnector.sendMessage(connId, {
+          to: jid,
+          content: { text: body.text },
+        });
+        if (sendResult?.messageId) {
+          externalId = sendResult.messageId;
+        }
+      } catch (err) {
+        server.logger.error('Failed to send WhatsApp message via Baileys', {
+          error: err instanceof Error ? err.message : String(err),
+          jid,
+        });
+      }
+    }
 
     let contact = db.prepare('SELECT id FROM contacts WHERE normalized_phone = ?').get(phone) as { id: string } | undefined;
     if (!contact) {
@@ -740,15 +789,21 @@ export async function handleApiRoutes(
       db.prepare(`
         INSERT INTO conversations (id, organization_id, connection_id, contact_id, unread_count, last_message_at, created_at, updated_at)
         VALUES (?, ?, ?, ?, 0, ?, ?, ?)
-      `).run(convId, getOrgId(), getConnectionId(), contact.id, now, now, now);
+      `).run(convId, getOrgId(), connId, contact.id, now, now, now);
       conv = { id: convId };
+    } else {
+      db.prepare(`
+        UPDATE conversations
+        SET last_message_at = ?, updated_at = ?
+        WHERE id = ?
+      `).run(now, now, conv.id);
     }
 
     const messageId = crypto.randomUUID();
     db.prepare(`
-      INSERT INTO messages (id, conversation_id, direction, type, kind, content, status, created_at)
-      VALUES (?, ?, 'outbound', 'manual', 'manual', ?, 'delivered', ?)
-    `).run(messageId, conv.id, body.text, now);
+      INSERT INTO messages (id, conversation_id, direction, type, kind, content, external_id, status, created_at)
+      VALUES (?, ?, 'outbound', 'manual', 'manual', ?, ?, ?, ?)
+    `).run(messageId, conv.id, body.text, externalId, messageStatus, now);
 
     (server as any).broadcast('inbox:changed', { chatJid: jid });
 
@@ -758,7 +813,7 @@ export async function handleApiRoutes(
       direction: 'out',
       body: body.text,
       timestamp: Date.now(),
-      status: 'delivered',
+      status: messageStatus,
     });
     return true;
   }
