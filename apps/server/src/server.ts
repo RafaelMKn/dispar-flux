@@ -2,6 +2,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 
 import {
@@ -341,9 +342,6 @@ export class DisparFluxServer {
       return;
     }
 
-    // --- Dynamic Business API Routes (WhatsApp, Bases, Campaigns, Inbox, CRM, Agenda, Cron) ---
-    const handledByApiRouter = await handleApiRoutes(this, req, res, pathname, method, url);
-    if (handledByApiRouter) return;
 
     // --- Authentication & Onboarding ---
     if (method === 'POST' && pathname === '/api/v1/auth/claim') {
@@ -384,12 +382,31 @@ export class DisparFluxServer {
         VALUES (?, ?, ?, ?, ?)
       `).run(orgId, body.organizationName.trim(), body.operationalTimezone || 'America/Sao_Paulo', now, now);
 
-      // Create default messaging connection (ADR 0002 & ADR 0005)
-      const defaultConnId = crypto.randomUUID();
-      this.db!.prepare(`
-        INSERT INTO messaging_connections (id, organization_id, name, provider, status, is_default, created_at, updated_at)
-        VALUES (?, ?, 'WhatsApp Principal', 'baileys', 'disconnected', 1, ?, ?)
-      `).run(defaultConnId, orgId, now, now);
+      // Migrate any pre-existing default org records to the claimed organization
+      const defaultOrg = this.db!.prepare("SELECT id FROM organizations WHERE id = 'org_default'").get();
+      if (defaultOrg) {
+        this.db!.prepare("UPDATE messaging_connections SET organization_id = ? WHERE organization_id = 'org_default'").run(orgId);
+        this.db!.prepare("UPDATE bases SET organization_id = ? WHERE organization_id = 'org_default'").run(orgId);
+        this.db!.prepare("UPDATE contacts SET organization_id = ? WHERE organization_id = 'org_default'").run(orgId);
+        this.db!.prepare("UPDATE campaigns SET organization_id = ? WHERE organization_id = 'org_default'").run(orgId);
+        this.db!.prepare("UPDATE conversations SET organization_id = ? WHERE organization_id = 'org_default'").run(orgId);
+        this.db!.prepare("UPDATE funnels SET organization_id = ? WHERE organization_id = 'org_default'").run(orgId);
+        try {
+          this.db!.prepare("UPDATE appointments SET organization_id = ? WHERE organization_id = 'org_default'").run(orgId);
+          this.db!.prepare("UPDATE follow_up_rules SET organization_id = ? WHERE organization_id = 'org_default'").run(orgId);
+        } catch {}
+        this.db!.prepare("DELETE FROM organizations WHERE id = 'org_default'").run();
+      }
+
+      // Create default messaging connection if none exists (ADR 0002 & ADR 0005)
+      const existingConn = this.db!.prepare('SELECT id FROM messaging_connections WHERE organization_id = ? LIMIT 1').get(orgId);
+      if (!existingConn) {
+        const defaultConnId = crypto.randomUUID();
+        this.db!.prepare(`
+          INSERT INTO messaging_connections (id, organization_id, name, provider, status, is_default, created_at, updated_at)
+          VALUES (?, ?, 'WhatsApp Principal', 'baileys', 'disconnected', 1, ?, ?)
+        `).run(defaultConnId, orgId, now, now);
+      }
 
       // Create Owner member
       const member = this.memberService.createMember({
@@ -418,6 +435,8 @@ export class DisparFluxServer {
 
       // Invalidate claim code (destroy file)
       destroyClaimToken(this.dataDir);
+
+      this.setSessionCookie(res, rawToken);
 
       this.sendJson(res, 201, {
         organizationId: orgId,
@@ -484,6 +503,8 @@ export class DisparFluxServer {
 
       const { rawToken } = this.sessionService.createSession(memberRow.id, device.id);
 
+      this.setSessionCookie(res, rawToken);
+
       this.sendJson(res, 200, {
         token: rawToken,
         member: {
@@ -498,7 +519,7 @@ export class DisparFluxServer {
       return;
     }
 
-    if (method === 'GET' && pathname === '/api/v1/auth/session') {
+    if (method === 'GET' && (pathname === '/api/v1/auth/session' || pathname === '/api/v1/auth/me')) {
       const token = this.extractToken(req);
       if (!token) {
         this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
@@ -507,10 +528,14 @@ export class DisparFluxServer {
 
       try {
         const authContext = this.sessionService.validateToken(token);
+        const org = this.db!.prepare('SELECT id, name, operational_timezone FROM organizations WHERE id = ?').get(
+          authContext.member.organizationId
+        );
         this.sendJson(res, 200, {
           session: authContext.session,
           member: authContext.member,
           device: authContext.device,
+          organization: org,
         });
       } catch (err) {
         this.sendJson(res, 401, { error: 'Unauthorized', message: err instanceof Error ? err.message : 'Session invalid' });
@@ -525,12 +550,39 @@ export class DisparFluxServer {
         const now = new Date().toISOString();
         this.db!.prepare('UPDATE sessions SET revoked_at = ? WHERE token_hash = ?').run(now, tokenHash);
       }
+      this.clearSessionCookie(res);
       this.sendJson(res, 200, { success: true });
       return;
     }
 
+    // --- List Devices (ADR 0022) ---
+    if (method === 'GET' && (pathname === '/api/v1/devices' || pathname === '/api/v1/auth/devices')) {
+      const token = this.extractToken(req);
+      if (!token) {
+        this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+        return;
+      }
+      try {
+        const authContext = this.sessionService.validateToken(token);
+        const devices = this.db!.prepare(`
+          SELECT d.id, d.member_id as memberId, d.name, d.device_identifier as deviceIdentifier,
+                 d.is_approved as isApproved, d.approved_at as approvedAt, d.last_seen_at as lastSeenAt,
+                 d.created_at as createdAt, m.name as memberName, m.email as memberEmail, m.role as memberRole
+          FROM authorized_devices d
+          JOIN members m ON m.id = d.member_id
+          WHERE m.organization_id = ?
+          ORDER BY d.created_at DESC
+        `).all(authContext.member.organizationId);
+
+        this.sendJson(res, 200, { devices });
+      } catch (err) {
+        this.sendJson(res, 401, { error: 'Unauthorized', message: err instanceof Error ? err.message : 'Session invalid' });
+      }
+      return;
+    }
+
     // --- Device Approval ---
-    if (method === 'POST' && pathname === '/api/v1/devices/approve') {
+    if (method === 'POST' && (pathname === '/api/v1/devices/approve' || pathname === '/api/v1/auth/devices/approve')) {
       const body = await this.sizeLimits.readJson<{ deviceId: string; approve: boolean; ownerMemberId?: string }>(req);
       const ownerRow = this.db!.prepare("SELECT id FROM members WHERE role = 'owner' LIMIT 1").get() as { id: string } | undefined;
       const orgRow = this.db!.prepare('SELECT id FROM organizations LIMIT 1').get() as { id: string } | undefined;
@@ -741,17 +793,142 @@ export class DisparFluxServer {
       return;
     }
 
+    // --- Dynamic Business API Routes (WhatsApp, Bases, Campaigns, Inbox, CRM, Agenda, Cron) ---
+    const handledByApiRouter = await handleApiRoutes(this, req, res, pathname, method, url);
+    if (handledByApiRouter) return;
+
+    // --- Static Frontend Files & SPA Fallback ---
+    if (this.serveStaticFile(req, res, pathname, method)) {
+      return;
+    }
+
     // 404 Not Found
     this.sendJson(res, 404, { error: 'Not Found', message: `Route ${method} ${pathname} not found` });
   }
 
-  private extractToken(req: IncomingMessage): string | null {
+  public setSessionCookie(res: ServerResponse, token: string): void {
+    const isSecure = this.nodeEnv === 'production';
+    const cookie = `df_session=${token}; Path=/; HttpOnly; SameSite=Lax${isSecure ? '; Secure' : ''}`;
+    res.setHeader('Set-Cookie', cookie);
+  }
+
+  public clearSessionCookie(res: ServerResponse): void {
+    res.setHeader('Set-Cookie', 'df_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax');
+  }
+
+  public extractToken(req: IncomingMessage): string | null {
     const authHeader = req.headers['authorization'];
     if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
       return authHeader.substring(7).trim();
     }
     const cookies = this.csrf.parseCookies(req);
     return cookies['df_session'] || null;
+  }
+
+  private serveStaticFile(req: IncomingMessage, res: ServerResponse, pathname: string, method: string): boolean {
+    if (method !== 'GET' && method !== 'HEAD') return false;
+    if (pathname.startsWith('/api/') || pathname === '/health' || pathname === '/ready' || pathname.startsWith('/ws')) {
+      return false;
+    }
+
+    const staticDir = this.resolveStaticDir();
+    if (!staticDir) return false;
+
+    // Sanitize pathname
+    const cleanPath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
+    let targetPath = path.join(staticDir, cleanPath);
+
+    let isFile = false;
+    try {
+      const stat = fs.statSync(targetPath);
+      if (stat.isFile()) {
+        isFile = true;
+      } else if (stat.isDirectory()) {
+        const indexInDir = path.join(targetPath, 'index.html');
+        if (fs.existsSync(indexInDir)) {
+          targetPath = indexInDir;
+          isFile = true;
+        }
+      }
+    } catch {}
+
+    // SPA Fallback: if not found, serve index.html
+    if (!isFile) {
+      targetPath = path.join(staticDir, 'index.html');
+      try {
+        if (fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
+          isFile = true;
+        }
+      } catch {}
+    }
+
+    if (!isFile) return false;
+
+    const ext = path.extname(targetPath).toLowerCase();
+    const MIME_TYPES: Record<string, string> = {
+      '.html': 'text/html; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.mjs': 'application/javascript; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.svg': 'image/svg+xml',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.ico': 'image/x-icon',
+      '.webp': 'image/webp',
+      '.woff': 'font/woff',
+      '.woff2': 'font/woff2',
+      '.ttf': 'font/ttf',
+      '.webmanifest': 'application/manifest+json',
+      '.txt': 'text/plain; charset=utf-8',
+    };
+
+    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    const isAsset = cleanPath.startsWith('/assets/') || cleanPath.startsWith('assets/');
+
+    try {
+      const stat = fs.statSync(targetPath);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', stat.size);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      if (isAsset) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      } else {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+
+      if (method === 'HEAD') {
+        res.end();
+        return true;
+      }
+
+      const stream = fs.createReadStream(targetPath);
+      stream.pipe(res);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private resolveStaticDir(): string | null {
+    const __filename = fileURLToPath(import.meta.url);
+    const currentDir = path.dirname(__filename);
+    const candidates = [
+      process.env.STATIC_DIR,
+      path.resolve(currentDir, '../../web/dist'),
+      path.resolve(currentDir, '../web/dist'),
+      path.resolve(process.cwd(), 'apps/web/dist'),
+      path.resolve(process.cwd(), 'web/dist'),
+    ];
+    for (const c of candidates) {
+      if (c && fs.existsSync(c)) {
+        return c;
+      }
+    }
+    return null;
   }
 
   private sendJson(res: ServerResponse, status: number, data: unknown): void {

@@ -26,6 +26,7 @@ COPY packages/connector-baileys/package.json packages/connector-baileys/
 COPY packages/crm/package.json packages/crm/
 COPY packages/inbox/package.json packages/inbox/
 COPY apps/server/package.json apps/server/
+COPY apps/web/package.json apps/web/
 
 # Install all dependencies (including devDependencies for build)
 RUN npm ci

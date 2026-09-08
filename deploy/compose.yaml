@@ -6,6 +6,12 @@
 name: dispar-flux
 
 services:
+  # ----------------------------------------------------------------------------
+  # dispar-flux: Core Application Container (Node.js 22 LTS)
+  # Isolated runtime hosting the REST API, WebSocket server, background worker,
+  # and SQLite WAL database (ADR 0004). Port 3000 is strictly internal to the
+  # bridge network and is NOT published to the host (ADR 0049).
+  # ----------------------------------------------------------------------------
   dispar-flux:
     image: ghcr.io/rafaelmkn/dispar-flux:1.0.0
     build:
@@ -18,7 +24,8 @@ services:
       - HOST=0.0.0.0
       - DATA_DIR=/data
       - OPERATIONAL_TIMEZONE=${OPERATIONAL_TIMEZONE:-America/Sao_Paulo}
-      - RECOVERY_KEY=${RECOVERY_KEY}
+      - RECOVERY_KEY=${RECOVERY_KEY:-}
+      - SESSION_SECRET=${SESSION_SECRET:-}
     volumes:
       - dispar-flux-data:/data
     networks:
@@ -38,6 +45,12 @@ services:
       retries: 3
       start_period: 15s
 
+  # ----------------------------------------------------------------------------
+  # caddy: Reverse Proxy & Edge Security (ADR 0049)
+  # Handles automatic TLS certificate provisioning (Let's Encrypt / ZeroSSL),
+  # HTTP->HTTPS redirects, HTTP/3 (UDP 443), security headers, and compression.
+  # Proxies internal traffic to dispar-flux:3000 after health check passes.
+  # ----------------------------------------------------------------------------
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -57,13 +70,24 @@ services:
       dispar-flux:
         condition: service_healthy
 
+# ------------------------------------------------------------------------------
+# Persistent Volumes (ADR 0004 - Data Isolation)
+# ------------------------------------------------------------------------------
 volumes:
+  # Persistent storage for SQLite, WhatsApp auth keys, media, and local backups
   dispar-flux-data:
+    name: dispar-flux-data
+  # Caddy certificates and runtime data
   caddy-data:
     name: dispar-caddy-data
+  # Caddy dynamic configuration
   caddy-config:
     name: dispar-caddy-config
 
+# ------------------------------------------------------------------------------
+# Isolated Bridge Network (ADR 0049 - HTTPS Mandatory & Network Isolation)
+# Ensures backend application is only accessible via the Caddy reverse proxy.
+# ------------------------------------------------------------------------------
 networks:
   dispar-net:
     name: dispar-flux-internal

@@ -96,6 +96,7 @@ chmod 700 "$INSTALL_DIR"
 chmod 700 "$DATA_DIR"
 chmod 700 "$DATA_DIR/media"
 chmod 700 "$DATA_DIR/backups"
+chown -R 1000:1000 "$DATA_DIR" 2>/dev/null || true
 echo -e "${GREEN}[OK] Secure directories created at $INSTALL_DIR (permissions 0700).${NC}"
 
 # 5. Generate cryptographically strong secrets
@@ -105,6 +106,7 @@ echo -e "\n${BOLD}[5/7] Generating installation credentials and Recovery Key...$
 CLAIM_TOKEN="FLUX-$(openssl rand -hex 2 | tr '[:lower:]' '[:upper:]')-$(openssl rand -hex 2 | tr '[:lower:]' '[:upper:]')-$(openssl rand -hex 2 | tr '[:lower:]' '[:upper:]')"
 echo "$CLAIM_TOKEN" > "$DATA_DIR/claim.token"
 chmod 600 "$DATA_DIR/claim.token"
+chown 1000:1000 "$DATA_DIR/claim.token" 2>/dev/null || true
 
 # Generate 256-bit Recovery Key (ADR 0020, ADR 0046)
 RECOVERY_KEY="flux_rec_$(openssl rand -hex 32)"
@@ -126,23 +128,116 @@ EOF
 chmod 600 "$ENV_FILE"
 echo -e "${GREEN}[OK] Secrets generated and saved in $ENV_FILE (permissions 0600).${NC}"
 
-# Copy compose and Caddyfile if not already present
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$SCRIPT_DIR/compose.yaml" ]; then
-    cp "$SCRIPT_DIR/compose.yaml" "$INSTALL_DIR/compose.yaml"
+# Copy compose and Caddyfile if not already present, or fetch from GitHub repository
+RAW_REPO_BASE="https://raw.githubusercontent.com/RafaelMKn/dispar-flux/main/deploy"
+SCRIPT_DIR=""
+if [ "${#BASH_SOURCE[@]}" -gt 0 ] && [ -n "${BASH_SOURCE[0]}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
-if [ -f "$SCRIPT_DIR/Caddyfile" ]; then
+
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/compose.yaml" ]; then
+    cp "$SCRIPT_DIR/compose.yaml" "$INSTALL_DIR/compose.yaml"
+else
+    echo "Downloading compose.yaml from repository..."
+    curl -fsSL "$RAW_REPO_BASE/compose.yaml" -o "$INSTALL_DIR/compose.yaml"
+fi
+
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/Caddyfile" ]; then
     cp "$SCRIPT_DIR/Caddyfile" "$INSTALL_DIR/Caddyfile"
+else
+    echo "Downloading Caddyfile from repository..."
+    curl -fsSL "$RAW_REPO_BASE/Caddyfile" -o "$INSTALL_DIR/Caddyfile"
 fi
 
 # 6. Verify image provenance and pull container images (ADR 0048)
 echo -e "\n${BOLD}[6/7] Pulling production container images...${NC}"
 cd "$INSTALL_DIR"
-docker compose pull app caddy || true
+docker compose pull dispar-flux caddy || true
+
+# Fallback to local build if image cannot be pulled from registry
+if ! docker image inspect ghcr.io/rafaelmkn/dispar-flux:1.0.0 &>/dev/null; then
+    echo -e "${YELLOW}[WARN] Image ghcr.io/rafaelmkn/dispar-flux:1.0.0 is not available in registry or local cache.${NC}"
+
+    # Check for repository source code (../Dockerfile or ./Dockerfile)
+    REPO_ROOT=""
+    if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../Dockerfile" ]; then
+        REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+    elif [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/Dockerfile" ]; then
+        REPO_ROOT="$SCRIPT_DIR"
+    elif [ -f "./Dockerfile" ]; then
+        REPO_ROOT="$(pwd)"
+    elif [ -f "../Dockerfile" ]; then
+        REPO_ROOT="$(cd ".." && pwd)"
+    fi
+
+    if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/Dockerfile" ]; then
+        echo -e "${BLUE}Detected repository source at $REPO_ROOT.${NC}"
+        echo -e "${BLUE}Building 'dispar-flux' locally ('docker compose build dispar-flux')...${NC}"
+        if [ -f "$REPO_ROOT/deploy/compose.yaml" ]; then
+            (cd "$REPO_ROOT/deploy" && docker compose build dispar-flux)
+        elif [ -f "$REPO_ROOT/compose.yaml" ]; then
+            (cd "$REPO_ROOT" && docker compose build dispar-flux)
+        else
+            docker build -t ghcr.io/rafaelmkn/dispar-flux:1.0.0 -f "$REPO_ROOT/Dockerfile" "$REPO_ROOT"
+        fi
+        echo -e "${GREEN}[OK] Local build for dispar-flux completed successfully.${NC}"
+    else
+        echo -e "${RED}[ERROR] Image ghcr.io/rafaelmkn/dispar-flux:1.0.0 could not be retrieved and no source code found for local build.${NC}"
+        exit 1
+    fi
+fi
 
 # 7. Start container services
 echo -e "\n${BOLD}[7/7] Starting Dispar Flux containers...${NC}"
+cd "$INSTALL_DIR"
 docker compose up -d
+
+# Synchronize Claim Token into container volume (dispar-flux-data:/data)
+docker compose cp "$DATA_DIR/claim.token" dispar-flux:/data/claim.token 2>/dev/null || true
+
+# Wait for dispar-flux service to pass healthcheck (/health)
+echo -e "\n${BOLD}Waiting for dispar-flux service to pass healthcheck (/health)...${NC}"
+MAX_RETRIES=30
+RETRY_COUNT=0
+HEALTHY=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    CONTAINER_ID="$(docker compose ps -q dispar-flux 2>/dev/null || true)"
+    if [ -n "$CONTAINER_ID" ]; then
+        STATUS="$(docker inspect --format='{{json .State.Health.Status}}' "$CONTAINER_ID" 2>/dev/null | tr -d '"' || true)"
+        if [ "$STATUS" = "healthy" ]; then
+            HEALTHY=true
+            break
+        fi
+    fi
+
+    # Alternative direct curl / node check inside container
+    if docker compose exec -T dispar-flux node -e "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))" 2>/dev/null; then
+        HEALTHY=true
+        break
+    fi
+
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    echo -n "."
+    sleep 2
+done
+echo ""
+
+if [ "$HEALTHY" = true ]; then
+    echo -e "${GREEN}[OK] dispar-flux service is healthy and ready.${NC}"
+else
+    echo -e "${YELLOW}[WARN] Health check did not report healthy within 60s.${NC}"
+    echo "Check container logs with: docker compose logs dispar-flux"
+fi
+
+# Verify confirmed token inside container
+CONFIRMED_TOKEN="$(docker compose exec -T dispar-flux cat /data/claim.token 2>/dev/null | tr -d '\r\n' || true)"
+if [ -n "$CONFIRMED_TOKEN" ]; then
+    CLAIM_TOKEN="$CONFIRMED_TOKEN"
+    echo "$CLAIM_TOKEN" > "$DATA_DIR/claim.token"
+    chmod 600 "$DATA_DIR/claim.token"
+    chown 1000:1000 "$DATA_DIR/claim.token" 2>/dev/null || true
+fi
 
 echo ""
 echo -e "${BOLD}${GREEN}==================================================================${NC}"

@@ -35,26 +35,100 @@ export async function handleApiRoutes(
       draft_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS appointments (
+      id TEXT PRIMARY KEY NOT NULL,
+      organization_id TEXT NOT NULL,
+      contact_id TEXT,
+      title TEXT NOT NULL,
+      description TEXT,
+      scheduled_start_time TEXT NOT NULL,
+      scheduled_end_time TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'scheduled',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS follow_up_rules (
+      id TEXT PRIMARY KEY NOT NULL,
+      organization_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      delay_interval_seconds INTEGER NOT NULL DEFAULT 86400,
+      message_template TEXT NOT NULL,
+      max_attempts INTEGER NOT NULL DEFAULT 1,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
+
+  if (!pathname.startsWith('/api/v1/')) return false;
+
+  // Verify authentication for business API routes
+  const hasOwner = Boolean(db.prepare("SELECT id FROM members WHERE role = 'owner' LIMIT 1").get());
+  const token = server.extractToken(req);
+  let authContext: any = null;
+
+  if (token) {
+    try {
+      authContext = server.sessionService.validateToken(token);
+    } catch {
+      sendJson(res, 401, { error: 'Unauthorized', message: 'Sessão inválida ou expirada.' });
+      return true;
+    }
+  }
+
+  // If system is claimed, valid authentication is mandatory
+  if (hasOwner && !authContext) {
+    sendJson(res, 401, { error: 'Unauthorized', message: 'Autenticação necessária.' });
+    return true;
+  }
+
+  // If not claimed yet, business routes cannot be operated until claim is completed
+  if (!hasOwner && !authContext) {
+    sendJson(res, 401, { error: 'Unauthorized', unclaimed: true, message: 'Instalação pendente de configuração inicial.' });
+    return true;
+  }
 
   const csvExporter = new CsvExporter(db);
 
-  // Helper to retrieve the default organization
+  // Helper to retrieve the active organization
   const getOrgId = (): string => {
-    const row = db.prepare('SELECT id FROM organizations LIMIT 1').get() as { id: string } | undefined;
-    return row?.id || 'org_default';
+    if (authContext?.member?.organizationId) {
+      return authContext.member.organizationId;
+    }
+    const orgWithOwner = db.prepare(`
+      SELECT o.id FROM organizations o
+      JOIN members m ON m.organization_id = o.id
+      WHERE m.role = 'owner'
+      LIMIT 1
+    `).get() as { id: string } | undefined;
+    if (orgWithOwner) return orgWithOwner.id;
+
+    const realOrg = db.prepare("SELECT id FROM organizations WHERE id != 'org_default' LIMIT 1").get() as { id: string } | undefined;
+    if (realOrg) return realOrg.id;
+
+    const defaultOrg = db.prepare("SELECT id FROM organizations WHERE id = 'org_default' LIMIT 1").get() as { id: string } | undefined;
+    if (defaultOrg) return defaultOrg.id;
+
+    const defaultOrgId = 'org_default';
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT OR IGNORE INTO organizations (id, name, operational_timezone, created_at, updated_at)
+      VALUES (?, 'Organização Padrão', 'America/Sao_Paulo', ?, ?)
+    `).run(defaultOrgId, now, now);
+    return defaultOrgId;
   };
 
   // Helper to retrieve the default connection
   const getConnectionId = (): string => {
-    const row = db.prepare('SELECT id FROM messaging_connections LIMIT 1').get() as { id: string } | undefined;
+    const orgId = getOrgId();
+    const row = db.prepare('SELECT id FROM messaging_connections WHERE organization_id = ? LIMIT 1').get(orgId) as { id: string } | undefined;
     if (row) return row.id;
     const newId = crypto.randomUUID();
     const now = new Date().toISOString();
     db.prepare(`
       INSERT INTO messaging_connections (id, organization_id, name, provider, status, is_default, created_at, updated_at)
       VALUES (?, ?, 'WhatsApp Principal', 'baileys', 'disconnected', 1, ?, ?)
-    `).run(newId, getOrgId(), now, now);
+    `).run(newId, orgId, now, now);
     return newId;
   };
 
@@ -256,10 +330,15 @@ export async function handleApiRoutes(
       } catch {}
       return {
         id: r.id,
+        listId: baseId,
         phoneE164: r.normalized_phone,
         name: r.name || '',
+        jid: `${r.normalized_phone.replace('+', '')}@s.whatsapp.net`,
+        extraJson: r.imported_fields || '{}',
+        waValid: 1,
+        optOut: r.is_opted_out ? 1 : 0,
+        createdAt: new Date(r.created_at).getTime(),
         valid: r.is_opted_out === 0,
-        optOut: r.is_opted_out === 1,
         unchecked: false,
         extra,
       };
@@ -322,7 +401,7 @@ export async function handleApiRoutes(
     let imported = 0;
     let duplicates = 0;
 
-    db.transaction(() => {
+    const importAction = () => {
       for (const row of body.rows || []) {
         const rawPhone = body.mapping.phoneColumn ? row[body.mapping.phoneColumn] : Object.values(row)[1] || Object.values(row)[0];
         const rawName = body.mapping.nameColumn ? row[body.mapping.nameColumn] : Object.values(row)[0];
@@ -360,9 +439,37 @@ export async function handleApiRoutes(
         `).run(crypto.randomUUID(), baseId, contactId, JSON.stringify(extra), now, now);
         imported++;
       }
-    })();
+    };
+
+    if (typeof db.transaction === 'function') {
+      const tx = db.transaction(importAction);
+      if (typeof tx === 'function') tx();
+    } else {
+      importAction();
+    }
 
     sendJson(res, 200, { totalRows: body.rows?.length || 0, imported, duplicatesConsolidated: duplicates, invalidRows: 0 });
+    return true;
+  }
+
+  const contactOptOutMatch = pathname.match(/^\/api\/v1\/contacts\/([^/]+)\/opt-out$/);
+  if (contactOptOutMatch && contactOptOutMatch[1] && method === 'POST') {
+    const contactId = contactOptOutMatch[1];
+    const body = (await (server as any).sizeLimits.readJson(req)) as { reason?: string };
+    const now = new Date().toISOString();
+
+    const contact = db.prepare('SELECT id, is_opted_out, normalized_phone FROM contacts WHERE id = ?').get(contactId) as { id: string; is_opted_out: number; normalized_phone: string } | undefined;
+    if (contact) {
+      const nextOptOut = contact.is_opted_out ? 0 : 1;
+      db.prepare('UPDATE contacts SET is_opted_out = ?, updated_at = ? WHERE id = ?').run(nextOptOut, now, contactId);
+      if (nextOptOut === 1) {
+        db.prepare(`
+          INSERT INTO opt_outs (id, organization_id, normalized_phone, contact_id, reason, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(crypto.randomUUID(), getOrgId(), contact.normalized_phone, contactId, body.reason || 'Descadastrado pelo operador', now);
+      }
+    }
+    sendJson(res, 200, { success: true });
     return true;
   }
 
@@ -430,7 +537,7 @@ export async function handleApiRoutes(
       WHERE bm.base_id = ? AND c.is_opted_out = 0
     `).all(body.listId) as any[];
 
-    db.transaction(() => {
+    const startAction = () => {
       db.prepare(`
         INSERT INTO campaigns (id, organization_id, connection_id, base_id, name, status, message_template, pacing_interval_seconds, daily_limit, confirmed_responsibility, snapshot_total, sent_count, failed_count, started_at, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, 1, ?, 0, 0, ?, ?, ?)
@@ -455,7 +562,14 @@ export async function handleApiRoutes(
           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
         `).run(crypto.randomUUID(), campaignId, m.id, m.normalized_phone, body.config?.text || '', now, now);
       }
-    })();
+    };
+
+    if (typeof db.transaction === 'function') {
+      const tx = db.transaction(startAction);
+      if (typeof tx === 'function') tx();
+    } else {
+      startAction();
+    }
 
     // Notify clients of campaign progress
     (server as any).broadcast('campaign:progress', {
@@ -715,30 +829,91 @@ export async function handleApiRoutes(
   // 6. Agenda & Appointments Endpoints
   // --------------------------------------------------------------------------
   if (pathname === '/api/v1/agenda' && method === 'GET') {
-    const rows = db.prepare('SELECT * FROM appointments WHERE organization_id = ? ORDER BY scheduled_start_time ASC').all(getOrgId()) as any[];
+    const rows = db.prepare(`
+      SELECT a.*, c.name as lead_name, c.normalized_phone
+      FROM appointments a
+      LEFT JOIN contacts c ON c.id = a.contact_id
+      WHERE a.organization_id = ?
+      ORDER BY a.scheduled_start_time ASC
+    `).all(getOrgId()) as any[];
+
     const appointments = rows.map((r) => ({
       id: r.id,
+      leadId: r.contact_id === 'ct_none' ? null : (r.contact_id || null),
+      leadName: r.lead_name || (r.normalized_phone ? r.normalized_phone : null),
       title: r.title,
-      notes: r.description,
-      scheduledAt: new Date(r.scheduled_start_time).getTime(),
+      notes: r.description || null,
+      dueAt: new Date(r.scheduled_start_time).getTime(),
       done: r.status === 'completed',
+      createdAt: new Date(r.created_at).getTime(),
     }));
     sendJson(res, 200, appointments);
     return true;
   }
 
   if (pathname === '/api/v1/agenda' && method === 'POST') {
-    const body = (await (server as any).sizeLimits.readJson(req)) as { title: string; notes?: string; scheduledAt: number };
+    const body = (await (server as any).sizeLimits.readJson(req)) as {
+      title: string;
+      notes?: string;
+      dueAt?: number;
+      scheduledAt?: number;
+      leadId?: string;
+    };
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    const scheduled = new Date(body.scheduledAt || Date.now()).toISOString();
+    const timestamp = body.dueAt || body.scheduledAt || Date.now();
+    const scheduled = new Date(timestamp).toISOString();
+    const contactId = body.leadId || null;
 
     db.prepare(`
       INSERT INTO appointments (id, organization_id, contact_id, title, description, scheduled_start_time, scheduled_end_time, status, created_at, updated_at)
-      VALUES (?, ?, 'ct_none', ?, ?, ?, ?, 'scheduled', ?, ?)
-    `).run(id, getOrgId(), body.title, body.notes || '', scheduled, scheduled, now, now);
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+    `).run(id, getOrgId(), contactId, body.title, body.notes || '', scheduled, scheduled, now, now);
 
-    sendJson(res, 201, { id, title: body.title, notes: body.notes, scheduledAt: body.scheduledAt, done: false });
+    sendJson(res, 201, {
+      id,
+      leadId: contactId,
+      leadName: null,
+      title: body.title,
+      notes: body.notes || null,
+      dueAt: timestamp,
+      done: false,
+      createdAt: Date.now(),
+    });
+    return true;
+  }
+
+  const agendaDoneMatch = pathname.match(/^\/api\/v1\/agenda\/([^/]+)\/done$/);
+  if (agendaDoneMatch && agendaDoneMatch[1] && method === 'POST') {
+    const id = agendaDoneMatch[1];
+    const body = (await (server as any).sizeLimits.readJson(req)) as { done: boolean };
+    const status = body.done ? 'completed' : 'scheduled';
+    db.prepare('UPDATE appointments SET status = ?, updated_at = ? WHERE id = ?').run(status, new Date().toISOString(), id);
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  const agendaUpdateMatch = pathname.match(/^\/api\/v1\/agenda\/([^/]+)$/);
+  if (agendaUpdateMatch && agendaUpdateMatch[1] && method === 'PUT') {
+    const id = agendaUpdateMatch[1];
+    const body = (await (server as any).sizeLimits.readJson(req)) as any;
+    const now = new Date().toISOString();
+    const timestamp = body.dueAt || body.scheduledAt || Date.now();
+    const scheduled = new Date(timestamp).toISOString();
+    db.prepare(`
+      UPDATE appointments
+      SET title = ?, description = ?, scheduled_start_time = ?, scheduled_end_time = ?, contact_id = ?, updated_at = ?
+      WHERE id = ?
+    `).run(body.title, body.notes || '', scheduled, scheduled, body.leadId || null, now, id);
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  const agendaDeleteMatch = pathname.match(/^\/api\/v1\/agenda\/([^/]+)$/);
+  if (agendaDeleteMatch && agendaDeleteMatch[1] && method === 'DELETE') {
+    const id = agendaDeleteMatch[1];
+    db.prepare('DELETE FROM appointments WHERE id = ?').run(id);
+    sendJson(res, 200, { success: true });
     return true;
   }
 
@@ -760,6 +935,54 @@ export async function handleApiRoutes(
       enabled: r.is_active === 1,
     }));
     sendJson(res, 200, rules);
+    return true;
+  }
+
+  if (pathname === '/api/v1/followups' && method === 'POST') {
+    const body = (await (server as any).sizeLimits.readJson(req)) as any;
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const delay = (body.afterHours || 24) * 3600;
+    const template = body.config?.text || '';
+    db.prepare(`
+      INSERT INTO follow_up_rules (id, organization_id, name, delay_interval_seconds, message_template, max_attempts, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, getOrgId(), body.name || 'Regra', delay, template, body.maxFollowUps || 1, body.enabled !== false ? 1 : 0, now, now);
+
+    sendJson(res, 201, { id, success: true });
+    return true;
+  }
+
+  const followupUpdateMatch = pathname.match(/^\/api\/v1\/followups\/([^/]+)$/);
+  if (followupUpdateMatch && followupUpdateMatch[1] && method === 'PUT') {
+    const id = followupUpdateMatch[1];
+    const body = (await (server as any).sizeLimits.readJson(req)) as any;
+    const now = new Date().toISOString();
+    const delay = (body.afterHours || 24) * 3600;
+    const template = body.config?.text || '';
+    db.prepare(`
+      UPDATE follow_up_rules
+      SET name = ?, delay_interval_seconds = ?, message_template = ?, max_attempts = ?, is_active = ?, updated_at = ?
+      WHERE id = ?
+    `).run(body.name, delay, template, body.maxFollowUps || 1, body.enabled !== false ? 1 : 0, now, id);
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  const followupEnabledMatch = pathname.match(/^\/api\/v1\/followups\/([^/]+)\/enabled$/);
+  if (followupEnabledMatch && followupEnabledMatch[1] && method === 'PATCH') {
+    const id = followupEnabledMatch[1];
+    const body = (await (server as any).sizeLimits.readJson(req)) as { enabled: boolean };
+    db.prepare('UPDATE follow_up_rules SET is_active = ?, updated_at = ? WHERE id = ?').run(body.enabled ? 1 : 0, new Date().toISOString(), id);
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  const followupDeleteMatch = pathname.match(/^\/api\/v1\/followups\/([^/]+)$/);
+  if (followupDeleteMatch && followupDeleteMatch[1] && method === 'DELETE') {
+    const id = followupDeleteMatch[1];
+    db.prepare('DELETE FROM follow_up_rules WHERE id = ?').run(id);
+    sendJson(res, 200, { success: true });
     return true;
   }
 

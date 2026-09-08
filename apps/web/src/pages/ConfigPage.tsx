@@ -10,7 +10,9 @@ import {
   RefreshCw,
   PanelBottom,
   Columns3,
-  Wrench
+  Wrench,
+  Laptop,
+  ShieldCheck
 } from 'lucide-react'
 import type { AiSettings, BackgroundSettings, CrmSettings, SendingDefaults } from '@shared/types'
 import { AI_PROVIDERS } from '@shared/aiProviders'
@@ -19,6 +21,7 @@ import { PageBody, PageHeader, Card, Button, Input, Select, Toggle } from '../co
 import WhatsappCard from '../components/WhatsappCard'
 import { useWhatsapp } from '../useWhatsapp'
 import { useUpdater } from '../useUpdater'
+import { useAuth } from '../contexts/AuthContext'
 
 function SectionTitle({ icon: Icon, title }: { icon: typeof QrCode; title: string }): JSX.Element {
   return (
@@ -61,6 +64,16 @@ export default function ConfigPage(): JSX.Element {
   const [waVersion, setWaVersion] = useState('')
   const [waVersionErro, setWaVersionErro] = useState<string | null>(null)
 
+  const { member: currentMember } = useAuth()
+  const [devices, setDevices] = useState<any[]>([])
+
+  const loadDevices = async () => {
+    try {
+      const res = await (window.api as any).auth.listDevices()
+      setDevices(res.devices || [])
+    } catch {}
+  }
+
   useEffect(() => {
     void (async () => {
       setSending(await window.api.settings.getSendingDefaults())
@@ -68,8 +81,19 @@ export default function ConfigPage(): JSX.Element {
       setBackground(await window.api.settings.getBackground())
       setCrm(await window.api.settings.getCrm())
       setWaVersion(formatWaVersion(await window.api.whatsapp.getVersionOverride()))
+      await loadDevices()
     })()
   }, [])
+
+  const approveDevice = async (deviceId: string) => {
+    try {
+      await (window.api as any).auth.approveDevice(deviceId, true)
+      flash('Dispositivo autorizado')
+      await loadDevices()
+    } catch {
+      flash('Erro ao autorizar dispositivo')
+    }
+  }
 
   function flash(msg: string): void {
     setSavedFlag(msg)
@@ -331,6 +355,61 @@ export default function ConfigPage(): JSX.Element {
               onBlur={() => void salvarWaVersion()}
               hint={waVersionErro ?? 'Tres numeros separados por ponto.'}
             />
+          </div>
+        </Card>
+
+        <Card>
+          <SectionTitle icon={ShieldCheck} title="Equipe & Dispositivos Autorizados (ADR 0022)" />
+          <p className="text-sm text-ink-secondary [text-wrap:pretty]">
+            Navegadores autorizados a operar nesta Instalação. Apenas o Proprietário pode aprovar novos dispositivos de operadores.
+          </p>
+
+          <div className="mt-4 flex flex-col gap-3">
+            {devices.length === 0 ? (
+              <div className="rounded border border-line-subtle bg-surface-sunken p-3 text-center text-xs text-ink-meta">
+                Nenhum dispositivo registrado.
+              </div>
+            ) : (
+              devices.map((d: any) => (
+                <div
+                  key={d.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded border border-line p-3"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="grid h-9 w-9 flex-none place-items-center rounded-lg border border-line bg-surface-sunken text-accent-text">
+                      <Laptop size={18} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-ink">{d.name}</span>
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                            d.isApproved
+                              ? 'bg-state-successWash text-state-successText'
+                              : 'bg-state-warningWash text-state-warningText'
+                          }`}
+                        >
+                          {d.isApproved ? 'Autorizado' : 'Aguardando Aprovação'}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-ink-meta">
+                        {d.memberName} ({d.memberEmail}) • {d.memberRole === 'owner' ? 'Proprietário' : 'Operador'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {!d.isApproved && currentMember?.role === 'owner' && (
+                    <Button
+                      variant="primary"
+                      className="text-xs"
+                      onClick={() => void approveDevice(d.id)}
+                    >
+                      Autorizar Acesso
+                    </Button>
+                  )}
+                </div>
+              ))
+            )}
           </div>
         </Card>
 

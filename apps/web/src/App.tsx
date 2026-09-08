@@ -9,12 +9,16 @@ import DocsPage from './pages/DocsPage';
 import KanbanPage from './pages/KanbanPage';
 import AgendaPage from './pages/AgendaPage';
 import CronPage from './pages/CronPage';
+import ClaimPage from './pages/ClaimPage';
+import LoginPage from './pages/LoginPage';
+import ProtectedRoute from './components/ProtectedRoute';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { useCallback, useEffect, useState } from 'react';
 import { useTheme } from './useTheme';
 import { useWhatsapp } from './useWhatsapp';
 import './services/api';
 
-export function App(): JSX.Element {
+function AppLayout(): JSX.Element {
   const { theme, toggle } = useTheme();
   const wa = useWhatsapp();
   const [unread, setUnread] = useState(0);
@@ -38,33 +42,82 @@ export function App(): JSX.Element {
   }, [refreshUnread]);
 
   return (
-    <BrowserRouter>
-      <div className="flex h-screen w-screen flex-col overflow-hidden bg-surface-base font-sans text-base text-ink">
-        <UpdateBanner />
-        <div className="flex min-h-0 flex-1">
-          <Sidebar
-            theme={theme}
-            onToggleTheme={toggle}
-            connected={wa.status === 'connected'}
-            unread={unread}
-          />
-          <main className="min-w-0 flex-1 overflow-y-auto">
-            <Routes>
-              <Route path="/" element={<Navigate to="/disparo" replace />} />
-              <Route path="/inbox" element={<InboxPage />} />
-              <Route path="/disparo" element={<DisparoPage />} />
-              <Route path="/kanban" element={<KanbanPage />} />
-              <Route path="/agenda" element={<AgendaPage />} />
-              <Route path="/cron" element={<CronPage />} />
-              <Route path="/base" element={<BasePage />} />
-              <Route path="/config" element={<ConfigPage />} />
-              <Route path="/docs" element={<DocsPage />} />
-              <Route path="/docs/:slug" element={<DocsPage />} />
-              <Route path="*" element={<Navigate to="/disparo" replace />} />
-            </Routes>
-          </main>
-        </div>
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-surface-base font-sans text-base text-ink">
+      <UpdateBanner />
+      <div className="flex min-h-0 flex-1">
+        <Sidebar
+          theme={theme}
+          onToggleTheme={toggle}
+          connected={wa.status === 'connected'}
+          unread={unread}
+        />
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          <Routes>
+            <Route path="/" element={<Navigate to="/disparo" replace />} />
+            <Route path="/inbox" element={<InboxPage />} />
+            <Route path="/disparo" element={<DisparoPage />} />
+            <Route path="/kanban" element={<KanbanPage />} />
+            <Route path="/agenda" element={<AgendaPage />} />
+            <Route path="/cron" element={<CronPage />} />
+            <Route path="/base" element={<BasePage />} />
+            <Route path="/config" element={<ConfigPage />} />
+            <Route path="/docs" element={<DocsPage />} />
+            <Route path="/docs/:slug" element={<DocsPage />} />
+            <Route path="*" element={<Navigate to="/disparo" replace />} />
+          </Routes>
+        </main>
       </div>
+    </div>
+  );
+}
+
+function AppRoutes(): JSX.Element {
+  const { status } = useAuth();
+
+  return (
+    <Routes>
+      <Route
+        path="/claim"
+        element={
+          status === 'authenticated' ? (
+            <Navigate to="/disparo" replace />
+          ) : status === 'unauthenticated' ? (
+            <Navigate to="/login" replace />
+          ) : (
+            <ClaimPage />
+          )
+        }
+      />
+      <Route
+        path="/login"
+        element={
+          status === 'unclaimed' ? (
+            <Navigate to="/claim" replace />
+          ) : status === 'authenticated' ? (
+            <Navigate to="/disparo" replace />
+          ) : (
+            <LoginPage />
+          )
+        }
+      />
+      <Route
+        path="/*"
+        element={
+          <ProtectedRoute>
+            <AppLayout />
+          </ProtectedRoute>
+        }
+      />
+    </Routes>
+  );
+}
+
+export function App(): JSX.Element {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <AppRoutes />
+      </AuthProvider>
     </BrowserRouter>
   );
 }

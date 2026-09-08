@@ -4,11 +4,6 @@
 # ==============================================================================
 
 {$DOMAIN:localhost} {
-    # Automatic TLS management (Let's Encrypt / ZeroSSL or internal for localhost)
-    tls internal {
-        on_demand
-    }
-
     # Enable modern HTTP/3, HTTP/2, and response compression
     encode zstd gzip
 
