@@ -10,10 +10,12 @@ import {
   Columns3,
   CalendarDays,
   Timer,
+  LogOut,
   type LucideIcon
 } from 'lucide-react'
 import { StatusDot } from './ui'
 import type { Theme } from '../useTheme'
+import { useAuth } from '../contexts/AuthContext'
 
 interface NavItem {
   to: string
@@ -43,6 +45,8 @@ export default function Sidebar({
   connected?: boolean
   unread?: number
 }): JSX.Element {
+  const { member, logout } = useAuth()
+
   return (
     // Abaixo de 900px a sidebar colapsa para trilha de icones (w-16).
     <nav className="flex w-16 flex-none flex-col gap-1 border-r border-line bg-surface-sunken p-3 transition-[width] duration-180 ease-out min-[900px]:w-60">
@@ -80,6 +84,26 @@ export default function Sidebar({
       ))}
 
       <div className="flex-1" />
+
+      {member && (
+        <div className="flex items-center justify-between gap-1 border-t border-line-subtle px-1.5 py-2">
+          <div className="hidden min-w-0 flex-1 flex-col min-[900px]:flex">
+            <span className="truncate text-xs font-semibold text-ink" title={member.name}>
+              {member.name}
+            </span>
+            <span className="truncate text-[10px] text-ink-meta">
+              {member.role === 'owner' ? 'Proprietário' : member.role === 'admin' ? 'Administrador' : 'Operador'}
+            </span>
+          </div>
+          <button
+            onClick={() => void logout()}
+            title="Sair da sessão"
+            className="grid h-7 w-7 flex-none place-items-center rounded text-ink-secondary transition-colors duration-120 hover:bg-state-dangerWash hover:text-state-dangerText"
+          >
+            <LogOut size={15} />
+          </button>
+        </div>
+      )}
 
       <button
         onClick={onToggleTheme}

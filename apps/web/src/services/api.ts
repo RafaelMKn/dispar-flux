@@ -43,21 +43,67 @@ function initWebSocket() {
   }
 }
 
+export function getStoredToken(): string | null {
+  try {
+    return localStorage.getItem('df_session_token');
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredToken(token: string | null): void {
+  try {
+    if (token) {
+      localStorage.setItem('df_session_token', token);
+    } else {
+      localStorage.removeItem('df_session_token');
+    }
+  } catch {}
+}
+
+export function getDeviceFingerprint(): string {
+  try {
+    let fp = localStorage.getItem('df_device_fingerprint');
+    if (!fp) {
+      fp = 'df_fp_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem('df_device_fingerprint', fp);
+    }
+    return fp;
+  } catch {
+    return 'df_fp_browser_generic';
+  }
+}
+
 initWebSocket();
 
 async function req<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const token = getStoredToken();
+  const authHeaders: Record<string, string> = {};
+  if (token) {
+    authHeaders['Authorization'] = `Bearer ${token}`;
+  }
+
   const res = await fetch(endpoint, {
+    credentials: 'include',
     ...options,
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/json',
+      ...authHeaders,
       ...(options.headers || {}),
     },
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(text || `HTTP ${res.status}`);
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {}
+    const err: any = new Error(parsed?.message || text || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = parsed;
+    throw err;
   }
 
   const contentType = res.headers.get('content-type') || '';
@@ -296,17 +342,24 @@ export const webApi: DisparApi = {
     upcomingFollowUps: async () => [],
     create: (input: any) =>
       req('/api/v1/agenda', { method: 'POST', body: JSON.stringify(input) }),
-    update: async () => ({} as any),
-    setDone: async () => {},
-    remove: async () => {},
+    update: (id: string, input: any) =>
+      req(`/api/v1/agenda/${id}`, { method: 'PUT', body: JSON.stringify(input) }),
+    setDone: (id: string, done: boolean) =>
+      req(`/api/v1/agenda/${id}/done`, { method: 'POST', body: JSON.stringify({ done }) }),
+    remove: (id: string) =>
+      req(`/api/v1/agenda/${id}`, { method: 'DELETE' }),
   },
 
   followups: {
     list: () => req('/api/v1/followups'),
-    create: async () => ({} as any),
-    update: async () => ({} as any),
-    setEnabled: async () => {},
-    remove: async () => {},
+    create: (input: any) =>
+      req('/api/v1/followups', { method: 'POST', body: JSON.stringify(input) }),
+    update: (id: string, input: any) =>
+      req(`/api/v1/followups/${id}`, { method: 'PUT', body: JSON.stringify(input) }),
+    setEnabled: (id: string, enabled: boolean) =>
+      req(`/api/v1/followups/${id}/enabled`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
+    remove: (id: string) =>
+      req(`/api/v1/followups/${id}`, { method: 'DELETE' }),
     preview: async () => ({ eligibleContacts: 0, sampleContacts: [], eligible: 0, nextWindowAt: null, windowOpen: true } as any),
     runNow: async () => null,
   },
@@ -330,6 +383,26 @@ export const webApi: DisparApi = {
     download: async () => {},
     install: async () => {},
     onState: () => () => {},
+  },
+
+  auth: {
+    getStatus: () => req<{ isClaimed: boolean; edition: string; operationalTimezone: string }>('/api/v1/system/status'),
+    getSession: () => req<{ member: any; session: any; device: any; organization?: any }>('/api/v1/auth/session'),
+    getMe: () => req<{ member: any; device: any; organization: any }>('/api/v1/auth/me'),
+    claim: (body: any) => req<{ organizationId: string; ownerId: string; token: string }>('/api/v1/auth/claim', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+    login: (body: any) => req<{ token?: string; requiresDeviceApproval?: boolean; deviceId?: string; member?: any }>('/api/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+    logout: () => req<{ success: boolean }>('/api/v1/auth/logout', { method: 'POST' }),
+    listDevices: () => req<{ devices: any[] }>('/api/v1/auth/devices'),
+    approveDevice: (deviceId: string, approve = true) => req('/api/v1/devices/approve', {
+      method: 'POST',
+      body: JSON.stringify({ deviceId, approve }),
+    }),
   },
 } as unknown as DisparApi;
 

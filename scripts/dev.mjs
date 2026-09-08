@@ -26,7 +26,7 @@ function runCommand(command, args = [], env = {}) {
 }
 
 // 1. Iniciar servidor Backend (API + WebSocket na porta 3000)
-const server = runCommand(isWin ? 'npx.cmd' : 'npx', ['tsx', 'apps/server/src/index.ts'], {
+const server = runCommand(isWin ? 'npx.cmd' : 'npx', ['tsx', 'watch', 'apps/server/src/index.ts'], {
   PORT: process.env.PORT || '3000',
   HOST: process.env.HOST || '0.0.0.0',
 });
