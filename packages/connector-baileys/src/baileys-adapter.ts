@@ -296,9 +296,53 @@ export class BaileysConnector extends EventEmitter implements MessagingConnector
   }
 
   /**
+   * Disconnects all active sessions.
+   */
+  async disconnectAll(): Promise<void> {
+    const ids = Array.from(this.sessions.keys());
+    for (const id of ids) {
+      await this.disconnect(id);
+    }
+  }
+
+  /**
    * Sends an outbound message (text or media) via the active Baileys socket.
    */
-  async sendMessage(params: SendMessageParams): Promise<SendResult> {
+  async sendMessage(params: SendMessageParams): Promise<SendResult>;
+  async sendMessage(
+    connectionId: string,
+    options: { to: string; content: string | { text: string }; [key: string]: any }
+  ): Promise<SendResult>;
+  async sendMessage(
+    paramsOrConnId: SendMessageParams | string,
+    maybeOptions?: any
+  ): Promise<SendResult> {
+    let params: SendMessageParams;
+    if (typeof paramsOrConnId === 'string') {
+      const c = maybeOptions?.content;
+      const textContent =
+        typeof c === 'object' && c && 'text' in c
+          ? c.text
+          : typeof c === 'string'
+            ? c
+            : '';
+      params = {
+        connectionId: paramsOrConnId,
+        to: maybeOptions?.to || '',
+        content: textContent,
+        ...maybeOptions,
+      };
+      if (typeof maybeOptions?.content === 'object' && maybeOptions?.content && 'text' in maybeOptions.content) {
+        params.content = maybeOptions.content.text;
+      }
+    } else {
+      let content = paramsOrConnId.content;
+      if (typeof content === 'object' && content && 'text' in (content as any)) {
+        content = (content as any).text;
+      }
+      params = { ...paramsOrConnId, content };
+    }
+
     const session = this.sessions.get(params.connectionId);
     if (!session) {
       throw new ConnectionNotFoundError(params.connectionId);
@@ -377,6 +421,14 @@ export class BaileysConnector extends EventEmitter implements MessagingConnector
       const error = err instanceof Error ? err : new Error(String(err));
       throw new MessageDeliveryError(`Failed to send message to '${params.to}': ${error.message}`, error);
     }
+  }
+
+  /**
+   * Returns authenticated user session data if connected.
+   */
+  getSessionUser(connectionId: string): { id: string; name?: string } | undefined {
+    const session = this.sessions.get(connectionId);
+    return session?.socket?.user;
   }
 
   /**
