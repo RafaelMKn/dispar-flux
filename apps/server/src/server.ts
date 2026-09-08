@@ -62,6 +62,13 @@ import type {
   ReadyResponse,
   SystemStatusResponse,
 } from '@dispar-flux/contracts';
+import QRCode from 'qrcode';
+import {
+  BaileysConnector,
+  type InboundMessage,
+  type QREventPayload,
+  type StatusEventPayload,
+} from '@dispar-flux/connector-baileys';
 import { handleApiRoutes } from './api-router.js';
 
 export interface ServerOptions {
@@ -83,9 +90,21 @@ export class DisparFluxServer {
 
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
-  private db: DatabaseConnection | null = null;
+  public db: DatabaseConnection | null = null;
   private lock: InstallationLock | null = null;
   private startTime: number = 0;
+
+  // Baileys Connector & WhatsApp State
+  public baileysConnector: BaileysConnector;
+  public whatsappState: {
+    status: 'disconnected' | 'connecting' | 'pairing' | 'connected' | 'failed';
+    qrDataUrl: string | null;
+    me: { id: string; name?: string } | null;
+  } = {
+    status: 'disconnected',
+    qrDataUrl: null,
+    me: null,
+  };
 
   // Security Handlers
   public readonly cors: CorsHandler;
@@ -113,6 +132,7 @@ export class DisparFluxServer {
     this.recoveryKey = options.recoveryKey ?? process.env.RECOVERY_KEY ?? 'flux_default_recovery_key_32_bytes_long_!!';
 
     this.logger = new SanitizedLogger('DisparFluxServer');
+    this.baileysConnector = new BaileysConnector();
 
     this.cors = createCorsHandler({
       allowedOrigins: options.allowedOrigins ?? ['http://localhost:3000', 'http://127.0.0.1:3000'],
@@ -191,6 +211,27 @@ export class DisparFluxServer {
         socket.destroy();
       }
     });
+
+    // 9. Register Baileys WhatsApp connector event listeners
+    this.registerBaileysListeners();
+
+    // 10. Check if credentials already exist and attempt auto-connect in background
+    const waAuthDir = path.join(this.dataDir, 'wa-auth');
+    if (fs.existsSync(waAuthDir) && this.db) {
+      const defaultConn =
+        (this.db.prepare('SELECT id FROM messaging_connections WHERE is_default = 1 LIMIT 1').get() as { id: string } | undefined) ||
+        (this.db.prepare('SELECT id FROM messaging_connections LIMIT 1').get() as { id: string } | undefined);
+      if (defaultConn) {
+        const credsPath = path.join(waAuthDir, defaultConn.id, 'creds.json');
+        if (fs.existsSync(credsPath)) {
+          this.baileysConnector.connect(defaultConn.id, { dataDir: this.dataDir }).catch((err) => {
+            this.logger.warn('Failed to auto-connect WhatsApp on startup', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        }
+      }
+    }
 
     return new Promise((resolve, reject) => {
       this.httpServer!.listen(this.port, this.host, () => {
@@ -942,6 +983,15 @@ export class DisparFluxServer {
    * Gracefully shuts down the server, releases the lock, and closes the database.
    */
   async stop(): Promise<void> {
+    try {
+      await this.baileysConnector.disconnectAll();
+      this.baileysConnector.removeAllListeners();
+    } catch (err) {
+      this.logger.error('Error disconnecting WhatsApp connector on shutdown', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     if (this.wss) {
       for (const client of this.wss.clients) {
         if (client.readyState === WebSocket.OPEN) {
@@ -953,6 +1003,9 @@ export class DisparFluxServer {
     }
 
     if (this.httpServer) {
+      if (typeof (this.httpServer as any).closeAllConnections === 'function') {
+        (this.httpServer as any).closeAllConnections();
+      }
       await new Promise<void>((resolve) => {
         this.httpServer!.close(() => resolve());
       });
@@ -970,6 +1023,240 @@ export class DisparFluxServer {
     }
 
     this.logger.info('Dispar Flux server shut down gracefully');
+  }
+
+  public getDefaultOrgId(): string {
+    if (!this.db) return 'org_default';
+    const org =
+      (this.db.prepare("SELECT id FROM organizations WHERE id != 'org_default' LIMIT 1").get() as { id: string } | undefined) ||
+      (this.db.prepare('SELECT id FROM organizations LIMIT 1').get() as { id: string } | undefined);
+    if (org) return org.id;
+
+    const orgId = 'org_default';
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT OR IGNORE INTO organizations (id, name, operational_timezone, created_at, updated_at)
+      VALUES (?, 'Organização Padrão', 'America/Sao_Paulo', ?, ?)
+    `).run(orgId, now, now);
+    return orgId;
+  }
+
+  public getDefaultConnectionId(): string {
+    if (!this.db) return 'default-conn';
+    const row =
+      (this.db.prepare('SELECT id FROM messaging_connections WHERE is_default = 1 LIMIT 1').get() as { id: string } | undefined) ||
+      (this.db.prepare('SELECT id FROM messaging_connections LIMIT 1').get() as { id: string } | undefined);
+    if (row) return row.id;
+
+    const orgId = this.getDefaultOrgId();
+    const connId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO messaging_connections (id, organization_id, name, provider, status, is_default, created_at, updated_at)
+      VALUES (?, ?, 'WhatsApp Principal', 'baileys', 'disconnected', 1, ?, ?)
+    `).run(connId, orgId, now, now);
+    return connId;
+  }
+
+  private registerBaileysListeners(): void {
+    this.baileysConnector.removeAllListeners();
+
+    // Event: 'qr'
+    this.baileysConnector.on('qr', async (payload: QREventPayload) => {
+      try {
+        const qrDataUrl = await QRCode.toDataURL(payload.qr);
+        this.whatsappState = {
+          status: 'pairing',
+          qrDataUrl,
+          me: null,
+        };
+        this.broadcast('whatsapp:state', this.whatsappState);
+        this.broadcast('whatsapp:qr', { qrDataUrl });
+      } catch (err) {
+        this.logger.error('Failed to generate QR data URL', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+
+    // Event: 'status'
+    this.baileysConnector.on('status', (payload: StatusEventPayload) => {
+      const now = new Date().toISOString();
+      const connId = payload.connectionId;
+
+      if (payload.status === 'connected') {
+        let me: { id: string; name?: string } | null = null;
+        const user = this.baileysConnector.getSessionUser(connId);
+        if (user?.id) {
+          me = { id: user.id, name: user.name };
+        } else {
+          try {
+            const credsPath = path.join(this.dataDir, 'wa-auth', connId, 'creds.json');
+            if (fs.existsSync(credsPath)) {
+              const creds = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
+              if (creds.me?.id) {
+                me = { id: creds.me.id, name: creds.me.name };
+              }
+            }
+          } catch {}
+        }
+
+        const splitColon = me?.id ? me.id.split(':') : [];
+        const rawPhone = splitColon[0] ? splitColon[0].split('@')[0] || null : null;
+        const phone = rawPhone ? (rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`) : null;
+
+        if (this.db) {
+          try {
+            this.db.prepare(`
+              UPDATE messaging_connections
+              SET status = 'connected',
+                  phone_number = COALESCE(?, phone_number),
+                  jid = COALESCE(?, jid),
+                  updated_at = ?
+              WHERE id = ?
+            `).run(phone, me?.id || null, now, connId);
+          } catch (err) {
+            this.logger.error('Failed to update messaging_connections on connect', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+
+        this.whatsappState = {
+          status: 'connected',
+          qrDataUrl: null,
+          me,
+        };
+      } else if (payload.status === 'connecting') {
+        this.whatsappState = {
+          status: 'connecting',
+          qrDataUrl: null,
+          me: this.whatsappState.me,
+        };
+      } else if (payload.status === 'disconnected' || payload.status === 'failed') {
+        if (this.db) {
+          try {
+            this.db.prepare(`
+              UPDATE messaging_connections
+              SET status = 'disconnected',
+                  updated_at = ?
+              WHERE id = ?
+            `).run(now, connId);
+          } catch (err) {
+            this.logger.error('Failed to update messaging_connections on disconnect', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+
+        this.whatsappState = {
+          status: 'disconnected',
+          qrDataUrl: null,
+          me: null,
+        };
+      }
+
+      this.broadcast('whatsapp:state', this.whatsappState);
+    });
+
+    // Event: 'message'
+    this.baileysConnector.on('message', (payload: InboundMessage) => {
+      if (!this.db) return;
+      const now = new Date().toISOString();
+
+      try {
+        const conn =
+          (this.db.prepare('SELECT id, organization_id FROM messaging_connections WHERE id = ?').get(payload.connectionId) as { id: string; organization_id: string } | undefined) ||
+          (this.db.prepare('SELECT id, organization_id FROM messaging_connections LIMIT 1').get() as { id: string; organization_id: string } | undefined);
+
+        const orgId = conn?.organization_id || this.getDefaultOrgId();
+        const connId = conn?.id || this.getDefaultConnectionId();
+
+        const norm = normalizePhoneNumber(payload.from);
+        const normalizedPhone = norm.isValid && norm.e164
+          ? norm.e164
+          : (payload.from.startsWith('+') ? payload.from : `+${payload.from.replace('@s.whatsapp.net', '').replace(/\D/g, '')}`);
+
+        let contact = this.db.prepare('SELECT id FROM contacts WHERE organization_id = ? AND normalized_phone = ?').get(orgId, normalizedPhone) as { id: string } | undefined;
+        if (!contact) {
+          const contactId = crypto.randomUUID();
+          const contactName = payload.from.split('@')[0] || payload.from;
+          this.db.prepare(`
+            INSERT INTO contacts (id, organization_id, normalized_phone, name, custom_fields, is_opted_out, created_at, updated_at)
+            VALUES (?, ?, ?, ?, '{}', 0, ?, ?)
+          `).run(contactId, orgId, normalizedPhone, contactName, now, now);
+          contact = { id: contactId };
+        }
+
+        let conv = this.db.prepare('SELECT id, unread_count FROM conversations WHERE connection_id = ? AND contact_id = ?').get(connId, contact.id) as { id: string; unread_count: number } | undefined;
+
+        if (!conv) {
+          const convId = crypto.randomUUID();
+          this.db.prepare(`
+            INSERT INTO conversations (id, organization_id, connection_id, contact_id, unread_count, last_message_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+          `).run(convId, orgId, connId, contact.id, now, now, now);
+          conv = { id: convId, unread_count: 1 };
+        } else {
+          this.db.prepare(`
+            UPDATE conversations
+            SET last_message_at = ?,
+                unread_count = unread_count + 1,
+                updated_at = ?
+            WHERE id = ?
+          `).run(now, now, conv.id);
+        }
+
+        const msgId = crypto.randomUUID();
+        this.db.prepare(`
+          INSERT INTO messages (id, conversation_id, direction, type, kind, content, media_url, media_type, external_id, status, created_at)
+          VALUES (?, ?, 'inbound', 'manual', 'inbound', ?, ?, ?, ?, 'delivered', ?)
+        `).run(
+          msgId,
+          conv.id,
+          payload.content || '',
+          payload.mediaUrl || null,
+          payload.mediaType || null,
+          payload.messageId || null,
+          payload.timestamp instanceof Date ? payload.timestamp.toISOString() : now
+        );
+
+        this.broadcast('inbox:changed', { chatJid: payload.from });
+
+        // CRM lead progression
+        const leads = this.db.prepare('SELECT id, funnel_id, stage_id FROM leads WHERE contact_id = ?').all(contact.id) as Array<{ id: string; funnel_id: string; stage_id: string }>;
+        if (leads && leads.length > 0) {
+          let crmChanged = false;
+          for (const lead of leads) {
+            let inProgressStageId = 'st_2';
+            const funnel = this.db.prepare('SELECT stages FROM funnels WHERE id = ?').get(lead.funnel_id) as { stages: string } | undefined;
+            if (funnel?.stages) {
+              try {
+                const stages = JSON.parse(funnel.stages) as Array<{ id: string; name: string; order?: number }>;
+                const inProgress = stages.find((s) => s.name.toLowerCase().includes('andamento') || s.order === 1);
+                if (inProgress) {
+                  inProgressStageId = inProgress.id;
+                } else if (stages.length > 1 && stages[1]) {
+                  inProgressStageId = stages[1].id;
+                }
+              } catch {}
+            }
+
+            if (lead.stage_id !== inProgressStageId) {
+              this.db.prepare('UPDATE leads SET stage_id = ?, updated_at = ? WHERE id = ?').run(inProgressStageId, now, lead.id);
+              crmChanged = true;
+            }
+          }
+          if (crmChanged) {
+            this.broadcast('crm:changed', {});
+          }
+        }
+      } catch (err) {
+        this.logger.error('Failed to process inbound message', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
   }
 
   get isRunning(): boolean {
