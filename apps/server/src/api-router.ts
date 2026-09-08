@@ -291,19 +291,120 @@ export async function handleApiRoutes(
     const stats = db.prepare(`
       SELECT 
         COUNT(c.id) as total,
-        SUM(CASE WHEN c.is_opted_out = 0 THEN 1 ELSE 0 END) as valid,
+        SUM(CASE WHEN json_extract(c.custom_fields, '$.wa_valid') = 1 AND c.is_opted_out = 0 THEN 1 ELSE 0 END) as valid,
+        SUM(CASE WHEN json_extract(c.custom_fields, '$.wa_valid') = 0 THEN 1 ELSE 0 END) as invalid,
+        SUM(CASE WHEN json_extract(c.custom_fields, '$.wa_valid') IS NULL AND c.is_opted_out = 0 THEN 1 ELSE 0 END) as unchecked,
         SUM(CASE WHEN c.is_opted_out = 1 THEN 1 ELSE 0 END) as optOut
       FROM base_memberships bm
       JOIN contacts c ON c.id = bm.contact_id
       WHERE bm.base_id = ?
-    `).get(baseId) as { total: number; valid: number; optOut: number } | undefined;
+    `).get(baseId) as { total: number; valid: number; invalid: number; unchecked: number; optOut: number } | undefined;
 
     sendJson(res, 200, {
       total: stats?.total || 0,
       valid: stats?.valid || 0,
-      invalid: 0,
-      unchecked: 0,
+      invalid: stats?.invalid || 0,
+      unchecked: stats?.unchecked || 0,
       optOut: stats?.optOut || 0,
+    });
+    return true;
+  }
+
+  const baseValidateMatch = pathname.match(/^\/api\/v1\/bases\/([^/]+)\/validate$/);
+  if (baseValidateMatch && baseValidateMatch[1] && method === 'POST') {
+    const baseId = baseValidateMatch[1];
+    const base = db.prepare('SELECT id, name FROM bases WHERE id = ?').get(baseId) as { id: string; name: string } | undefined;
+    if (!base) {
+      sendJson(res, 404, { error: 'Base não encontrada' });
+      return true;
+    }
+
+    const connId = getConnectionId();
+    const connStatus = server.baileysConnector.getStatus(connId);
+    if (connStatus !== 'connected') {
+      sendJson(res, 400, {
+        error: 'WhatsApp não está conectado. Conecte seu aparelho antes de validar os contatos.',
+      });
+      return true;
+    }
+
+    const contacts = db.prepare(`
+      SELECT c.id, c.normalized_phone, c.custom_fields
+      FROM base_memberships bm
+      JOIN contacts c ON c.id = bm.contact_id
+      WHERE bm.base_id = ?
+    `).all(baseId) as Array<{ id: string; normalized_phone: string; custom_fields: string }>;
+
+    const total = contacts.length;
+    let done = 0;
+    let valid = 0;
+    let invalid = 0;
+
+    const BATCH_SIZE = 20;
+    const now = new Date().toISOString();
+
+    for (let i = 0; i < total; i += BATCH_SIZE) {
+      const chunk = contacts.slice(i, i + BATCH_SIZE);
+      const phonesToCheck = chunk.map((c) => c.normalized_phone);
+
+      try {
+        const results = await server.baileysConnector.onWhatsApp(connId, ...phonesToCheck);
+        const resultMap = new Map<string, boolean>();
+
+        for (const resItem of results) {
+          const num = resItem.jid.split('@')[0];
+          if (num) {
+            resultMap.set(num, resItem.exists);
+            resultMap.set(`+${num}`, resItem.exists);
+          }
+        }
+
+        for (const contact of chunk) {
+          const rawDigits = contact.normalized_phone.replace(/\D/g, '');
+          const exists = resultMap.get(contact.normalized_phone) ?? resultMap.get(rawDigits) ?? false;
+
+          let cf: Record<string, any> = {};
+          try {
+            cf = JSON.parse(contact.custom_fields || '{}');
+          } catch {}
+
+          cf.wa_valid = exists ? 1 : 0;
+          cf.wa_checked_at = now;
+
+          db.prepare('UPDATE contacts SET custom_fields = ?, updated_at = ? WHERE id = ?').run(
+            JSON.stringify(cf),
+            now,
+            contact.id
+          );
+
+          done++;
+          if (exists) valid++;
+          else invalid++;
+        }
+
+        server.broadcast('contacts:validateProgress', {
+          listId: baseId,
+          done,
+          total,
+          valid,
+          invalid,
+        });
+
+        if (i + BATCH_SIZE < total) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      } catch (err) {
+        server.logger.error('Failed batch validation on WhatsApp', {
+          error: err instanceof Error ? err.message : String(err),
+          baseId,
+        });
+      }
+    }
+
+    sendJson(res, 200, {
+      checked: done,
+      valid,
+      invalid,
     });
     return true;
   }
@@ -335,7 +436,11 @@ export async function handleApiRoutes(
     if (filter === 'optOut') {
       sql += ' AND c.is_opted_out = 1';
     } else if (filter === 'valid') {
-      sql += ' AND c.is_opted_out = 0';
+      sql += " AND json_extract(c.custom_fields, '$.wa_valid') = 1 AND c.is_opted_out = 0";
+    } else if (filter === 'invalid') {
+      sql += " AND json_extract(c.custom_fields, '$.wa_valid') = 0";
+    } else if (filter === 'unchecked') {
+      sql += " AND json_extract(c.custom_fields, '$.wa_valid') IS NULL AND c.is_opted_out = 0";
     }
 
     if (query) {
@@ -356,6 +461,14 @@ export async function handleApiRoutes(
       try {
         extra = JSON.parse(r.imported_fields || '{}');
       } catch {}
+
+      let customFields: Record<string, any> = {};
+      try {
+        customFields = JSON.parse(r.custom_fields || '{}');
+      } catch {}
+
+      const waValid = typeof customFields.wa_valid === 'number' ? customFields.wa_valid : null;
+
       return {
         id: r.id,
         listId: baseId,
@@ -363,11 +476,11 @@ export async function handleApiRoutes(
         name: r.name || '',
         jid: `${r.normalized_phone.replace('+', '')}@s.whatsapp.net`,
         extraJson: r.imported_fields || '{}',
-        waValid: 1,
+        waValid,
         optOut: r.is_opted_out ? 1 : 0,
         createdAt: new Date(r.created_at).getTime(),
-        valid: r.is_opted_out === 0,
-        unchecked: false,
+        valid: waValid === 1 && r.is_opted_out === 0,
+        unchecked: waValid === null && r.is_opted_out === 0,
         extra,
       };
     });
@@ -600,7 +713,7 @@ export async function handleApiRoutes(
     }
 
     // Notify clients of campaign progress
-    (server as any).broadcast('campaign:progress', {
+    server.broadcast('campaign:progress', {
       campaignId,
       name: body.name,
       status: 'running',
@@ -609,6 +722,16 @@ export async function handleApiRoutes(
       failed: 0,
       pending: members.length,
     });
+
+    // Start campaign execution in background via serial execution engine
+    if (members.length > 0 && server.campaignExecutionEngine) {
+      void server.campaignExecutionEngine.processCampaign(campaignId).catch((err) => {
+        server.logger.error('Background campaign execution error', {
+          error: err instanceof Error ? err.message : String(err),
+          campaignId,
+        });
+      });
+    }
 
     sendJson(res, 200, {
       campaignId,
@@ -623,16 +746,100 @@ export async function handleApiRoutes(
   }
 
   if (pathname === '/api/v1/campaigns/pause' && method === 'POST') {
-    db.prepare("UPDATE campaigns SET status = 'paused' WHERE status = 'running'").run();
-    (server as any).broadcast('campaign:stopped', { status: 'paused' });
+    const running = db.prepare("SELECT id FROM campaigns WHERE status = 'running' ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
+    if (running) {
+      if (server.campaignExecutionEngine) {
+        try {
+          server.campaignExecutionEngine.pauseCampaign(running.id);
+        } catch {
+          db.prepare("UPDATE campaigns SET status = 'paused' WHERE id = ?").run(running.id);
+        }
+      } else {
+        db.prepare("UPDATE campaigns SET status = 'paused' WHERE id = ?").run(running.id);
+      }
+      server.broadcast('campaign:stopped', { status: 'paused', campaignId: running.id });
+    }
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  if (pathname === '/api/v1/campaigns/resume' && method === 'POST') {
+    const paused = db.prepare("SELECT id, name FROM campaigns WHERE status = 'paused' ORDER BY created_at DESC LIMIT 1").get() as { id: string; name: string } | undefined;
+    if (paused) {
+      if (server.campaignExecutionEngine) {
+        void server.campaignExecutionEngine.resumeCampaign(paused.id).catch((err) => {
+          server.logger.error('Background campaign resume error', {
+            error: err instanceof Error ? err.message : String(err),
+            campaignId: paused.id,
+          });
+        });
+      } else {
+        db.prepare("UPDATE campaigns SET status = 'running' WHERE id = ?").run(paused.id);
+      }
+      server.broadcast('campaign:progress', {
+        campaignId: paused.id,
+        name: paused.name,
+        status: 'running',
+      });
+    }
     sendJson(res, 200, { success: true });
     return true;
   }
 
   if (pathname === '/api/v1/campaigns/cancel' && method === 'POST') {
-    db.prepare("UPDATE campaigns SET status = 'canceled' WHERE status IN ('running', 'paused')").run();
-    (server as any).broadcast('campaign:stopped', { status: 'canceled' });
+    const active = db.prepare("SELECT id FROM campaigns WHERE status IN ('running', 'paused') ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
+    if (active) {
+      if (server.campaignExecutionEngine) {
+        try {
+          server.campaignExecutionEngine.cancelCampaign(active.id);
+        } catch {
+          db.prepare("UPDATE campaigns SET status = 'canceled' WHERE id = ?").run(active.id);
+        }
+      } else {
+        db.prepare("UPDATE campaigns SET status = 'canceled' WHERE id = ?").run(active.id);
+      }
+      server.broadcast('campaign:stopped', { status: 'canceled', campaignId: active.id });
+    }
     sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  const campaignProgressMatch = pathname.match(/^\/api\/v1\/campaigns\/([^/]+)\/progress$/);
+  if (campaignProgressMatch && campaignProgressMatch[1] && method === 'GET') {
+    const campaignId = campaignProgressMatch[1];
+    const camp = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(campaignId) as any;
+    if (!camp) {
+      sendJson(res, 404, { error: 'Campanha não encontrada' });
+      return true;
+    }
+    const currentJob = db.prepare("SELECT normalized_phone FROM campaign_jobs WHERE campaign_id = ? AND status = 'sending' LIMIT 1").get(campaignId) as { normalized_phone: string } | undefined;
+    sendJson(res, 200, {
+      campaignId: camp.id,
+      name: camp.name,
+      status: camp.status,
+      total: camp.snapshot_total,
+      sent: camp.sent_count,
+      failed: camp.failed_count,
+      pending: Math.max(0, camp.snapshot_total - camp.sent_count - camp.failed_count),
+      skipped: 0,
+      unknown: camp.unknown_count || 0,
+      currentPhone: currentJob?.normalized_phone || null,
+      delayRemaining: camp.pacing_interval_seconds || 15,
+    });
+    return true;
+  }
+
+  if (pathname === '/api/v1/campaigns' && method === 'GET') {
+    const campaigns = db.prepare('SELECT * FROM campaigns ORDER BY created_at DESC LIMIT 50').all() as any[];
+    sendJson(res, 200, campaigns.map((c) => ({
+      id: c.id,
+      name: c.name,
+      status: c.status,
+      total: c.snapshot_total,
+      sent: c.sent_count,
+      failed: c.failed_count,
+      createdAt: c.created_at,
+    })));
     return true;
   }
 

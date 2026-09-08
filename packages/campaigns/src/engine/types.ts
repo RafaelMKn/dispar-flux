@@ -70,6 +70,8 @@ export type SleepFunction = (ms: number) => Promise<void>;
 export interface ExecutionEngineOptions {
   sleepFn?: SleepFunction;
   suppressionSalt?: string;
+  onJobProcessed?: (campaign: Campaign, job: CampaignJob, result: SendMessageResult) => void;
+  onCampaignCompleted?: (campaign: Campaign) => void;
 }
 
 export function mapRowToCampaign(row: CampaignRow): Campaign {

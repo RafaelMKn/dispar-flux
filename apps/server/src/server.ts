@@ -49,6 +49,8 @@ import {
 import {
   ContactService,
   CampaignService,
+  CampaignExecutionEngine,
+  type MessagingDispatcher,
 } from '@dispar-flux/campaigns';
 
 import {
@@ -121,6 +123,7 @@ export class DisparFluxServer {
   public inviteService!: InviteService;
   public contactService!: ContactService;
   public campaignService!: CampaignService;
+  public campaignExecutionEngine!: CampaignExecutionEngine;
   public auditLogger!: AuditLogger;
   public passwordHasher: PasswordHasher = defaultPasswordHasher;
 
@@ -182,6 +185,63 @@ export class DisparFluxServer {
     this.inviteService = new InviteService(this.db, this.sessionService, this.auditLogger, this.passwordHasher);
     this.contactService = new ContactService(this.db);
     this.campaignService = new CampaignService(this.db);
+
+    const dispatcher: MessagingDispatcher = {
+      sendMessage: async (params) => {
+        const connId = params.connectionId;
+        const status = this.baileysConnector.getStatus(connId);
+        if (status !== 'connected') {
+          return {
+            success: false,
+            error: `WhatsApp connection '${connId}' is not connected (current status: ${status})`,
+          };
+        }
+
+        try {
+          const res = await this.baileysConnector.sendMessage(connId, {
+            to: params.to,
+            content: { text: params.content },
+          });
+          return {
+            success: true,
+            messageId: res.messageId,
+          };
+        } catch (err: unknown) {
+          const error = err instanceof Error ? err.message : String(err);
+          return {
+            success: false,
+            error,
+          };
+        }
+      },
+    };
+
+    this.campaignExecutionEngine = new CampaignExecutionEngine(this.db, dispatcher, {
+      onJobProcessed: (campaign, job, result) => {
+        const total = campaign.snapshotTotal;
+        const sent = campaign.sentCount;
+        const failed = campaign.failedCount;
+        const pending = Math.max(0, total - sent - failed);
+
+        this.broadcast('campaign:progress', {
+          campaignId: campaign.id,
+          name: campaign.name,
+          status: campaign.status,
+          total,
+          sent,
+          failed,
+          pending,
+          currentPhone: job.normalizedPhone,
+          delayRemaining: campaign.pacingIntervalSeconds,
+        });
+      },
+      onCampaignCompleted: (campaign) => {
+        this.broadcast('campaign:stopped', {
+          campaignId: campaign.id,
+          status: 'completed',
+        });
+      },
+    });
 
     // 7. Initialize HTTP server
     this.httpServer = http.createServer((req, res) => {
