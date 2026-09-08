@@ -439,6 +439,44 @@ export class BaileysConnector extends EventEmitter implements MessagingConnector
     return session ? session.status : 'disconnected';
   }
 
+  /**
+   * Checks whether the given phone numbers or JIDs exist on WhatsApp.
+   */
+  async onWhatsApp(
+    connectionId: string,
+    ...phoneNumbers: string[]
+  ): Promise<Array<{ jid: string; exists: boolean }>> {
+    const session = this.sessions.get(connectionId);
+    if (!session || session.status !== 'connected' || !session.socket) {
+      throw new NotConnectedError(connectionId, session ? session.status : 'disconnected');
+    }
+
+    if (phoneNumbers.length === 0) {
+      return [];
+    }
+
+    if (typeof session.socket.onWhatsApp !== 'function') {
+      return phoneNumbers.map((p) => ({
+        jid: formatToWhatsAppJid(p),
+        exists: true,
+      }));
+    }
+
+    try {
+      const results = await session.socket.onWhatsApp(...phoneNumbers);
+      if (!Array.isArray(results)) {
+        return [];
+      }
+      return results.map((r: any) => ({
+        jid: r.jid,
+        exists: Boolean(r.exists),
+      }));
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      throw new Error(`Failed to check numbers on WhatsApp: ${error.message}`);
+    }
+  }
+
   // Strongly typed event listener overloads
   override on(event: 'qr', listener: (payload: QREventPayload) => void): this;
   override on(event: 'status', listener: (payload: StatusEventPayload) => void): this;

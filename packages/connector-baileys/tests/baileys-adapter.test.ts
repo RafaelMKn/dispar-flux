@@ -27,6 +27,13 @@ class MockWASocket {
     };
   }
 
+  async onWhatsApp(...phoneNumbers: string[]) {
+    return phoneNumbers.map((p) => ({
+      jid: p.includes('@') ? p : `${p.replace(/\D/g, '')}@s.whatsapp.net`,
+      exists: !p.includes('invalid'),
+    }));
+  }
+
   end() {
     this.closed = true;
   }
@@ -260,6 +267,12 @@ describe('Baileys Connector: Adapter Lifecycle & Operations (ADR 0002, 0005, 001
       assert.equal(twoArgResult.status, 'sent');
       assert.equal(mockSocket!.sentMessages.length, 3);
       assert.deepEqual(mockSocket!.sentMessages[2]?.content, { text: 'Mensagem com formato de dois argumentos' });
+
+      // 4. Test onWhatsApp validation
+      const waResults = await connector.onWhatsApp('conn-1', '5511998887777', '551100000000_invalid');
+      assert.equal(waResults.length, 2);
+      assert.equal(waResults[0]?.exists, true);
+      assert.equal(waResults[1]?.exists, false);
     });
   });
 

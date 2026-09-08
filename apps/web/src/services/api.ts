@@ -155,7 +155,7 @@ export const webApi: DisparApi = {
       }),
     extraKeys: (listId: string) => req(`/api/v1/bases/${listId}/extra-keys`),
     remove: async () => {},
-    validate: async () => ({ checked: 0, valid: 0, invalid: 0 }),
+    validate: async (listId: string) => req(`/api/v1/bases/${listId}/validate`, { method: 'POST' }),
     onValidateProgress: (cb: any) => subscribe('contacts:validateProgress', cb),
   },
 
