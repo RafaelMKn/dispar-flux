@@ -74,14 +74,64 @@ export class CsvExporter {
   }
 }
 
-function escapeCsvValue(val: string, delimiter: string): string {
-  if (
-    val.includes(delimiter) ||
-    val.includes('"') ||
-    val.includes('\n') ||
-    val.includes('\r')
-  ) {
-    return `"${val.replace(/"/g, '""')}"`;
+const FORMULA_TRIGGER_CHARS = ['=', '+', '-', '@', '\t', '\r'];
+const NUMERIC_REGEX = /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/;
+
+/**
+ * Checks whether a string is a safe numeric literal (e.g. -42, +123, -12.34, +5511987654321).
+ * Safe numeric literals do not trigger formula execution in spreadsheet applications.
+ */
+export function isSafeNumericLiteral(val: string): boolean {
+  if (val.includes('\t') || val.includes('\r') || val.includes('\n')) {
+    return false;
   }
-  return val;
+  const trimmed = val.trim();
+  if (!trimmed) return false;
+  return NUMERIC_REGEX.test(trimmed);
 }
+
+/**
+ * Neutralizes spreadsheet formula injection payloads according to OWASP guidelines.
+ * If a value begins with =, +, -, @, \t, or \r (directly or after leading whitespace),
+ * it is prefixed with a single quote (') unless it is a safe numeric literal
+ * (e.g. negative numbers like -42 or E.164 phone numbers like +5511999999999).
+ */
+export function neutralizeCsvFormula(val: string): string {
+  if (!val) return val;
+
+  const trimmedStart = val.trimStart();
+  const trimmedSpacesOnly = val.replace(/^[ \u00A0]+/, '');
+
+  const startsWithTrigger =
+    FORMULA_TRIGGER_CHARS.some((ch) => val.startsWith(ch)) ||
+    FORMULA_TRIGGER_CHARS.some((ch) => trimmedSpacesOnly.startsWith(ch)) ||
+    FORMULA_TRIGGER_CHARS.some((ch) => trimmedStart.startsWith(ch));
+
+  if (!startsWithTrigger) {
+    return val;
+  }
+
+  // Safe if strictly a valid number (e.g. -42, +123, -12.34, +5511987654321)
+  if (isSafeNumericLiteral(val)) {
+    return val;
+  }
+
+  return `'${val}`;
+}
+
+/**
+ * Neutralizes formula injection characters and escapes CSV delimiter/quotes/newlines.
+ */
+export function escapeCsvValue(val: string, delimiter: string): string {
+  const sanitized = neutralizeCsvFormula(val);
+  if (
+    sanitized.includes(delimiter) ||
+    sanitized.includes('"') ||
+    sanitized.includes('\n') ||
+    sanitized.includes('\r')
+  ) {
+    return `"${sanitized.replace(/"/g, '""')}"`;
+  }
+  return sanitized;
+}
+

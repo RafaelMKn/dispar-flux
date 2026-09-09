@@ -44,6 +44,9 @@ import {
   DeviceService,
   SessionService,
   InviteService,
+  Permission,
+  hasPermission,
+  type AuthenticatedContext,
 } from '@dispar-flux/auth';
 
 import {
@@ -59,10 +62,11 @@ import {
   type DeletionLedgerRecord,
 } from '@dispar-flux/migration';
 
-import type {
-  HealthResponse,
-  ReadyResponse,
-  SystemStatusResponse,
+import {
+  type HealthResponse,
+  type ReadyResponse,
+  type SystemStatusResponse,
+  buildOpenApiSpec,
 } from '@dispar-flux/contracts';
 import QRCode from 'qrcode';
 import {
@@ -81,6 +85,8 @@ export interface ServerOptions {
   claimCode?: string;
   recoveryKey?: string;
   nodeEnv?: string;
+  version?: string;
+  logger?: SanitizedLogger;
 }
 
 export class DisparFluxServer {
@@ -89,6 +95,7 @@ export class DisparFluxServer {
   public readonly dataDir: string;
   public readonly nodeEnv: string;
   public recoveryKey: string;
+  private readonly isEphemeralRecoveryKey: boolean = false;
 
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
@@ -127,14 +134,29 @@ export class DisparFluxServer {
   public auditLogger!: AuditLogger;
   public passwordHasher: PasswordHasher = defaultPasswordHasher;
 
-  constructor(options: ServerOptions = {}) {
+  constructor(
+    options: ServerOptions = {},
+    extraOptions?: { logger?: any; exitOnLockError?: boolean }
+  ) {
     this.port = options.port ?? 3000;
     this.host = options.host ?? '127.0.0.1';
     this.dataDir = path.resolve(options.dataDir ?? process.env.DATA_DIR ?? './data');
     this.nodeEnv = options.nodeEnv ?? process.env.NODE_ENV ?? 'development';
-    this.recoveryKey = options.recoveryKey ?? process.env.RECOVERY_KEY ?? 'flux_default_recovery_key_32_bytes_long_!!';
+    this.logger = extraOptions?.logger ?? options.logger ?? new SanitizedLogger('DisparFluxServer');
 
-    this.logger = new SanitizedLogger('DisparFluxServer');
+    const rawRecoveryKey = options.recoveryKey ?? process.env.RECOVERY_KEY;
+    if (this.nodeEnv === 'production') {
+      this.recoveryKey = rawRecoveryKey ?? '';
+    } else {
+      if (rawRecoveryKey && rawRecoveryKey.trim() !== '') {
+        this.recoveryKey = rawRecoveryKey;
+      } else {
+        this.recoveryKey = crypto.randomBytes(32).toString('hex');
+        this.isEphemeralRecoveryKey = true;
+        this.logger.warn('No RECOVERY_KEY provided, using ephemeral/development key. Do NOT use in production.');
+      }
+    }
+
     this.baileysConnector = new BaileysConnector();
 
     this.cors = createCorsHandler({
@@ -152,10 +174,25 @@ export class DisparFluxServer {
     this.sizeLimits = createSizeLimitHandler();
   }
 
+  private validateRecoveryKey(): void {
+    if (this.nodeEnv === 'production') {
+      if (!this.recoveryKey || typeof this.recoveryKey !== 'string' || this.recoveryKey.trim() === '') {
+        throw new Error('RECOVERY_KEY is mandatory in production');
+      }
+      if (this.recoveryKey === 'flux_default_recovery_key_32_bytes_long_!!') {
+        throw new Error('Insecure default RECOVERY_KEY is prohibited in production');
+      }
+      if (this.recoveryKey.length < 32) {
+        throw new Error('RECOVERY_KEY must be at least 32 characters long in production');
+      }
+    }
+  }
+
   /**
    * Boots the server: acquires lock, runs migrations, executes crash recovery, starts HTTP/WS.
    */
   async start(): Promise<{ port: number; address: string }> {
+    this.validateRecoveryKey();
     this.startTime = Date.now();
     fs.mkdirSync(this.dataDir, { recursive: true });
 
@@ -258,7 +295,25 @@ export class DisparFluxServer {
     // 8. Initialize WebSocket server for /ws
     this.wss = new WebSocketServer({ noServer: true });
     this.wss.on('connection', (ws) => {
-      ws.send(JSON.stringify({ type: 'system.status_changed', payload: { status: 'connected' } }));
+      ws.send(
+        JSON.stringify({
+          type: 'system.status_changed',
+          payload: {
+            status: 'connected',
+            details: { edition: 'community' },
+          },
+        })
+      );
+      ws.on('message', (raw) => {
+        try {
+          const parsed = JSON.parse(raw.toString());
+          if (parsed && parsed.type === 'ping') {
+            ws.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
+          }
+        } catch {
+          // ignore non-JSON messages
+        }
+      });
     });
 
     this.httpServer.on('upgrade', (req, socket, head) => {
@@ -369,7 +424,7 @@ export class DisparFluxServer {
 
     // Route Dispatcher
     // --- Health & Readiness ---
-    if (method === 'GET' && pathname === '/health') {
+    if (method === 'GET' && (pathname === '/health' || pathname === '/api/v1/health')) {
       const response: HealthResponse = {
         status: 'ok',
         timestamp: new Date().toISOString(),
@@ -380,7 +435,7 @@ export class DisparFluxServer {
       return;
     }
 
-    if (method === 'GET' && pathname === '/ready') {
+    if (method === 'GET' && (pathname === '/ready' || pathname === '/api/v1/ready')) {
       const isDbReady = Boolean(this.db && this.db.isOpen);
       const isLockHeld = Boolean(this.lock && this.lock.isHeld);
 
@@ -402,13 +457,13 @@ export class DisparFluxServer {
     }
 
     if (method === 'GET' && pathname === '/api/v1/system/status') {
-      const org = this.db!.prepare('SELECT id, operational_timezone FROM organizations LIMIT 1').get() as {
+      const org = this.db!.prepare("SELECT id, operational_timezone FROM organizations WHERE id != 'org_default' LIMIT 1").get() as {
         id: string;
         operational_timezone: string;
       } | undefined;
 
       const response: SystemStatusResponse = {
-        installationId: org?.id || 'unclaimed',
+        installationId: org?.id || 'inst_unclaimed',
         version: '0.0.1',
         edition: 'community',
         environment: this.nodeEnv,
@@ -416,7 +471,7 @@ export class DisparFluxServer {
         uptimeSeconds: Math.floor((Date.now() - this.startTime) / 1000),
         nodeVersion: process.version,
         isClaimed: Boolean(org),
-        activeConnectionsCount: 1,
+        activeConnectionsCount: 0,
         storageType: 'local',
       };
       this.sendJson(res, 200, response);
@@ -424,22 +479,35 @@ export class DisparFluxServer {
     }
 
     if (method === 'GET' && pathname === '/api/v1/openapi.json') {
-      const openApiDoc = {
-        openapi: '3.1.0',
-        info: {
-          title: 'Dispar Flux API',
-          version: '0.0.1',
-          description: 'Dispar Flux Modular Monolith API',
-        },
-        paths: {
-          '/health': { get: { summary: 'Health check' } },
-          '/ready': { get: { summary: 'Readiness check' } },
-          '/api/v1/system/status': { get: { summary: 'System status' } },
-          '/api/v1/auth/claim': { post: { summary: 'Onboarding claim flow' } },
-          '/api/v1/auth/login': { post: { summary: 'Member login' } },
-        },
-      };
+      const openApiDoc = buildOpenApiSpec();
       this.sendJson(res, 200, openApiDoc);
+      return;
+    }
+
+    if (method === 'GET' && (pathname === '/docs' || pathname === '/api/v1/docs')) {
+      const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Dispar Flux API Documentation</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = () => {
+      window.ui = SwaggerUIBundle({
+        url: '/api/v1/openapi.json',
+        dom_id: '#swagger-ui',
+      });
+    };
+  </script>
+</body>
+</html>`;
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end(html);
       return;
     }
 
@@ -656,59 +724,231 @@ export class DisparFluxServer {
       return;
     }
 
-    // --- List Devices (ADR 0022) ---
-    if (method === 'GET' && (pathname === '/api/v1/devices' || pathname === '/api/v1/auth/devices')) {
-      const token = this.extractToken(req);
-      if (!token) {
-        this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+    // --- Media Storage & Directory Traversal Protection (ADR 0012) ---
+    if (pathname.startsWith('/media/') || pathname === '/media' || pathname.startsWith('/api/v1/media/') || pathname === '/api/v1/media') {
+      if (method !== 'GET' && method !== 'HEAD') {
+        this.sendJson(res, 405, { error: 'Method Not Allowed' });
         return;
       }
-      try {
-        const authContext = this.sessionService.validateToken(token);
-        const devices = this.db!.prepare(`
-          SELECT d.id, d.member_id as memberId, d.name, d.device_identifier as deviceIdentifier,
-                 d.is_approved as isApproved, d.approved_at as approvedAt, d.last_seen_at as lastSeenAt,
-                 d.created_at as createdAt, m.name as memberName, m.email as memberEmail, m.role as memberRole
-          FROM authorized_devices d
-          JOIN members m ON m.id = d.member_id
-          WHERE m.organization_id = ?
-          ORDER BY d.created_at DESC
-        `).all(authContext.member.organizationId);
 
-        this.sendJson(res, 200, { devices });
-      } catch (err) {
-        this.sendJson(res, 401, { error: 'Unauthorized', message: err instanceof Error ? err.message : 'Session invalid' });
+      // Strictly block directory traversal attempts in raw request URL
+      const rawUrl = req.url || '';
+      if (
+        rawUrl.includes('..') ||
+        /%2e/i.test(rawUrl) ||
+        /%2f/i.test(rawUrl) ||
+        /%5c/i.test(rawUrl) ||
+        rawUrl.includes('\\')
+      ) {
+        this.sendJson(res, 404, { error: 'Not Found', message: 'Media path traversal detected or invalid' });
+        return;
       }
+
+      const key = pathname.replace(/^\/(?:api\/v1\/)?media\/?/, '');
+      const OPAQUE_KEY_REGEX = /^[a-zA-Z0-9_-]{8,128}$/;
+      if (!key || !OPAQUE_KEY_REGEX.test(key)) {
+        this.sendJson(res, 404, { error: 'Not Found', message: 'Invalid or missing media key' });
+        return;
+      }
+
+      const mediaDir = path.resolve(this.dataDir, 'media');
+      const targetFile = path.resolve(mediaDir, key);
+
+      // Verify containment strictly within mediaDir
+      if (!targetFile.startsWith(mediaDir + path.sep) && targetFile !== mediaDir) {
+        this.sendJson(res, 404, { error: 'Not Found', message: 'Media path traversal detected' });
+        return;
+      }
+
+      if (!fs.existsSync(targetFile) || !fs.statSync(targetFile).isFile()) {
+        this.sendJson(res, 404, { error: 'Not Found', message: 'Media not found' });
+        return;
+      }
+
+      const stat = fs.statSync(targetFile);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Length', stat.size);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      if (method === 'HEAD') {
+        res.end();
+        return;
+      }
+      fs.createReadStream(targetFile).pipe(res);
       return;
     }
 
-    // --- Device Approval ---
+    // ------------------------------------------------------------------------
+    // Central Authentication & Authorization Guard for Private API Routes
+    // ------------------------------------------------------------------------
+    const PUBLIC_API_ROUTES = new Set([
+      '/health',
+      '/ready',
+      '/docs',
+      '/api/v1/health',
+      '/api/v1/ready',
+      '/api/v1/docs',
+      '/api/v1/system/status',
+      '/api/v1/openapi.json',
+      '/api/v1/auth/claim',
+      '/api/v1/auth/login',
+      '/api/v1/auth/logout',
+    ]);
+
+    let authContext: AuthenticatedContext | null = null;
+    const isApiRoute = pathname.startsWith('/api/v1/');
+    const isPublicApi = PUBLIC_API_ROUTES.has(pathname);
+
+    if (isApiRoute && !isPublicApi) {
+      const hasOwner = Boolean(this.db!.prepare("SELECT id FROM members WHERE role = 'owner' LIMIT 1").get());
+      const token = this.extractToken(req);
+
+      if (token) {
+        try {
+          authContext = this.sessionService.validateToken(token);
+          (req as any).auth = authContext;
+        } catch {
+          this.sendJson(res, 401, { error: 'Unauthorized', message: 'Sessão inválida ou expirada.' });
+          return;
+        }
+      }
+
+      if (hasOwner && !authContext) {
+        this.sendJson(res, 401, { error: 'Unauthorized', message: 'Autenticação necessária.' });
+        return;
+      }
+
+      if (!hasOwner && !authContext) {
+        const isUnclaimedExempt =
+          pathname === '/api/v1/migration/import' ||
+          pathname === '/api/v1/backup/create' ||
+          pathname === '/api/v1/backup/restore';
+
+        if (!isUnclaimedExempt) {
+          this.sendJson(res, 401, {
+            error: 'Unauthorized',
+            unclaimed: true,
+            message: 'Instalação pendente de configuração inicial.',
+          });
+          return;
+        }
+      }
+    }
+
+    // --- List Devices (ADR 0022) ---
+    if (method === 'GET' && (pathname === '/api/v1/devices' || pathname === '/api/v1/auth/devices')) {
+      if (!authContext) {
+        this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+        return;
+      }
+      const devices = this.db!.prepare(`
+        SELECT d.id, d.member_id as memberId, d.name, d.device_identifier as deviceIdentifier,
+               d.is_approved as isApproved, d.approved_at as approvedAt, d.last_seen_at as lastSeenAt,
+               d.created_at as createdAt, m.name as memberName, m.email as memberEmail, m.role as memberRole
+        FROM authorized_devices d
+        JOIN members m ON m.id = d.member_id
+        WHERE m.organization_id = ?
+        ORDER BY d.created_at DESC
+      `).all(authContext.member.organizationId);
+
+      this.sendJson(res, 200, { devices });
+      return;
+    }
+
+    // --- Device Approval (ADR 0011, ADR 0029, ADR 0047) ---
     if (method === 'POST' && (pathname === '/api/v1/devices/approve' || pathname === '/api/v1/auth/devices/approve')) {
-      const body = await this.sizeLimits.readJson<{ deviceId: string; approve: boolean; ownerMemberId?: string }>(req);
-      const ownerRow = this.db!.prepare("SELECT id FROM members WHERE role = 'owner' LIMIT 1").get() as { id: string } | undefined;
-      const orgRow = this.db!.prepare('SELECT id FROM organizations LIMIT 1').get() as { id: string } | undefined;
+      if (!authContext) {
+        this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+        return;
+      }
+      if (authContext.member.role !== 'owner') {
+        this.sendJson(res, 403, { error: 'Forbidden', message: 'Only owners can approve devices' });
+        return;
+      }
 
-      const ownerId = body.ownerMemberId || ownerRow?.id || 'owner_default';
-      const approved = this.deviceService.approveDevice({
-        deviceId: body.deviceId,
-        approvedByMemberId: ownerId,
-        actorRole: 'owner',
-        organizationId: orgRow?.id || 'org_default',
-      });
+      const body = await this.sizeLimits.readJson<{ deviceId: string; approve?: boolean; ownerMemberId?: string }>(req);
+      if (!body.deviceId) {
+        this.sendJson(res, 400, { error: 'Bad Request', message: 'deviceId is required' });
+        return;
+      }
 
-      this.sendJson(res, 200, {
-        deviceId: approved.id,
-        isApproved: approved.isApproved,
-        approvedAt: approved.approvedAt?.toISOString(),
-      });
+      // Validate device exists and belongs to a member of caller's organization
+      const devRow = this.db!.prepare(`
+        SELECT d.id, m.organization_id as organizationId
+        FROM authorized_devices d
+        JOIN members m ON m.id = d.member_id
+        WHERE d.id = ?
+      `).get(body.deviceId) as { id: string; organizationId: string } | undefined;
+
+      if (!devRow || devRow.organizationId !== authContext.member.organizationId) {
+        this.sendJson(res, 404, { error: 'Not Found', message: 'Device not found' });
+        return;
+      }
+
+      try {
+        const approved = this.deviceService.approveDevice({
+          deviceId: body.deviceId,
+          approvedByMemberId: authContext.member.id,
+          actorRole: 'owner',
+          organizationId: authContext.member.organizationId,
+        });
+
+        this.sendJson(res, 200, {
+          deviceId: approved.id,
+          isApproved: approved.isApproved,
+          approvedAt: approved.approvedAt?.toISOString(),
+        });
+      } catch (err: any) {
+        const statusCode = err?.statusCode || 400;
+        this.sendJson(res, statusCode, { error: err?.name || 'Error', message: err?.message || 'Device approval failed' });
+      }
       return;
     }
 
     // --- Contacts & Brazilian Phone Normalization (ADR 0034) ---
+    if (method === 'GET' && pathname === '/api/v1/contacts') {
+      if (!authContext) {
+        this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+        return;
+      }
+      if (!hasPermission(authContext.member.role, Permission.CRM_READ) && !hasPermission(authContext.member.role, Permission.BASES_MANAGE)) {
+        this.sendJson(res, 403, { error: 'Forbidden', message: 'Access denied: lacks permission to view contacts' });
+        return;
+      }
+      const contacts = this.db!.prepare(`
+        SELECT id, organization_id, normalized_phone, name, custom_fields, notes, is_opted_out, created_at, updated_at
+        FROM contacts
+        WHERE organization_id = ?
+        ORDER BY created_at DESC
+      `).all(authContext.member.organizationId) as any[];
+
+      const mappedContacts = contacts.map((c) => ({
+        id: c.id,
+        organizationId: c.organization_id,
+        normalizedPhone: c.normalized_phone,
+        phone: c.normalized_phone,
+        name: c.name,
+        isOptedOut: Boolean(c.is_opted_out),
+        createdAt: c.created_at,
+        updatedAt: c.updated_at,
+      }));
+
+      this.sendJson(res, 200, { contacts: mappedContacts, data: mappedContacts });
+      return;
+    }
+
     if (method === 'POST' && pathname === '/api/v1/contacts') {
+      if (!authContext) {
+        this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+        return;
+      }
+      if (!hasPermission(authContext.member.role, Permission.CRM_WRITE) && !hasPermission(authContext.member.role, Permission.BASES_MANAGE)) {
+        this.sendJson(res, 403, { error: 'Forbidden', message: 'Access denied: lacks permission to manage contacts' });
+        return;
+      }
+
       const body = await this.sizeLimits.readJson<{ phone: string; name?: string }>(req);
-      const orgRow = this.db!.prepare('SELECT id FROM organizations LIMIT 1').get() as { id: string } | undefined;
-      const orgId = orgRow?.id || 'org_default';
+      const orgId = authContext.member.organizationId;
 
       try {
         const result = this.contactService.findOrCreateContact(orgId, {
@@ -724,6 +964,15 @@ export class DisparFluxServer {
 
     // --- Campaigns & Safety Floor Validation (ADR 0060) ---
     if (method === 'POST' && pathname === '/api/v1/campaigns') {
+      if (!authContext) {
+        this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+        return;
+      }
+      if (!hasPermission(authContext.member.role, Permission.CAMPAIGNS_MANAGE)) {
+        this.sendJson(res, 403, { error: 'Forbidden', message: 'Access denied: role "operator" lacks permission "campaigns:manage"' });
+        return;
+      }
+
       const body = await this.sizeLimits.readJson<{
         name: string;
         messageTemplate: string;
@@ -733,8 +982,7 @@ export class DisparFluxServer {
         connectionId?: string;
       }>(req);
 
-      const orgRow = this.db!.prepare('SELECT id FROM organizations LIMIT 1').get() as { id: string } | undefined;
-      const connRow = this.db!.prepare('SELECT id FROM messaging_connections LIMIT 1').get() as { id: string } | undefined;
+      const orgId = authContext.member.organizationId;
 
       // Safety Floor Invariant Checks (ADR 0060)
       if (body.pacingIntervalSeconds < SAFETY_FLOOR.MIN_PACING_INTERVAL_SECONDS) {
@@ -762,8 +1010,14 @@ export class DisparFluxServer {
       }
 
       let connectionId = body.connectionId;
-      if (!connectionId) {
-        const connRow = this.db!.prepare('SELECT id FROM messaging_connections LIMIT 1').get() as { id: string } | undefined;
+      if (connectionId) {
+        const connRow = this.db!.prepare('SELECT id FROM messaging_connections WHERE id = ? AND organization_id = ?').get(connectionId, orgId);
+        if (!connRow) {
+          this.sendJson(res, 404, { error: 'Not Found', message: 'Messaging connection not found' });
+          return;
+        }
+      } else {
+        const connRow = this.db!.prepare('SELECT id FROM messaging_connections WHERE organization_id = ? LIMIT 1').get(orgId) as { id: string } | undefined;
         if (connRow) {
           connectionId = connRow.id;
         } else {
@@ -772,12 +1026,12 @@ export class DisparFluxServer {
           this.db!.prepare(`
             INSERT INTO messaging_connections (id, organization_id, name, provider, status, is_default, created_at, updated_at)
             VALUES (?, ?, 'Default Connection', 'baileys', 'disconnected', 1, ?, ?)
-          `).run(connectionId, orgRow?.id || 'org_default', now, now);
+          `).run(connectionId, orgId, now, now);
         }
       }
 
       const campaign = this.campaignService.createCampaign({
-        organizationId: orgRow?.id || 'org_default',
+        organizationId: orgId,
         connectionId,
         name: body.name,
         messageTemplate: body.messageTemplate,
@@ -793,18 +1047,27 @@ export class DisparFluxServer {
     // --- Opt-Out & Reauthorization (ADR 0040, ADR 0045) ---
     const optOutMatch = pathname.match(/^\/api\/v1\/contacts\/([^/]+)\/opt-out$/);
     if (method === 'POST' && optOutMatch && optOutMatch[1]) {
+      if (!authContext) {
+        this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+        return;
+      }
+      if (!hasPermission(authContext.member.role, Permission.CRM_WRITE) && !hasPermission(authContext.member.role, Permission.INBOX_REPLY_MANUAL)) {
+        this.sendJson(res, 403, { error: 'Forbidden', message: 'Access denied: lacks permission' });
+        return;
+      }
+
       const contactId = optOutMatch[1];
       const body = await this.sizeLimits.readJson<{ reason?: string }>(req);
 
-      const contact = this.contactService.findById(contactId);
-      if (!contact) {
+      const contact = this.contactService.findById(contactId, authContext.member.organizationId);
+      if (!contact || contact.organizationId !== authContext.member.organizationId) {
         this.sendJson(res, 404, { error: 'Not Found', message: 'Contact not found' });
         return;
       }
 
       const now = new Date().toISOString();
       this.db!.transaction(() => {
-        this.db!.prepare('UPDATE contacts SET is_opted_out = 1, updated_at = ? WHERE id = ?').run(now, contact.id);
+        this.db!.prepare('UPDATE contacts SET is_opted_out = 1, updated_at = ? WHERE id = ? AND organization_id = ?').run(now, contact.id, authContext.member.organizationId);
         this.db!.prepare(`
           INSERT INTO opt_outs (id, organization_id, normalized_phone, contact_id, reason, created_at)
           VALUES (?, ?, ?, ?, ?, ?)
@@ -817,31 +1080,43 @@ export class DisparFluxServer {
 
     const reauthMatch = pathname.match(/^\/api\/v1\/contacts\/([^/]+)\/reauthorize$/);
     if (method === 'POST' && reauthMatch && reauthMatch[1]) {
-      const contactId = reauthMatch[1];
-      const body = await this.sizeLimits.readJson<{ actorMemberId: string; justification: string }>(req);
+      if (!authContext) {
+        this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+        return;
+      }
+      if (!hasPermission(authContext.member.role, Permission.CRM_WRITE) && !hasPermission(authContext.member.role, Permission.CAMPAIGNS_MANAGE)) {
+        this.sendJson(res, 403, { error: 'Forbidden', message: 'Access denied: lacks permission' });
+        return;
+      }
 
-      if (!body.actorMemberId || !body.justification?.trim()) {
+      const contactId = reauthMatch[1];
+      const body = await this.sizeLimits.readJson<{ actorMemberId?: string; justification: string }>(req);
+
+      if (!body.justification?.trim()) {
         this.sendJson(res, 400, {
           error: 'Bad Request',
-          message: 'Traceable reauthorization requires actorMemberId and explicit justification (ADR 0045)',
+          message: 'Traceable reauthorization requires explicit justification (ADR 0045)',
         });
         return;
       }
 
-      const contact = this.contactService.findById(contactId);
-      if (!contact) {
+      // Always derive actor from authenticated session context, never trust body
+      const actorMemberId = authContext.member.id;
+
+      const contact = this.contactService.findById(contactId, authContext.member.organizationId);
+      if (!contact || contact.organizationId !== authContext.member.organizationId) {
         this.sendJson(res, 404, { error: 'Not Found', message: 'Contact not found' });
         return;
       }
 
       const now = new Date().toISOString();
       this.db!.transaction(() => {
-        this.db!.prepare('UPDATE contacts SET is_opted_out = 0, updated_at = ? WHERE id = ?').run(now, contact.id);
+        this.db!.prepare('UPDATE contacts SET is_opted_out = 0, updated_at = ? WHERE id = ? AND organization_id = ?').run(now, contact.id, authContext.member.organizationId);
         this.db!.prepare(`
           UPDATE opt_outs
           SET reauthorized_at = ?, reauthorized_by_member_id = ?, reauthorization_reason = ?
           WHERE organization_id = ? AND normalized_phone = ? AND reauthorized_at IS NULL
-        `).run(now, body.actorMemberId, body.justification, contact.organizationId, contact.normalizedPhone);
+        `).run(now, actorMemberId, body.justification.trim(), contact.organizationId, contact.normalizedPhone);
       });
 
       this.sendJson(res, 200, { reauthorized: true, phone: contact.normalizedPhone });
@@ -850,6 +1125,18 @@ export class DisparFluxServer {
 
     // --- Migration Package Import (ADR 0008, 0017) ---
     if (method === 'POST' && pathname === '/api/v1/migration/import') {
+      const hasOwner = Boolean(this.db!.prepare("SELECT id FROM members WHERE role = 'owner' LIMIT 1").get());
+      if (hasOwner) {
+        if (!authContext) {
+          this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+          return;
+        }
+        if (authContext.member.role !== 'owner') {
+          this.sendJson(res, 403, { error: 'Forbidden', message: 'Only owners can import migration packages' });
+          return;
+        }
+      }
+
       const body = await this.sizeLimits.readJson<{ packagePath: string }>(req);
       const result = MigrationImporter.importPackage({
         packagePath: body.packagePath,
@@ -861,8 +1148,26 @@ export class DisparFluxServer {
 
     // --- Disaster Recovery Encrypted Backup & Restore (ADR 0020, 0031, 0046) ---
     if (method === 'POST' && pathname === '/api/v1/backup/create') {
+      const hasOwner = Boolean(this.db!.prepare("SELECT id FROM members WHERE role = 'owner' LIMIT 1").get());
       const body = await this.sizeLimits.readJson<{ outputPath: string; recoveryKey?: string }>(req);
       const key = body.recoveryKey || this.recoveryKey;
+
+      if (hasOwner) {
+        if (!authContext) {
+          this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+          return;
+        }
+        if (authContext.member.role !== 'owner') {
+          this.sendJson(res, 403, { error: 'Forbidden', message: 'Only owners can create backups' });
+          return;
+        }
+      } else {
+        // Unclaimed clean machine: must validate recovery key
+        if (!body.recoveryKey || body.recoveryKey !== this.recoveryKey) {
+          this.sendJson(res, 401, { error: 'Unauthorized', message: 'Invalid recovery key' });
+          return;
+        }
+      }
 
       const result = BackupService.createBackup({
         db: this.db!,
@@ -875,6 +1180,7 @@ export class DisparFluxServer {
     }
 
     if (method === 'POST' && pathname === '/api/v1/backup/restore') {
+      const hasOwner = Boolean(this.db!.prepare("SELECT id FROM members WHERE role = 'owner' LIMIT 1").get());
       const body = await this.sizeLimits.readJson<{
         backupPath: string;
         targetDbPath: string;
@@ -882,6 +1188,23 @@ export class DisparFluxServer {
         deletionLedger?: DeletionLedgerRecord[];
       }>(req);
       const key = body.recoveryKey || this.recoveryKey;
+
+      if (hasOwner) {
+        if (!authContext) {
+          this.sendJson(res, 401, { error: 'Unauthorized', message: 'Missing session token' });
+          return;
+        }
+        if (authContext.member.role !== 'owner') {
+          this.sendJson(res, 403, { error: 'Forbidden', message: 'Only owners can restore backups' });
+          return;
+        }
+      } else {
+        // Unclaimed clean machine: must validate recovery key
+        if (!body.recoveryKey || body.recoveryKey !== this.recoveryKey) {
+          this.sendJson(res, 401, { error: 'Unauthorized', message: 'Invalid recovery key' });
+          return;
+        }
+      }
 
       const result = BackupService.restoreBackup({
         backupPath: body.backupPath,
@@ -928,7 +1251,19 @@ export class DisparFluxServer {
 
   private serveStaticFile(req: IncomingMessage, res: ServerResponse, pathname: string, method: string): boolean {
     if (method !== 'GET' && method !== 'HEAD') return false;
-    if (pathname.startsWith('/api/') || pathname === '/health' || pathname === '/ready' || pathname.startsWith('/ws')) {
+    if (
+      pathname.startsWith('/api/') ||
+      pathname.startsWith('/media') ||
+      pathname === '/health' ||
+      pathname === '/ready' ||
+      pathname.startsWith('/ws')
+    ) {
+      return false;
+    }
+
+    // Strictly block directory traversal attempts in raw request URL
+    const rawUrl = req.url || '';
+    if (rawUrl.includes('..') || /%2e/i.test(rawUrl) || /%2f/i.test(rawUrl) || /%5c/i.test(rawUrl)) {
       return false;
     }
 
@@ -1337,9 +1672,12 @@ export class DisparFluxServer {
     return this.db;
   }
 
-  broadcast(event: string, payload: unknown): void {
+  broadcast(event: string | any, payload?: unknown): void {
     if (!this.wss) return;
-    const msg = JSON.stringify({ type: event, event, payload });
+    const msg =
+      typeof event === 'object' && event !== null
+        ? JSON.stringify(event)
+        : JSON.stringify({ type: event, event, payload });
     for (const client of this.wss.clients) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(msg);
@@ -1348,8 +1686,11 @@ export class DisparFluxServer {
   }
 }
 
-export function createServer(options: ServerOptions = {}): DisparFluxServer {
-  return new DisparFluxServer(options);
+export function createServer(
+  options: ServerOptions = {},
+  extraOptions?: { logger?: any; exitOnLockError?: boolean }
+): DisparFluxServer {
+  return new DisparFluxServer(options, extraOptions);
 }
 
 export { DisparFluxServer as DisparServer };

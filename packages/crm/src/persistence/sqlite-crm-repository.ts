@@ -89,8 +89,14 @@ export class SqliteCrmRepository {
     );
   }
 
-  getFunnel(id: string): CrmFunnel | undefined {
-    const row = this.conn.prepare('SELECT * FROM funnels WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  getFunnel(id: string, organizationId?: string): CrmFunnel | undefined {
+    let sql = 'SELECT * FROM funnels WHERE id = ?';
+    const params: string[] = [id];
+    if (organizationId) {
+      sql += ' AND organization_id = ?';
+      params.push(organizationId);
+    }
+    const row = this.conn.prepare(sql).get(...params) as Record<string, unknown> | undefined;
     if (!row) return undefined;
     return {
       id: String(row['id']),
@@ -141,22 +147,53 @@ export class SqliteCrmRepository {
     }
   }
 
-  getLead(id: string): CrmLead | undefined {
-    const row = this.conn.prepare('SELECT * FROM leads WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  getLead(id: string, organizationId?: string): CrmLead | undefined {
+    let sql = 'SELECT * FROM leads WHERE id = ?';
+    const params: string[] = [id];
+    if (organizationId) {
+      sql += ' AND organization_id = ?';
+      params.push(organizationId);
+    }
+    const row = this.conn.prepare(sql).get(...params) as Record<string, unknown> | undefined;
     if (!row) return undefined;
     return this.mapRowToLead(row);
   }
 
-  getLeadByContactAndFunnel(contactId: string, funnelId: string): CrmLead | undefined {
-    const row = this.conn.prepare('SELECT * FROM leads WHERE contact_id = ? AND funnel_id = ?').get(contactId, funnelId) as Record<string, unknown> | undefined;
+  getLeadByContactAndFunnel(contactId: string, funnelId: string, organizationId?: string): CrmLead | undefined {
+    let sql = 'SELECT * FROM leads WHERE contact_id = ? AND funnel_id = ?';
+    const params: string[] = [contactId, funnelId];
+    if (organizationId) {
+      sql += ' AND organization_id = ?';
+      params.push(organizationId);
+    }
+    const row = this.conn.prepare(sql).get(...params) as Record<string, unknown> | undefined;
     if (!row) return undefined;
     return this.mapRowToLead(row);
   }
 
-  updateLeadStage(leadId: string, newStageId: string, updatedAt = new Date()): void {
-    const result = this.conn.prepare(`
-      UPDATE leads SET stage_id = ?, updated_at = ? WHERE id = ?
-    `).run(newStageId, updatedAt.toISOString(), leadId);
+  updateLeadStage(
+    leadId: string,
+    newStageId: string,
+    updatedAtOrOrgId?: Date | string,
+    organizationId?: string
+  ): void {
+    let updatedAt = new Date();
+    let orgId = organizationId;
+
+    if (updatedAtOrOrgId instanceof Date) {
+      updatedAt = updatedAtOrOrgId;
+    } else if (typeof updatedAtOrOrgId === 'string') {
+      orgId = updatedAtOrOrgId;
+    }
+
+    let sql = 'UPDATE leads SET stage_id = ?, updated_at = ? WHERE id = ?';
+    const params: string[] = [newStageId, updatedAt.toISOString(), leadId];
+    if (orgId) {
+      sql += ' AND organization_id = ?';
+      params.push(orgId);
+    }
+
+    const result = this.conn.prepare(sql).run(...params);
 
     if (result.changes === 0) {
       throw new LeadNotFoundError(leadId);
@@ -188,8 +225,14 @@ export class SqliteCrmRepository {
     );
   }
 
-  getAppointment(id: string): Appointment | undefined {
-    const row = this.conn.prepare('SELECT * FROM appointments WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  getAppointment(id: string, organizationId?: string): Appointment | undefined {
+    let sql = 'SELECT * FROM appointments WHERE id = ?';
+    const params: string[] = [id];
+    if (organizationId) {
+      sql += ' AND organization_id = ?';
+      params.push(organizationId);
+    }
+    const row = this.conn.prepare(sql).get(...params) as Record<string, unknown> | undefined;
     if (!row) return undefined;
     return {
       id: String(row['id']),

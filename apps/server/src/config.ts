@@ -7,6 +7,7 @@ export interface ServerConfig {
   dataDir: string;
   databasePath: string;
   operationalKey: string;
+  recoveryKey: string;
   nodeEnv: string;
   version: string;
   edition: 'community';
@@ -31,6 +32,29 @@ export function loadConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     process.env.OPERATIONAL_KEY ??
     crypto.randomBytes(32).toString('hex');
 
+  // RECOVERY_KEY: mandatory in production, fail-fast if insecure/weak
+  const rawRecoveryKey = overrides.recoveryKey ?? process.env.RECOVERY_KEY;
+  let recoveryKey: string;
+
+  if (nodeEnv === 'production') {
+    if (!rawRecoveryKey || rawRecoveryKey.trim() === '') {
+      throw new Error('RECOVERY_KEY is mandatory in production');
+    }
+    if (rawRecoveryKey === 'flux_default_recovery_key_32_bytes_long_!!') {
+      throw new Error('Insecure default RECOVERY_KEY is prohibited in production');
+    }
+    if (rawRecoveryKey.length < 32) {
+      throw new Error('RECOVERY_KEY must be at least 32 characters long in production');
+    }
+    recoveryKey = rawRecoveryKey;
+  } else {
+    if (rawRecoveryKey && rawRecoveryKey.trim() !== '') {
+      recoveryKey = rawRecoveryKey;
+    } else {
+      recoveryKey = crypto.randomBytes(32).toString('hex');
+    }
+  }
+
   const version = overrides.version ?? '0.0.1';
   const edition = 'community' as const;
 
@@ -48,6 +72,7 @@ export function loadConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     dataDir,
     databasePath,
     operationalKey,
+    recoveryKey,
     nodeEnv,
     version,
     edition,

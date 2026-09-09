@@ -8,7 +8,7 @@ import {
   createBaseMembership as createDomainMembership,
   InvariantViolationError,
 } from '@dispar-flux/domain';
-import { BaseNotFoundError, ContactNotFoundError } from '../errors.js';
+import { BaseNotFoundError, ContactNotFoundError, CrossTenantViolationError } from '../errors.js';
 import { mapRowToContact, type ContactRow } from '../contacts/contact-service.js';
 
 export interface BaseRow {
@@ -112,12 +112,16 @@ export class BaseService {
   }
 
   /**
-   * Retrieves a Base by ID.
+   * Retrieves a Base by ID, optionally scoped to organizationId.
    */
-  getBase(id: string): Base | null {
-    const row = this.conn
-      .prepare('SELECT * FROM bases WHERE id = ?')
-      .get(id) as unknown as BaseRow | undefined;
+  getBase(id: string, organizationId?: string): Base | null {
+    let sql = 'SELECT * FROM bases WHERE id = ?';
+    const params: string[] = [id];
+    if (organizationId) {
+      sql += ' AND organization_id = ?';
+      params.push(organizationId);
+    }
+    const row = this.conn.prepare(sql).get(...params) as unknown as BaseRow | undefined;
 
     return row ? mapRowToBase(row) : null;
   }
@@ -134,34 +138,48 @@ export class BaseService {
   }
 
   /**
-   * Deletes a Base and cascading memberships.
+   * Deletes a Base and cascading memberships, optionally scoped to organizationId.
    */
-  deleteBase(id: string): boolean {
-    const result = this.conn.prepare('DELETE FROM bases WHERE id = ?').run(id);
+  deleteBase(id: string, organizationId?: string): boolean {
+    let sql = 'DELETE FROM bases WHERE id = ?';
+    const params: string[] = [id];
+    if (organizationId) {
+      sql += ' AND organization_id = ?';
+      params.push(organizationId);
+    }
+    const result = this.conn.prepare(sql).run(...params);
     return result.changes > 0;
   }
 
   /**
    * Adds or updates a contact membership in a base (ADR 0034 & ADR 0041).
    * Stores source-specific imported fields without overwriting canonical contact attributes.
+   * Enforces that both base and contact belong to the same organization.
    */
   addMembership(
     baseId: string,
     contactId: string,
-    importedFields?: Record<string, unknown>
+    importedFields?: Record<string, unknown>,
+    organizationId?: string
   ): BaseMembership {
-    // Validate base exists
-    const base = this.getBase(baseId);
-    if (!base) {
+    // Validate base exists (and matches organizationId if provided)
+    const base = this.getBase(baseId, organizationId);
+    if (!base || (organizationId && base.organizationId !== organizationId)) {
       throw new BaseNotFoundError(baseId);
     }
 
-    // Validate contact exists
+    // Validate contact exists and belongs to the SAME organization
     const contactRow = this.conn
-      .prepare('SELECT id FROM contacts WHERE id = ?')
-      .get(contactId);
+      .prepare('SELECT id, organization_id FROM contacts WHERE id = ?')
+      .get(contactId) as { id: string; organization_id: string } | undefined;
     if (!contactRow) {
       throw new ContactNotFoundError(contactId);
+    }
+
+    if (contactRow.organization_id !== base.organizationId) {
+      throw new CrossTenantViolationError(
+        `Contact "${contactId}" belongs to organization "${contactRow.organization_id}", but base "${baseId}" belongs to "${base.organizationId}". Cross-tenant membership is forbidden.`
+      );
     }
 
     const existing = this.conn
@@ -243,10 +261,20 @@ export class BaseService {
 
   /**
    * Lists all memberships in a base along with their canonical contact.
+   * If organizationId is provided, validates base ownership first.
    */
-  listMemberships(baseId: string): Array<BaseMembership & { contact: Contact }> {
-    const rows = this.conn
-      .prepare(`
+  listMemberships(
+    baseId: string,
+    organizationId?: string
+  ): Array<BaseMembership & { contact: Contact }> {
+    if (organizationId) {
+      const base = this.getBase(baseId, organizationId);
+      if (!base) {
+        throw new BaseNotFoundError(baseId);
+      }
+    }
+
+    let sql = `
         SELECT
           bm.id as bm_id,
           bm.base_id,
@@ -268,9 +296,17 @@ export class BaseService {
         FROM base_memberships bm
         JOIN contacts c ON bm.contact_id = c.id
         WHERE bm.base_id = ?
-        ORDER BY bm.created_at ASC
-      `)
-      .all(baseId) as Record<string, unknown>[];
+    `;
+    const params: string[] = [baseId];
+
+    if (organizationId) {
+      sql += ' AND c.organization_id = ?';
+      params.push(organizationId);
+    }
+
+    sql += ' ORDER BY bm.created_at ASC';
+
+    const rows = this.conn.prepare(sql).all(...params) as Record<string, unknown>[];
 
     return rows.map((r) => {
       let importedFields: Record<string, unknown> = {};
@@ -309,7 +345,13 @@ export class BaseService {
   /**
    * Counts members in a base.
    */
-  countMemberships(baseId: string): number {
+  countMemberships(baseId: string, organizationId?: string): number {
+    if (organizationId) {
+      const base = this.getBase(baseId, organizationId);
+      if (!base) {
+        throw new BaseNotFoundError(baseId);
+      }
+    }
     const row = this.conn
       .prepare('SELECT COUNT(*) as count FROM base_memberships WHERE base_id = ?')
       .get(baseId) as { count: number };
@@ -319,7 +361,13 @@ export class BaseService {
   /**
    * Removes a contact from a base.
    */
-  removeMembership(baseId: string, contactId: string): boolean {
+  removeMembership(baseId: string, contactId: string, organizationId?: string): boolean {
+    if (organizationId) {
+      const base = this.getBase(baseId, organizationId);
+      if (!base) {
+        throw new BaseNotFoundError(baseId);
+      }
+    }
     const result = this.conn
       .prepare('DELETE FROM base_memberships WHERE base_id = ? AND contact_id = ?')
       .run(baseId, contactId);

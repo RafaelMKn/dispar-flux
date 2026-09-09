@@ -62,12 +62,16 @@ export class ContactService {
   constructor(private readonly conn: DatabaseConnection) {}
 
   /**
-   * Finds a canonical contact by ID.
+   * Finds a canonical contact by ID, optionally scoped to organizationId.
    */
-  findById(id: string): Contact | null {
-    const row = this.conn
-      .prepare('SELECT * FROM contacts WHERE id = ?')
-      .get(id) as unknown as ContactRow | undefined;
+  findById(id: string, organizationId?: string): Contact | null {
+    let sql = 'SELECT * FROM contacts WHERE id = ?';
+    const params: string[] = [id];
+    if (organizationId) {
+      sql += ' AND organization_id = ?';
+      params.push(organizationId);
+    }
+    const row = this.conn.prepare(sql).get(...params) as unknown as ContactRow | undefined;
 
     return row ? mapRowToContact(row) : null;
   }
@@ -147,7 +151,7 @@ export class ContactService {
         now
       );
 
-    const created = this.findById(contactId);
+    const created = this.findById(contactId, organizationId);
     if (!created) {
       throw new Error(`Failed to retrieve newly created contact ${contactId}`);
     }
@@ -161,13 +165,15 @@ export class ContactService {
   /**
    * Deliberately edits canonical contact profile (ADR 0041).
    * Records member attribution and edit timestamp.
+   * If organizationId is provided, enforces organization ownership.
    */
   updateCanonicalProfile(
     contactId: string,
     memberId: string,
-    updates: UpdateCanonicalProfileInput
+    updates: UpdateCanonicalProfileInput,
+    organizationId?: string
   ): Contact {
-    const current = this.findById(contactId);
+    const current = this.findById(contactId, organizationId);
     if (!current) {
       throw new ContactNotFoundError(contactId);
     }
@@ -181,23 +187,29 @@ export class ContactService {
     const newNotes = updates.notes !== undefined ? updates.notes.trim() : current.canonicalProfile.notes;
     const now = new Date().toISOString();
 
-    this.conn
-      .prepare(`
+    let sql = `
         UPDATE contacts
         SET name = ?, notes = ?, custom_fields = ?, last_edited_by_member_id = ?, last_edited_at = ?, updated_at = ?
         WHERE id = ?
-      `)
-      .run(
-        newName ?? null,
-        newNotes ?? null,
-        JSON.stringify(mergedCustomFields),
-        memberId,
-        now,
-        now,
-        contactId
-      );
+    `;
+    const params: (string | null)[] = [
+      newName ?? null,
+      newNotes ?? null,
+      JSON.stringify(mergedCustomFields),
+      memberId,
+      now,
+      now,
+      contactId,
+    ];
 
-    return this.findById(contactId)!;
+    if (organizationId) {
+      sql += ' AND organization_id = ?';
+      params.push(organizationId);
+    }
+
+    this.conn.prepare(sql).run(...params);
+
+    return this.findById(contactId, organizationId)!;
   }
 
   /**

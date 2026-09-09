@@ -24,8 +24,8 @@ services:
       - HOST=0.0.0.0
       - DATA_DIR=/data
       - OPERATIONAL_TIMEZONE=${OPERATIONAL_TIMEZONE:-America/Sao_Paulo}
-      - RECOVERY_KEY=${RECOVERY_KEY:-}
-      - SESSION_SECRET=${SESSION_SECRET:-}
+      - RECOVERY_KEY=${RECOVERY_KEY:?RECOVERY_KEY obrigatoria}
+      - SESSION_SECRET=${SESSION_SECRET:?SESSION_SECRET obrigatoria}
     volumes:
       - dispar-flux-data:/data
     networks:

@@ -6,3 +6,5 @@ export * from './members/member-service.js';
 export * from './devices/device-service.js';
 export * from './sessions/session-service.js';
 export * from './invites/invite-service.js';
+export * from './rbac/permissions.js';
+export * from './rbac/rbac-guard.js';

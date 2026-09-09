@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { createSuppressionKey, createOptOut } from '@dispar-flux/domain';
 import { CsvImporter } from '../src/csv/csv-importer.js';
-import { CsvExporter } from '../src/csv/csv-exporter.js';
+import {
+  CsvExporter,
+  escapeCsvValue,
+  neutralizeCsvFormula,
+  isSafeNumericLiteral,
+} from '../src/csv/csv-exporter.js';
 import { BaseService } from '../src/bases/base-service.js';
 import { ContactService } from '../src/contacts/contact-service.js';
 import { parseCsvStream } from '../src/csv/csv-parser.js';
@@ -208,6 +213,209 @@ describe('CSV Streaming Importer & Exporter', () => {
         streamedData += chunk.toString();
       }
       assert.equal(streamedData, exportedString);
+    });
+
+    describe('Formula Injection Neutralization (OWASP)', () => {
+      it('neutralizes malicious formula injection payloads (=, +, -, @, \\t, \\r)', () => {
+        // Equals '='
+        assert.equal(neutralizeCsvFormula("=cmd|' /C calc'!A0"), "'=cmd|' /C calc'!A0");
+        assert.equal(neutralizeCsvFormula('=1+1'), "'=1+1");
+        assert.equal(neutralizeCsvFormula('=HYPERLINK("http://evil.com")'), "'=HYPERLINK(\"http://evil.com\")");
+        assert.equal(neutralizeCsvFormula('  =cmd'), "'  =cmd");
+
+        // At '@'
+        assert.equal(neutralizeCsvFormula('@SUM(1,2)'), "'@SUM(1,2)");
+        assert.equal(neutralizeCsvFormula('@A1'), "'@A1");
+        assert.equal(neutralizeCsvFormula('  @SUM(A1:B5)'), "'  @SUM(A1:B5)");
+
+        // Plus '+' with malicious non-numeric expression
+        assert.equal(neutralizeCsvFormula('+cmd'), "'+cmd");
+        assert.equal(neutralizeCsvFormula("+cmd|' /C calc'!A0"), "'+cmd|' /C calc'!A0");
+        assert.equal(neutralizeCsvFormula('+1+1'), "'+1+1");
+        assert.equal(neutralizeCsvFormula('+SUM(A1:B1)'), "'+SUM(A1:B1)");
+        assert.equal(neutralizeCsvFormula('+'), "'+");
+        assert.equal(neutralizeCsvFormula('  +cmd'), "'  +cmd");
+
+        // Minus '-' with malicious non-numeric expression
+        assert.equal(neutralizeCsvFormula('-2+3*cmd'), "'-2+3*cmd");
+        assert.equal(neutralizeCsvFormula("-cmd|' /C calc'!A0"), "'-cmd|' /C calc'!A0");
+        assert.equal(neutralizeCsvFormula('-1-1'), "'-1-1");
+        assert.equal(neutralizeCsvFormula('-cmd'), "'-cmd");
+        assert.equal(neutralizeCsvFormula('-'), "'-");
+        assert.equal(neutralizeCsvFormula('  -2+3*cmd'), "'  -2+3*cmd");
+
+        // Tab '\t'
+        assert.equal(neutralizeCsvFormula('\t=cmd'), "'\t=cmd");
+        assert.equal(neutralizeCsvFormula('\tcalc'), "'\tcalc");
+        assert.equal(neutralizeCsvFormula('  \tcalc'), "'  \tcalc");
+        assert.equal(neutralizeCsvFormula('\t123'), "'\t123");
+
+        // Carriage return '\r'
+        assert.equal(neutralizeCsvFormula('\r=cmd'), "'\r=cmd");
+        assert.equal(neutralizeCsvFormula('\rcalc'), "'\rcalc");
+        assert.equal(neutralizeCsvFormula('  \rcalc'), "'  \rcalc");
+      });
+
+      it('preserves valid numeric literals, negative numbers, and E.164 phone numbers', () => {
+        // E.164 phone numbers (start with + followed only by digits)
+        assert.equal(neutralizeCsvFormula('+5511987654321'), '+5511987654321');
+        assert.equal(neutralizeCsvFormula('+5521988887777'), '+5521988887777');
+        assert.equal(neutralizeCsvFormula('+14155552671'), '+14155552671');
+
+        // Negative integers and floats
+        assert.equal(neutralizeCsvFormula('-42'), '-42');
+        assert.equal(neutralizeCsvFormula('-123.45'), '-123.45');
+        assert.equal(neutralizeCsvFormula('-0.5'), '-0.5');
+        assert.equal(neutralizeCsvFormula('-.5'), '-.5');
+        assert.equal(neutralizeCsvFormula('-0'), '-0');
+
+        // Positive integers and floats with explicit +
+        assert.equal(neutralizeCsvFormula('+42'), '+42');
+        assert.equal(neutralizeCsvFormula('+123.45'), '+123.45');
+        assert.equal(neutralizeCsvFormula('+0.5'), '+0.5');
+        assert.equal(neutralizeCsvFormula('+.5'), '+.5');
+        assert.equal(neutralizeCsvFormula('+0'), '+0');
+
+        // Numbers with leading/trailing spaces
+        assert.equal(neutralizeCsvFormula('  -42  '), '  -42  ');
+        assert.equal(neutralizeCsvFormula('  +5511987654321  '), '  +5511987654321  ');
+
+        // Scientific notation
+        assert.equal(neutralizeCsvFormula('1e5'), '1e5');
+        assert.equal(neutralizeCsvFormula('-1e5'), '-1e5');
+        assert.equal(neutralizeCsvFormula('+2.5E-3'), '+2.5E-3');
+
+        // Standard unsigned numbers
+        assert.equal(neutralizeCsvFormula('123'), '123');
+        assert.equal(neutralizeCsvFormula('0'), '0');
+        assert.equal(neutralizeCsvFormula('99.9'), '99.9');
+      });
+
+      it('preserves normal text, UTF-8, quotes, and formula characters in non-leading positions', () => {
+        assert.equal(neutralizeCsvFormula('Maria Silva'), 'Maria Silva');
+        assert.equal(neutralizeCsvFormula('João Santos'), 'João Santos');
+        assert.equal(neutralizeCsvFormula('São Paulo 🔥'), 'São Paulo 🔥');
+        assert.equal(neutralizeCsvFormula('user@example.com'), 'user@example.com');
+        assert.equal(neutralizeCsvFormula('key=value'), 'key=value');
+        assert.equal(neutralizeCsvFormula('A+B'), 'A+B');
+        assert.equal(neutralizeCsvFormula('10-5'), '10-5');
+        assert.equal(neutralizeCsvFormula("'already_quoted"), "'already_quoted");
+        assert.equal(neutralizeCsvFormula(''), '');
+      });
+
+      it('escapeCsvValue neutralizes formulas and handles CSV quoting / escaping correctly', () => {
+        // Formula with delimiter
+        assert.equal(escapeCsvValue('=SUM(1, 2)', ','), '"\'=SUM(1, 2)"');
+
+        // Formula with quotes
+        assert.equal(
+          escapeCsvValue('=HYPERLINK("http://evil.com", "click")', ','),
+          '"\'=HYPERLINK(""http://evil.com"", ""click"")"'
+        );
+
+        // Formula with semicolon delimiter
+        assert.equal(escapeCsvValue('@SUM(1; 2)', ';'), '"\'@SUM(1; 2)"');
+
+        // Formula with newline / carriage return
+        assert.equal(escapeCsvValue('\r=cmd', ','), '"\'\r=cmd"');
+
+        // Standard text with quotes and delimiters
+        assert.equal(escapeCsvValue('Dr. "House"', ','), '"Dr. ""House"""');
+        assert.equal(escapeCsvValue('Silva, Maria', ','), '"Silva, Maria"');
+
+        // Safe phone number with comma delimiter
+        assert.equal(escapeCsvValue('+5511987654321', ','), '+5511987654321');
+
+        // Safe negative number with comma delimiter
+        assert.equal(escapeCsvValue('-150.50', ','), '-150.50');
+      });
+
+      it('safely exports contacts with formula injection payloads in names and dynamic fields', async () => {
+        const base = baseService.createBase({
+          organizationId: ctx.organizationId,
+          name: 'Malicious Input Base',
+          provenance: 'Security Testing',
+          purpose: 'CSV Injection Verification',
+        });
+
+        // Contact 1: Malicious name starting with '=' and dynamic field with '+cmd'
+        const { contact: c1 } = contactService.findOrCreateContact(ctx.organizationId, {
+          phone: '11987654321',
+          name: "=cmd|' /C calc'!A0",
+        });
+        baseService.addMembership(base.id, c1.id, {
+          payload_plus: "+cmd|' /C calc'!A0",
+          saldo: -150.5,
+          pontuacao: 100,
+        });
+
+        // Contact 2: Malicious name starting with '@' and dynamic fields with '-' and '\\t'
+        const { contact: c2 } = contactService.findOrCreateContact(ctx.organizationId, {
+          phone: '21988887777',
+          name: '@SUM(1,2)',
+        });
+        baseService.addMembership(base.id, c2.id, {
+          payload_minus: '-2+3*cmd',
+          payload_tab: '\t=cmd',
+          empresa: 'Normal Corp',
+        });
+
+        const exportedString = exporter.exportToString(base.id);
+
+        // Verify header exists
+        assert.ok(exportedString.startsWith('phone,name,'));
+
+        // Verify E.164 phone numbers remain unquoted and unneutralized (pure digits)
+        assert.ok(exportedString.includes('+5511987654321,'));
+        assert.ok(exportedString.includes('+5521988887777,'));
+
+        // Verify malicious contact names are neutralized with single quote prefix
+        assert.ok(
+          exportedString.includes("'+5511987654321") === false,
+          'Phone number must not be prefixed with apostrophe'
+        );
+        assert.ok(exportedString.includes("'=cmd|' /C calc'!A0"));
+        assert.ok(exportedString.includes("'@SUM(1,2)"));
+
+        // Verify malicious dynamic fields are neutralized
+        assert.ok(exportedString.includes("'+cmd|' /C calc'!A0"));
+        assert.ok(exportedString.includes("'-2+3*cmd"));
+        assert.ok(exportedString.includes("'\t=cmd"));
+
+        // Verify legitimate negative number and positive number are preserved
+        assert.ok(exportedString.includes('-150.5'));
+        assert.ok(exportedString.includes('100'));
+        assert.ok(!exportedString.includes("'-150.5"));
+        assert.ok(!exportedString.includes("'100"));
+
+        // Verify streaming export matches exportToString
+        const stream = exporter.exportToStream(base.id);
+        let streamedData = '';
+        for await (const chunk of stream) {
+          streamedData += chunk.toString();
+        }
+        assert.equal(streamedData, exportedString);
+
+        // Verify parsing back with parseCsvStream round-trips correctly without syntax errors
+        const parsedRows = [];
+        for await (const row of parseCsvStream(streamedData)) {
+          parsedRows.push(row);
+        }
+        assert.equal(parsedRows.length, 2);
+
+        const r1 = parsedRows.find((r) => r.data['phone'] === '+5511987654321');
+        assert.ok(r1);
+        assert.equal(r1.data['name'], "'=cmd|' /C calc'!A0");
+        assert.equal(r1.data['payload_plus'], "'+cmd|' /C calc'!A0");
+        assert.equal(r1.data['saldo'], '-150.5');
+
+        const r2 = parsedRows.find((r) => r.data['phone'] === '+5521988887777');
+        assert.ok(r2);
+        assert.equal(r2.data['name'], "'@SUM(1,2)");
+        assert.equal(r2.data['payload_minus'], "'-2+3*cmd");
+        assert.equal(r2.data['payload_tab'], "'\t=cmd");
+        assert.equal(r2.data['empresa'], 'Normal Corp');
+      });
     });
   });
 });

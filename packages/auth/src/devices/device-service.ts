@@ -187,10 +187,24 @@ export class DeviceService {
 
   /**
    * Approves a pending device. Only Owners can approve devices (ADR 0011 & ADR 0029).
+   * Strictly validates that the device belongs to a member in input.organizationId.
    */
   approveDevice(input: ApproveDeviceInput): AuthorizedDevice {
     if (input.actorRole !== 'owner') {
       throw new ForbiddenError('Only Owners (Proprietários) can approve authorized devices.');
+    }
+
+    const orgCheck = this.db
+      .prepare(`
+        SELECT m.organization_id AS organizationId
+        FROM authorized_devices d
+        JOIN members m ON m.id = d.member_id
+        WHERE d.id = ?
+      `)
+      .get(input.deviceId) as { organizationId: string } | undefined;
+
+    if (!orgCheck || orgCheck.organizationId !== input.organizationId) {
+      throw new AuthError(`Device with id "${input.deviceId}" not found.`, 'DEVICE_NOT_FOUND', 404);
     }
 
     const device = this.getDeviceById(input.deviceId);
@@ -234,9 +248,22 @@ export class DeviceService {
 
   /**
    * Revokes an authorized device and all associated active sessions (ADR 0047).
-   * Owners can revoke any device; Operators can only revoke their own device.
+   * Owners can revoke any device in their organization; Operators can only revoke their own device.
    */
   revokeDevice(input: RevokeDeviceInput): AuthorizedDevice {
+    const orgCheck = this.db
+      .prepare(`
+        SELECT m.organization_id AS organizationId
+        FROM authorized_devices d
+        JOIN members m ON m.id = d.member_id
+        WHERE d.id = ?
+      `)
+      .get(input.deviceId) as { organizationId: string } | undefined;
+
+    if (!orgCheck || orgCheck.organizationId !== input.organizationId) {
+      throw new AuthError(`Device with id "${input.deviceId}" not found.`, 'DEVICE_NOT_FOUND', 404);
+    }
+
     const device = this.getDeviceById(input.deviceId);
     if (!device) {
       throw new AuthError(`Device with id "${input.deviceId}" not found.`, 'DEVICE_NOT_FOUND', 404);
@@ -283,43 +310,50 @@ export class DeviceService {
   }
 
   /**
-   * Retrieves a device by its ID.
+   * Retrieves a device by its ID, optionally scoped to organizationId.
    */
-  getDeviceById(deviceId: string): AuthorizedDevice | null {
-    const row = this.db
-      .prepare(`
+  getDeviceById(deviceId: string, organizationId?: string): AuthorizedDevice | null {
+    let sql = `
         SELECT
-          id,
-          member_id AS memberId,
-          device_identifier AS deviceIdentifier,
-          name,
-          user_agent AS userAgent,
-          ip_address AS ipAddress,
-          is_approved AS isApproved,
-          approved_at AS approvedAt,
-          approved_by_member_id AS approvedByMemberId,
-          last_seen_at AS lastSeenAt,
-          expires_at AS expiresAt,
-          revoked_at AS revokedAt,
-          created_at AS createdAt
-        FROM authorized_devices
-        WHERE id = ?
-      `)
-      .get(deviceId) as {
-        id: string;
-        memberId: string;
-        deviceIdentifier: string;
-        name: string;
-        userAgent: string | null;
-        ipAddress: string | null;
-        isApproved: number;
-        approvedAt: string | null;
-        approvedByMemberId: string | null;
-        lastSeenAt: string;
-        expiresAt: string;
-        revokedAt: string | null;
-        createdAt: string;
-      } | undefined;
+          d.id,
+          d.member_id AS memberId,
+          d.device_identifier AS deviceIdentifier,
+          d.name,
+          d.user_agent AS userAgent,
+          d.ip_address AS ipAddress,
+          d.is_approved AS isApproved,
+          d.approved_at AS approvedAt,
+          d.approved_by_member_id AS approvedByMemberId,
+          d.last_seen_at AS lastSeenAt,
+          d.expires_at AS expiresAt,
+          d.revoked_at AS revokedAt,
+          d.created_at AS createdAt
+        FROM authorized_devices d
+    `;
+    const params: string[] = [deviceId];
+
+    if (organizationId) {
+      sql += ' JOIN members m ON m.id = d.member_id WHERE d.id = ? AND m.organization_id = ?';
+      params.push(organizationId);
+    } else {
+      sql += ' WHERE d.id = ?';
+    }
+
+    const row = this.db.prepare(sql).get(...params) as {
+      id: string;
+      memberId: string;
+      deviceIdentifier: string;
+      name: string;
+      userAgent: string | null;
+      ipAddress: string | null;
+      isApproved: number;
+      approvedAt: string | null;
+      approvedByMemberId: string | null;
+      lastSeenAt: string;
+      expiresAt: string;
+      revokedAt: string | null;
+      createdAt: string;
+    } | undefined;
 
     if (!row) return null;
 

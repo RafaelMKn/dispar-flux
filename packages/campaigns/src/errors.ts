@@ -60,3 +60,9 @@ export class SuppressedContactError extends CampaignEngineError {
     this.normalizedPhone = normalizedPhone;
   }
 }
+
+export class CrossTenantViolationError extends CampaignEngineError {
+  constructor(message = 'Cross-tenant operation is not permitted') {
+    super(message, 'CROSS_TENANT_VIOLATION');
+  }
+}
