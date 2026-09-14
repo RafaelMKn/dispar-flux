@@ -75,6 +75,7 @@ import {
   type QREventPayload,
   type StatusEventPayload,
 } from '@dispar-flux/connector-baileys';
+import { CopilotService } from '@dispar-flux/inbox';
 import { handleApiRoutes } from './api-router.js';
 
 export interface ServerOptions {
@@ -130,6 +131,7 @@ export class DisparFluxServer {
   public inviteService!: InviteService;
   public contactService!: ContactService;
   public campaignService!: CampaignService;
+  public copilotService!: CopilotService;
   public campaignExecutionEngine!: CampaignExecutionEngine;
   public auditLogger!: AuditLogger;
   public passwordHasher: PasswordHasher = defaultPasswordHasher;
@@ -222,6 +224,7 @@ export class DisparFluxServer {
     this.inviteService = new InviteService(this.db, this.sessionService, this.auditLogger, this.passwordHasher);
     this.contactService = new ContactService(this.db);
     this.campaignService = new CampaignService(this.db);
+    this.copilotService = new CopilotService(this.db);
 
     const dispatcher: MessagingDispatcher = {
       sendMessage: async (params) => {

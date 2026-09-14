@@ -6,6 +6,7 @@ import type { DisparFluxServer } from './server.js';
 import { normalizePhoneNumber } from '@dispar-flux/domain';
 import { CsvExporter } from '@dispar-flux/campaigns';
 import { Permission, hasPermission, type AuthenticatedContext } from '@dispar-flux/auth';
+import { CopilotService } from '@dispar-flux/inbox';
 
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
   if (res.headersSent) return;
@@ -1132,6 +1133,54 @@ export async function handleApiRoutes(
       timestamp: Date.now(),
       status: messageStatus,
     });
+    return true;
+  }
+
+  // --------------------------------------------------------------------------
+  // AI Copilot Endpoints (Block A: AI Drafting & Summary)
+  // --------------------------------------------------------------------------
+  const chatAiSuggestMatch = pathname.match(/^\/api\/v1\/inbox\/chats\/([^/]+)\/ai\/suggest$/);
+  if (chatAiSuggestMatch && chatAiSuggestMatch[1] && method === 'POST') {
+    if (!requirePermission(Permission.INBOX_REPLY_MANUAL)) return true;
+    const jid = decodeURIComponent(chatAiSuggestMatch[1]);
+    let body: any = {};
+    try {
+      body = (await (server as any).sizeLimits.readJson(req)) || {};
+    } catch {
+      body = {};
+    }
+
+    const copilot: CopilotService = (server as any).copilotService || new CopilotService(db);
+    const result = await copilot.suggestReply({
+      organizationId: getOrgId(),
+      chatJid: jid,
+      tone: body.tone,
+      instruction: body.instruction,
+    });
+
+    sendJson(res, 200, result);
+    return true;
+  }
+
+  const chatAiSummarizeMatch = pathname.match(/^\/api\/v1\/inbox\/chats\/([^/]+)\/ai\/summarize$/);
+  if (chatAiSummarizeMatch && chatAiSummarizeMatch[1] && method === 'POST') {
+    if (!requirePermission(Permission.INBOX_REPLY_MANUAL)) return true;
+    const jid = decodeURIComponent(chatAiSummarizeMatch[1]);
+    let body: any = {};
+    try {
+      body = (await (server as any).sizeLimits.readJson(req)) || {};
+    } catch {
+      body = {};
+    }
+
+    const copilot: CopilotService = (server as any).copilotService || new CopilotService(db);
+    const result = await copilot.summarizeConversation({
+      organizationId: getOrgId(),
+      chatJid: jid,
+      saveAsLeadNote: Boolean(body.saveAsLeadNote),
+    });
+
+    sendJson(res, 200, result);
     return true;
   }
 
