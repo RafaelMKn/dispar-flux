@@ -89,13 +89,11 @@ export class CsrfProtection {
     const cookies = this.parseCookies(req);
     // If there is no cookie session, request is not vulnerable to cookie-session CSRF
     const hasSessionCookie = Boolean(cookies[this.sessionCookieName]);
-    const expectedToken = cookies[this.cookieName];
-
-    // If there is a session cookie or a CSRF cookie was set
-    if (!hasSessionCookie && !expectedToken) {
+    if (!hasSessionCookie) {
       return true;
     }
 
+    const expectedToken = cookies[this.cookieName];
     if (!expectedToken) {
       return false;
     }

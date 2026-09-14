@@ -2,12 +2,29 @@
 
 import { spawn } from 'node:child_process';
 import process from 'node:process';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const isWin = process.platform === 'win32';
 
 console.log('\x1b[36m%s\x1b[0m', '==================================================');
 console.log('\x1b[36m%s\x1b[0m', '   Dispar Flux — Iniciando Backend & Frontend     ');
 console.log('\x1b[36m%s\x1b[0m', '==================================================\n');
+
+const dataDir = process.env.DATA_DIR || './data';
+const claimFile = path.join(dataDir, 'claim.token');
+if (fs.existsSync(claimFile)) {
+  const token = fs.readFileSync(claimFile, 'utf-8').trim();
+  if (token) {
+    console.log('\x1b[32m%s\x1b[0m', '┌──────────────────────────────────────────────────────────┐');
+    console.log('\x1b[32m%s\x1b[0m', '│  🔑 CÓDIGO DE INSTALAÇÃO INICIAL (CLAIM TOKEN):          │');
+    console.log(`│     \x1b[1m\x1b[33m${token.padEnd(52, ' ')}\x1b[0m│`);
+    console.log('\x1b[32m%s\x1b[0m', '│                                                          │');
+    console.log('\x1b[32m%s\x1b[0m', '│  Cole este código na tela de configuração (/claim)       │');
+    console.log('\x1b[32m%s\x1b[0m', '│  ou altere pelo terminal com: npm run token -- --set ... │');
+    console.log('\x1b[32m%s\x1b[0m', '└──────────────────────────────────────────────────────────┘\n');
+  }
+}
 
 function runCommand(command, args = [], env = {}) {
   const fullEnv = { ...process.env, ...env };
@@ -29,6 +46,7 @@ function runCommand(command, args = [], env = {}) {
 const server = runCommand(isWin ? 'npx.cmd' : 'npx', ['tsx', 'watch', 'apps/server/src/index.ts'], {
   PORT: process.env.PORT || '3000',
   HOST: process.env.HOST || '0.0.0.0',
+  NODE_ENV: process.env.NODE_ENV || 'development',
 });
 
 let web = null;

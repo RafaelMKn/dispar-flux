@@ -74,6 +74,16 @@ export function getDeviceFingerprint(): string {
   }
 }
 
+export function getCsrfToken(): string | null {
+  try {
+    if (typeof document === 'undefined') return null;
+    const match = document.cookie.match(/(?:^|;\s*)df_csrf=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
 initWebSocket();
 
 async function req<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -81,6 +91,11 @@ async function req<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const authHeaders: Record<string, string> = {};
   if (token) {
     authHeaders['Authorization'] = `Bearer ${token}`;
+  }
+
+  const csrfToken = getCsrfToken();
+  if (csrfToken) {
+    authHeaders['X-CSRF-Token'] = csrfToken;
   }
 
   const res = await fetch(endpoint, {

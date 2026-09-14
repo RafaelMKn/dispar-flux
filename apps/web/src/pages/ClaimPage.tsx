@@ -110,7 +110,7 @@ export default function ClaimPage(): JSX.Element {
                 placeholder="FLUX-XXXX-XXXX-XXXX"
                 value={claimCode}
                 onChange={(e) => setClaimCode(e.target.value)}
-                hint="Encontrado no arquivo claim.token ou na saída do script de instalação da VPS."
+                hint="Exibido no seu terminal ao iniciar o servidor ou gerado via terminal com: npm run token"
                 required
               />
             </div>
