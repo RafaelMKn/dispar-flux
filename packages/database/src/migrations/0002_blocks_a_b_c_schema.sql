@@ -76,3 +76,15 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_deliv_sub ON webhook_deliveries(subscription_id);
 CREATE INDEX IF NOT EXISTS idx_webhook_deliv_state ON webhook_deliveries(state);
+
+-- 7. audit_logs (Tabela de logs de auditoria do sistema/IA para compatibilidade)
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id TEXT PRIMARY KEY NOT NULL,
+  organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  actor_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  details TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_org ON audit_logs(organization_id);
