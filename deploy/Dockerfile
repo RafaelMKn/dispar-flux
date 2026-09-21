@@ -35,6 +35,7 @@ RUN npm ci
 COPY packages/ packages/
 COPY apps/ apps/
 COPY bin/ bin/
+COPY docs/ docs/
 
 # Build TypeScript packages and application
 RUN npm run build
