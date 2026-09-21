@@ -71,6 +71,93 @@ else
 fi
 echo "Domain configured: $DOMAIN"
 
+# DNS validation for production domains (ADR 0049 / Issue #7)
+if [ "$DOMAIN" != "localhost" ] && [ "$DOMAIN" != "127.0.0.1" ]; then
+    echo -e "\n${BOLD}Validating DNS resolution for '$DOMAIN'...${NC}"
+
+    RESOLVED_IP=""
+    if command -v getent &>/dev/null; then
+        RESOLVED_IP="$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1; exit}' || true)"
+        if [ -z "$RESOLVED_IP" ]; then
+            RESOLVED_IP="$(getent hosts "$DOMAIN" 2>/dev/null | awk '{print $1; exit}' || true)"
+        fi
+    fi
+    if [ -z "$RESOLVED_IP" ] && command -v dig &>/dev/null; then
+        RESOLVED_IP="$(dig +short A "$DOMAIN" 2>/dev/null | grep -E '^[0-9.]+$' | head -n1 || true)"
+    fi
+    if [ -z "$RESOLVED_IP" ] && command -v host &>/dev/null; then
+        RESOLVED_IP="$(host -t A "$DOMAIN" 2>/dev/null | awk '/has address/ {print $4; exit}' || true)"
+    fi
+    if [ -z "$RESOLVED_IP" ] && command -v nslookup &>/dev/null; then
+        RESOLVED_IP="$(nslookup "$DOMAIN" 2>/dev/null | awk '/^Address: / {print $2; exit}' || true)"
+    fi
+
+    PUBLIC_IP=""
+    if command -v curl &>/dev/null; then
+        PUBLIC_IP="$(curl -fsS4 --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]' || true)"
+        if [ -z "$PUBLIC_IP" ]; then
+            PUBLIC_IP="$(curl -fsS4 --max-time 5 https://ifconfig.me 2>/dev/null | tr -d '[:space:]' || true)"
+        fi
+    fi
+
+    DNS_MISMATCH=false
+    if [ -z "$RESOLVED_IP" ]; then
+        DNS_MISMATCH=true
+    elif [ -n "$PUBLIC_IP" ] && [ "$RESOLVED_IP" != "$PUBLIC_IP" ]; then
+        DNS_MISMATCH=true
+    fi
+
+    if [ "$DNS_MISMATCH" = true ]; then
+        echo -e "\n${BOLD}${YELLOW}==================================================================${NC}"
+        echo -e "${BOLD}${RED}             ⚠️  AVISO CRÍTICO DE DNS / PROPAGAÇÃO ⚠️             ${NC}"
+        echo -e "${BOLD}${YELLOW}==================================================================${NC}"
+        if [ -z "$RESOLVED_IP" ]; then
+            echo -e "${RED}[FALHA] Não foi possível resolver o IP para o domínio: ${BOLD}${DOMAIN}${NC}"
+        else
+            echo -e "[ALERTA] O domínio ${BOLD}${DOMAIN}${NC} resolve para: ${RED}${RESOLVED_IP}${NC}"
+        fi
+        if [ -n "$PUBLIC_IP" ]; then
+            echo -e "[INFO]  O IP público desta VPS é: ${GREEN}${PUBLIC_IP}${NC}"
+        else
+            echo -e "[AVISO] Não foi possível determinar automaticamente o IP público desta VPS."
+        fi
+        echo ""
+        echo -e "${YELLOW}RISCO DE FALHA NO SSL ACME DO CADDY:${NC}"
+        echo -e "${YELLOW}O Caddy tentará emitir automaticamente um certificado SSL (Let's Encrypt / ZeroSSL)${NC}"
+        echo -e "${YELLOW}para '${DOMAIN}'. Se o apontamento DNS tipo 'A' não estiver configurado para o IP${NC}"
+        echo -e "${YELLOW}desta VPS ou não tiver propagado, o desafio ACME falhará, impedindo a emissão${NC}"
+        echo -e "${YELLOW}do certificado TLS e deixando a aplicação inacessível via HTTPS.${NC}"
+        echo -e "${BOLD}${YELLOW}==================================================================${NC}"
+
+        PROCEED="n"
+        if [ -t 0 ]; then
+            read -rp "Deseja prosseguir com a instalação mesmo assim? [y/N]: " INPUT_PROCEED
+            PROCEED="${INPUT_PROCEED:-n}"
+        else
+            if [ "${FORCE_INSTALL:-false}" = "true" ]; then
+                echo -e "${YELLOW}[WARN] Continuando devido a FORCE_INSTALL=true.${NC}"
+                PROCEED="y"
+            else
+                echo -e "${RED}[ERRO] Instalação abortada preventivamente devido a inconsistência de DNS.${NC}"
+                echo "Configure o apontamento DNS tipo 'A' ou execute com FORCE_INSTALL=true para ignorar."
+                exit 1
+            fi
+        fi
+
+        case "$PROCEED" in
+            [yY]|[yY][eE][sS]|[sS])
+                echo -e "${YELLOW}Prosseguindo com a instalação sob confirmação do usuário...${NC}"
+                ;;
+            *)
+                echo -e "${RED}Instalação cancelada pelo usuário para correção do DNS.${NC}"
+                exit 1
+                ;;
+        esac
+    else
+        echo -e "${GREEN}[OK] Resolução de DNS validada com sucesso: ${DOMAIN} -> ${RESOLVED_IP}${NC}"
+    fi
+fi
+
 # Operational Timezone collection (ADR 0019)
 DEFAULT_TZ="America/Sao_Paulo"
 if [ -t 0 ]; then
@@ -106,7 +193,7 @@ echo -e "\n${BOLD}[5/7] Generating installation credentials and Recovery Key...$
 CLAIM_TOKEN="FLUX-$(openssl rand -hex 2 | tr '[:lower:]' '[:upper:]')-$(openssl rand -hex 2 | tr '[:lower:]' '[:upper:]')-$(openssl rand -hex 2 | tr '[:lower:]' '[:upper:]')"
 echo "$CLAIM_TOKEN" > "$DATA_DIR/claim.token"
 chmod 600 "$DATA_DIR/claim.token"
-chown 1000:1000 "$DATA_DIR/claim.token" 2>/dev/null || true
+chown -R 1000:1000 "$DATA_DIR" 2>/dev/null || true
 
 # Generate 256-bit Recovery Key (ADR 0020, ADR 0046)
 RECOVERY_KEY="flux_rec_$(openssl rand -hex 32)"
@@ -192,8 +279,7 @@ echo -e "\n${BOLD}[7/7] Starting Dispar Flux containers...${NC}"
 cd "$INSTALL_DIR"
 docker compose up -d
 
-# Synchronize Claim Token into container volume (dispar-flux-data:/data)
-docker compose cp "$DATA_DIR/claim.token" dispar-flux:/data/claim.token 2>/dev/null || true
+# Note: Bind mount ./data:/data directly shares $DATA_DIR with /data in container (Issue #6)
 
 # Wait for dispar-flux service to pass healthcheck (/health)
 echo -e "\n${BOLD}Waiting for dispar-flux service to pass healthcheck (/health)...${NC}"

@@ -66,3 +66,57 @@ export class CrossTenantViolationError extends CampaignEngineError {
     super(message, 'CROSS_TENANT_VIOLATION');
   }
 }
+
+export class PoolNotFoundError extends CampaignEngineError {
+  public readonly poolId: string;
+
+  constructor(poolId: string) {
+    super(`Connection pool not found: ${poolId}`, 'POOL_NOT_FOUND');
+    this.poolId = poolId;
+  }
+}
+
+export class ConnectionNotFoundError extends CampaignEngineError {
+  public readonly connectionId: string;
+
+  constructor(connectionId: string) {
+    super(`Connection not found: ${connectionId}`, 'CONNECTION_NOT_FOUND');
+    this.connectionId = connectionId;
+  }
+}
+
+export class NoAvailableConnectionError extends CampaignEngineError {
+  public readonly poolId: string;
+
+  constructor(poolId: string, message?: string) {
+    super(
+      message ?? `No available healthy connection in pool "${poolId}"`,
+      'NO_AVAILABLE_CONNECTION'
+    );
+    this.poolId = poolId;
+  }
+}
+
+export class MaturationFrozenError extends CampaignEngineError {
+  public readonly connectionId: string;
+
+  constructor(connectionId: string, reason = 'Connection automated sending is frozen due to excessive reports/incidents in 24h') {
+    super(reason, 'MATURATION_FROZEN');
+    this.connectionId = connectionId;
+  }
+}
+
+export class MaturationLimitExceededError extends CampaignEngineError {
+  public readonly connectionId: string;
+  public readonly limit: number;
+
+  constructor(connectionId: string, limit: number) {
+    super(
+      `Daily maturation quota of ${limit} messages exceeded for connection "${connectionId}"`,
+      'MATURATION_LIMIT_EXCEEDED'
+    );
+    this.connectionId = connectionId;
+    this.limit = limit;
+  }
+}
+

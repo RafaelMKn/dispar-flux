@@ -1,6 +1,6 @@
 {
   "name": "dispar-flux",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "private": true,
   "description": "Dispar Flux - Plataforma Web de Atendimento Multiatendente e Mensageria WhatsApp (Edição Comunitária AGPLv3)",
   "type": "module",
@@ -17,12 +17,12 @@
     "dev:web": "npm --workspace=@dispar-flux/web run dev",
     "dev:server": "npm --workspace=@dispar-flux/server run start",
     "start:server": "npm --workspace=@dispar-flux/server run start",
-    "test": "tsx --test packages/*/tests/**/*.test.ts && node --test tests/phase1-gate.test.mjs && node --test tests/gate-1.0.test.mjs",
+    "test": "tsx --test packages/*/tests/**/*.test.ts && node --test tests/phase1-gate.test.mjs && node --import tsx --test tests/gate-1.0.test.mjs",
     "test:packages": "tsx --test packages/*/tests/**/*.test.ts",
     "test:gate": "node --test tests/gate-1.0.test.mjs",
     "test:gate:phase0": "node --test tests/phase0-gate.test.mjs",
     "test:gate:phase1": "node --test tests/phase1-gate.test.mjs",
-    "test:all": "tsx --test packages/*/tests/**/*.test.ts && node --test tests/phase1-gate.test.mjs && node --test tests/gate-1.0.test.mjs",
+    "test:all": "tsx --test packages/*/tests/**/*.test.ts && node --test tests/phase1-gate.test.mjs && node --import tsx --test tests/gate-1.0.test.mjs",
     "typecheck": "tsc --build",
     "build": "tsc --build && npm --workspace=@dispar-flux/web run build",
     "token": "node bin/dispar-cli.js token"

@@ -60,7 +60,7 @@ export class SecureHeadersHandler {
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
 
     // Permissions policy
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=(), payment=()');
 
     // HTTP Strict Transport Security (HSTS)
     if (this.enableHsts) {
