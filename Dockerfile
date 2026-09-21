@@ -34,6 +34,7 @@ RUN npm ci
 # Copy full source trees
 COPY packages/ packages/
 COPY apps/ apps/
+COPY bin/ bin/
 
 # Build TypeScript packages and application
 RUN npm run build
@@ -67,6 +68,10 @@ COPY --chown=node:node --from=builder /app/package.json /app/package.json
 COPY --chown=node:node --from=builder /app/node_modules /app/node_modules
 COPY --chown=node:node --from=builder /app/packages /app/packages
 COPY --chown=node:node --from=builder /app/apps /app/apps
+COPY --chown=node:node --from=builder /app/bin /app/bin
+
+# Make dispar-cli executable and symlink to /usr/local/bin/dispar-cli
+RUN chmod +x /app/bin/dispar-cli.js && ln -sf /app/bin/dispar-cli.js /usr/local/bin/dispar-cli
 
 USER node
 

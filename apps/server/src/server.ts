@@ -75,7 +75,10 @@ import {
   type QREventPayload,
   type StatusEventPayload,
 } from '@dispar-flux/connector-baileys';
+import { CopilotService } from '@dispar-flux/inbox';
 import { handleApiRoutes } from './api-router.js';
+import { WebhookService } from './webhooks/webhook-service.js';
+import { McpServer } from './mcp/mcp-server.js';
 
 export interface ServerOptions {
   port?: number;
@@ -119,6 +122,7 @@ export class DisparFluxServer {
   public readonly cors: CorsHandler;
   public readonly secureHeaders: SecureHeadersHandler;
   public readonly rateLimiter: RateLimiter;
+  public readonly version: string = '1.0.0';
   public readonly csrf: CsrfProtection;
   public readonly sizeLimits: SizeLimitHandler;
   public readonly logger: SanitizedLogger;
@@ -130,6 +134,9 @@ export class DisparFluxServer {
   public inviteService!: InviteService;
   public contactService!: ContactService;
   public campaignService!: CampaignService;
+  public copilotService!: CopilotService;
+  public webhookService!: WebhookService;
+  public mcpServer!: McpServer;
   public campaignExecutionEngine!: CampaignExecutionEngine;
   public auditLogger!: AuditLogger;
   public passwordHasher: PasswordHasher = defaultPasswordHasher;
@@ -222,6 +229,9 @@ export class DisparFluxServer {
     this.inviteService = new InviteService(this.db, this.sessionService, this.auditLogger, this.passwordHasher);
     this.contactService = new ContactService(this.db);
     this.campaignService = new CampaignService(this.db);
+    this.copilotService = new CopilotService(this.db);
+    this.webhookService = new WebhookService(this.db, this.logger);
+    this.mcpServer = new McpServer(this);
 
     const dispatcher: MessagingDispatcher = {
       sendMessage: async (params) => {
@@ -277,6 +287,17 @@ export class DisparFluxServer {
           campaignId: campaign.id,
           status: 'completed',
         });
+        if (this.webhookService) {
+          this.webhookService.dispatch(campaign.organizationId, 'campaign.completed', {
+            campaignId: campaign.id,
+            name: campaign.name,
+            status: campaign.status,
+            total: campaign.snapshotTotal,
+            sent: campaign.sentCount,
+            failed: campaign.failedCount,
+            completedAt: new Date().toISOString(),
+          }).catch(() => {});
+        }
       },
     });
 
@@ -808,8 +829,57 @@ export class DisparFluxServer {
           authContext = this.sessionService.validateToken(token);
           (req as any).auth = authContext;
         } catch {
-          this.sendJson(res, 401, { error: 'Unauthorized', message: 'Sessão inválida ou expirada.' });
-          return;
+          // Check if token corresponds to an active service account (ADR 0024)
+          const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+          const sa = this.db!.prepare(`
+            SELECT * FROM service_accounts WHERE token_hash = ? AND is_active = 1
+          `).get(tokenHash) as any;
+
+          if (sa) {
+            const nowIso = new Date().toISOString();
+            if (sa.revoked_at || (sa.expires_at && sa.expires_at < nowIso)) {
+              this.sendJson(res, 401, { error: 'Unauthorized', message: 'Conta de serviço expirada ou revogada.' });
+              return;
+            }
+            this.db!.prepare('UPDATE service_accounts SET last_used_at = ? WHERE id = ?').run(nowIso, sa.id);
+            let scopes: string[] = [];
+            try {
+              scopes = JSON.parse(sa.scopes || '[]');
+            } catch {}
+
+            authContext = {
+              session: {
+                id: `sa_${sa.id}`,
+                memberId: sa.id,
+                deviceId: 'dev_sa',
+                tokenHash,
+                idleExpiresAt: new Date(Date.now() + 86400000),
+                absoluteExpiresAt: new Date(Date.now() + 86400000),
+                lastActiveAt: new Date(),
+                createdAt: new Date(),
+              } as any,
+              member: {
+                id: sa.id,
+                organizationId: sa.organization_id,
+                name: sa.name,
+                email: `${sa.id}@serviceaccount.local`,
+                role: 'operator',
+                status: 'active',
+                isServiceAccount: true,
+                scopes,
+              } as any,
+              device: {
+                id: 'dev_sa',
+                memberId: sa.id,
+                fingerprint: 'sa_fingerprint',
+                trusted: true,
+              } as any,
+            };
+            (req as any).auth = authContext;
+          } else {
+            this.sendJson(res, 401, { error: 'Unauthorized', message: 'Sessão inválida ou expirada.' });
+            return;
+          }
         }
       }
 

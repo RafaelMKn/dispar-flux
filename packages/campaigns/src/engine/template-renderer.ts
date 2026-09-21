@@ -1,6 +1,9 @@
+import { renderSpintax } from '../entropy/entropy-validator.js';
+
 /**
  * Renders campaign message templates with recipient-specific variables.
  * Supports {{nome}}, {{name}}, {{telefone}}, {{phone}}, and any custom field from base membership.
+ * Also resolves Spintax {A|B} variations.
  */
 export interface TemplateVariables {
   name?: string;
@@ -11,7 +14,10 @@ export interface TemplateVariables {
 export function renderTemplate(template: string, vars: TemplateVariables): string {
   if (!template) return '';
 
+  const spun = renderSpintax(template);
+
   const normalizedFields: Record<string, string> = {};
+
   if (vars.fields) {
     for (const [key, val] of Object.entries(vars.fields)) {
       if (val !== undefined && val !== null) {

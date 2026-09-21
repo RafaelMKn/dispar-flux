@@ -5,3 +5,5 @@ export * from './repositories/lid-jid-repository.js';
 export * from './services/conversation-service.js';
 export * from './services/message-service.js';
 export * from './services/manual-response-service.js';
+export * from './ai/copilot-service.js';
+export * from './ai/intent-classifier.js';

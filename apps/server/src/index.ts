@@ -3,16 +3,24 @@ import { createServer } from './server.js';
 export * from './server.js';
 
 async function main() {
+  try {
+    process.loadEnvFile();
+  } catch {
+    // No .env file found or unreadable, continue safely
+  }
+
   const port = parseInt(process.env.PORT || '3000', 10);
   const host = process.env.HOST || '0.0.0.0';
   const dataDir = process.env.DATA_DIR || './data';
-  const nodeEnv = process.env.NODE_ENV || 'production';
+  const nodeEnv = process.env.NODE_ENV || 'development';
+  const recoveryKey = process.env.RECOVERY_KEY;
 
   const server = createServer({
     port,
     host,
     dataDir,
     nodeEnv,
+    recoveryKey,
   });
 
   const shutdown = async () => {

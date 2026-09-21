@@ -11,7 +11,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseConnection } from '@dispar-flux/database';
 import { PasswordHasher } from '../packages/auth/dist/password/password-hasher.js';
-import { readClaimToken } from '../packages/auth/dist/onboarding/claim-token.js';
+import { readClaimToken, generateClaimToken, getOrCreateClaimToken } from '../packages/auth/dist/onboarding/claim-token.js';
 
 function parseArgs(args) {
   const parsed = { _: [] };
@@ -60,9 +60,11 @@ Commands:
   list-devices          List authorized devices and trust status
     --db <path>         (Optional) Direct path to SQLite database.
 
-  claim-status          Check if installation is claimed and display claim code
-    --db <path>         (Optional) Direct path to SQLite database.
-    --data-dir <path>   (Optional) Directory where claim.token resides.
+  token, claim-status   Exibir, gerar ou definir o código de instalação (Claim Token)
+    --set <token>       (Opcional) Definir um código específico pelo terminal
+    --generate          (Opcional) Gerar um novo código aleatório pelo terminal
+    --db <path>         (Opcional) Caminho direto para o banco SQLite
+    --data-dir <path>   (Opcional) Diretório onde o claim.token reside (padrão: ./data)
 
 Options:
   --help                Show this help screen.
@@ -313,6 +315,68 @@ async function main() {
         console.log('Claim Code: (Pending boot generation)');
       }
       console.log('--------------------------------------------\n');
+      break;
+    }
+
+    case 'token':
+    case 'claim-token': {
+      const dataDir = args['data-dir'] || process.env.DATA_DIR || './data';
+      const dbFile = args.db || path.join(dataDir, 'dispar-flux.sqlite');
+      let isClaimed = false;
+
+      if (fs.existsSync(dbFile)) {
+        const db = new DatabaseConnection({ filePath: dbFile });
+        try {
+          const row = db.prepare('SELECT COUNT(*) AS count FROM organizations').get();
+          isClaimed = Number(row?.count || 0) > 0;
+        } finally {
+          db.close();
+        }
+      }
+
+      if (isClaimed) {
+        console.log('\n\x1b[33m%s\x1b[0m', 'A instalação do Dispar Flux já foi reivindicada!');
+        console.log('O Proprietário já foi configurado e não há token de claim pendente.\n');
+        break;
+      }
+
+      const tokenFilePath = path.join(dataDir, 'claim.token');
+
+      if (args.set && typeof args.set === 'string' && args.set.trim()) {
+        const customToken = args.set.trim();
+        fs.mkdirSync(dataDir, { recursive: true });
+        fs.writeFileSync(tokenFilePath, customToken, { mode: 0o600, encoding: 'utf-8' });
+        console.log('\n\x1b[32m%s\x1b[0m', 'Código de instalação definido com sucesso pelo terminal!');
+        console.log('\x1b[32m%s\x1b[0m', '┌──────────────────────────────────────────────────────────┐');
+        console.log('\x1b[32m%s\x1b[0m', '│  🔑 NOVO CÓDIGO DE INSTALAÇÃO (CLAIM TOKEN):             │');
+        console.log(`│     \x1b[1m\x1b[33m${customToken.padEnd(52, ' ')}\x1b[0m│`);
+        console.log('\x1b[32m%s\x1b[0m', '│  Cole este código na tela de configuração (/claim).      │');
+        console.log('\x1b[32m%s\x1b[0m', '└──────────────────────────────────────────────────────────┘\n');
+        break;
+      }
+
+      if (args.generate) {
+        const newToken = generateClaimToken();
+        fs.mkdirSync(dataDir, { recursive: true });
+        fs.writeFileSync(tokenFilePath, newToken, { mode: 0o600, encoding: 'utf-8' });
+        console.log('\n\x1b[32m%s\x1b[0m', 'Novo código gerado com sucesso!');
+        console.log('\x1b[32m%s\x1b[0m', '┌──────────────────────────────────────────────────────────┐');
+        console.log('\x1b[32m%s\x1b[0m', '│  🔑 NOVO CÓDIGO DE INSTALAÇÃO (CLAIM TOKEN):             │');
+        console.log(`│     \x1b[1m\x1b[33m${newToken.padEnd(52, ' ')}\x1b[0m│`);
+        console.log('\x1b[32m%s\x1b[0m', '│  Cole este código na tela de configuração (/claim).      │');
+        console.log('\x1b[32m%s\x1b[0m', '└──────────────────────────────────────────────────────────┘\n');
+        break;
+      }
+
+      const claimToken = getOrCreateClaimToken(dataDir);
+      console.log('\n\x1b[32m%s\x1b[0m', '┌──────────────────────────────────────────────────────────┐');
+      console.log('\x1b[32m%s\x1b[0m', '│  🔑 CÓDIGO DE INSTALAÇÃO INICIAL (CLAIM TOKEN):          │');
+      console.log(`│     \x1b[1m\x1b[33m${claimToken.padEnd(52, ' ')}\x1b[0m│`);
+      console.log('\x1b[32m%s\x1b[0m', '│                                                          │');
+      console.log('\x1b[32m%s\x1b[0m', '│  Copie e cole este código na tela de configuração inicial│');
+      console.log('\x1b[32m%s\x1b[0m', '│  ou defina outro usando:                                 │');
+      console.log('\x1b[32m%s\x1b[0m', '│    npm run token -- --set SEU-CODIGO-AQUI                │');
+      console.log('\x1b[32m%s\x1b[0m', '└──────────────────────────────────────────────────────────┘\n');
       break;
     }
 

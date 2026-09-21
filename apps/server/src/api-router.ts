@@ -6,6 +6,7 @@ import type { DisparFluxServer } from './server.js';
 import { normalizePhoneNumber } from '@dispar-flux/domain';
 import { CsvExporter } from '@dispar-flux/campaigns';
 import { Permission, hasPermission, type AuthenticatedContext } from '@dispar-flux/auth';
+import { CopilotService } from '@dispar-flux/inbox';
 
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
   if (res.headersSent) return;
@@ -72,8 +73,64 @@ export async function handleApiRoutes(
       authContext = server.sessionService.validateToken(token);
       (req as any).auth = authContext;
     } catch {
-      sendJson(res, 401, { error: 'Unauthorized', message: 'Sessão inválida ou expirada.' });
-      return true;
+      // Check if token corresponds to an active service account (ADR 0024)
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+      const sa = db.prepare(`
+        SELECT * FROM service_accounts WHERE token_hash = ? AND is_active = 1
+      `).get(tokenHash) as any;
+
+      if (sa) {
+        const nowIso = new Date().toISOString();
+        if (sa.revoked_at || (sa.expires_at && sa.expires_at < nowIso)) {
+          sendJson(res, 401, { error: 'Unauthorized', message: 'Conta de serviço expirada ou revogada.' });
+          return true;
+        }
+        db.prepare('UPDATE service_accounts SET last_used_at = ? WHERE id = ?').run(nowIso, sa.id);
+        let scopes: string[] = [];
+        try {
+          scopes = JSON.parse(sa.scopes || '[]');
+        } catch {}
+
+        authContext = {
+          session: {
+            id: `sa_${sa.id}`,
+            memberId: sa.id,
+            deviceId: 'service_account',
+            tokenHash: tokenHash,
+            createdAt: new Date(),
+            lastSeenAt: new Date(),
+            idleExpiresAt: new Date(Date.now() + 86400000),
+            absoluteExpiresAt: new Date(Date.now() + 86400000),
+            revokedAt: null,
+          } as any,
+          device: {
+            id: 'service_account',
+            memberId: sa.id,
+            deviceName: 'Service Account',
+            deviceFingerprint: 'service_account',
+            isApproved: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            lastUsedAt: new Date(),
+            expiresAt: new Date(Date.now() + 86400000),
+            revokedAt: null,
+          } as any,
+          member: {
+            id: sa.id,
+            organizationId: sa.organization_id,
+            name: sa.name,
+            email: `${sa.id}@serviceaccount.local`,
+            role: 'operator',
+            status: 'active',
+            isServiceAccount: true,
+            scopes,
+          } as any,
+        };
+        (req as any).auth = authContext;
+      } else {
+        sendJson(res, 401, { error: 'Unauthorized', message: 'Sessão inválida ou expirada.' });
+        return true;
+      }
     }
   }
 
@@ -90,12 +147,29 @@ export async function handleApiRoutes(
 
   const userRole = authContext.member.role;
   const orgId = authContext.member.organizationId;
+  const isServiceAccount = Boolean((authContext.member as any)?.isServiceAccount);
+  const saScopes: string[] = (authContext.member as any)?.scopes || [];
+
+  function checkScopeOrPermission(role: any, perm: Permission): boolean {
+    if (isServiceAccount) {
+      if (saScopes.includes('*') || saScopes.includes(perm)) return true;
+      if (perm === Permission.INBOX_REPLY_MANUAL && (saScopes.includes('inbox:write') || saScopes.includes('inbox:reply_manual'))) return true;
+      if (perm === Permission.CRM_WRITE && saScopes.includes('crm:write')) return true;
+      if (perm === Permission.CRM_READ && saScopes.includes('crm:read')) return true;
+      if (perm === Permission.BASES_MANAGE && (saScopes.includes('contacts:write') || saScopes.includes('bases:manage'))) return true;
+      if (perm === Permission.CAMPAIGNS_MANAGE && (saScopes.includes('campaigns:write') || saScopes.includes('campaigns:manage') || saScopes.includes('campaigns:read'))) return true;
+      return false;
+    }
+    return hasPermission(role, perm);
+  }
 
   function requirePermission(perm: Permission): boolean {
-    if (!hasPermission(userRole, perm)) {
+    if (!checkScopeOrPermission(userRole, perm)) {
       sendJson(res, 403, {
         error: 'Forbidden',
-        message: `Acesso negado: papel "${userRole}" não possui permissão "${perm}".`,
+        message: isServiceAccount
+          ? `Acesso negado: conta de serviço não possui o escopo "${perm}".`
+          : `Acesso negado: papel "${userRole}" não possui permissão "${perm}".`,
       });
       return false;
     }
@@ -103,11 +177,13 @@ export async function handleApiRoutes(
   }
 
   function requireAnyPermission(...perms: Permission[]): boolean {
-    const ok = perms.some((p) => hasPermission(userRole, p));
+    const ok = perms.some((p) => checkScopeOrPermission(userRole, p));
     if (!ok) {
       sendJson(res, 403, {
         error: 'Forbidden',
-        message: `Acesso negado: papel "${userRole}" não possui as permissões necessárias.`,
+        message: isServiceAccount
+          ? 'Acesso negado: conta de serviço não possui os escopos necessários.'
+          : `Acesso negado: papel "${userRole}" não possui as permissões necessárias.`,
       });
       return false;
     }
@@ -1136,6 +1212,54 @@ export async function handleApiRoutes(
   }
 
   // --------------------------------------------------------------------------
+  // AI Copilot Endpoints (Block A: AI Drafting & Summary)
+  // --------------------------------------------------------------------------
+  const chatAiSuggestMatch = pathname.match(/^\/api\/v1\/inbox\/chats\/([^/]+)\/ai\/suggest$/);
+  if (chatAiSuggestMatch && chatAiSuggestMatch[1] && method === 'POST') {
+    if (!requirePermission(Permission.INBOX_REPLY_MANUAL)) return true;
+    const jid = decodeURIComponent(chatAiSuggestMatch[1]);
+    let body: any = {};
+    try {
+      body = (await (server as any).sizeLimits.readJson(req)) || {};
+    } catch {
+      body = {};
+    }
+
+    const copilot: CopilotService = (server as any).copilotService || new CopilotService(db);
+    const result = await copilot.suggestReply({
+      organizationId: getOrgId(),
+      chatJid: jid,
+      tone: body.tone,
+      instruction: body.instruction,
+    });
+
+    sendJson(res, 200, result);
+    return true;
+  }
+
+  const chatAiSummarizeMatch = pathname.match(/^\/api\/v1\/inbox\/chats\/([^/]+)\/ai\/summarize$/);
+  if (chatAiSummarizeMatch && chatAiSummarizeMatch[1] && method === 'POST') {
+    if (!requirePermission(Permission.INBOX_REPLY_MANUAL)) return true;
+    const jid = decodeURIComponent(chatAiSummarizeMatch[1]);
+    let body: any = {};
+    try {
+      body = (await (server as any).sizeLimits.readJson(req)) || {};
+    } catch {
+      body = {};
+    }
+
+    const copilot: CopilotService = (server as any).copilotService || new CopilotService(db);
+    const result = await copilot.summarizeConversation({
+      organizationId: getOrgId(),
+      chatJid: jid,
+      saveAsLeadNote: Boolean(body.saveAsLeadNote),
+    });
+
+    sendJson(res, 200, result);
+    return true;
+  }
+
+  // --------------------------------------------------------------------------
   // 5. CRM Kanban & Funnel Endpoints
   // --------------------------------------------------------------------------
   if (pathname === '/api/v1/crm/board' && method === 'GET') {
@@ -1631,6 +1755,379 @@ export async function handleApiRoutes(
   if (pathname === '/api/v1/settings/ai' && method === 'POST') {
     if (!requirePermission(Permission.SETTINGS_MANAGE)) return true;
     sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  // --------------------------------------------------------------------------
+  // 9. Service Accounts Endpoints (ADR 0024)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/v1/service-accounts' && method === 'GET') {
+    if (!requirePermission(Permission.SERVICE_ACCOUNTS_MANAGE)) return true;
+    const accounts = db.prepare(`
+      SELECT id, organization_id, name, description, scopes, is_active, last_used_at, expires_at, created_at, updated_at
+      FROM service_accounts
+      WHERE organization_id = ?
+      ORDER BY created_at DESC
+    `).all(getOrgId()) as any[];
+
+    const mapped = accounts.map((a) => ({
+      id: a.id,
+      organizationId: a.organization_id,
+      name: a.name,
+      description: a.description,
+      scopes: JSON.parse(a.scopes || '[]'),
+      isActive: Boolean(a.is_active),
+      lastUsedAt: a.last_used_at,
+      expiresAt: a.expires_at,
+      createdAt: a.created_at,
+      updatedAt: a.updated_at,
+    }));
+    sendJson(res, 200, { serviceAccounts: mapped });
+    return true;
+  }
+
+  if (pathname === '/api/v1/service-accounts' && method === 'POST') {
+    if (!requirePermission(Permission.SERVICE_ACCOUNTS_MANAGE)) return true;
+    const body = (await (server as any).sizeLimits.readJson(req)) as {
+      name: string;
+      description?: string;
+      scopes?: string[];
+      expiresInDays?: number;
+    };
+
+    if (!body.name || !body.name.trim()) {
+      sendJson(res, 400, { error: 'O nome da conta de serviço é obrigatório.' });
+      return true;
+    }
+
+    const saId = `sa_${crypto.randomUUID()}`;
+    const rawToken = `df_sa_${crypto.randomBytes(32).toString('hex')}`;
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const now = new Date().toISOString();
+    let expiresAt: string | null = null;
+    if (body.expiresInDays && body.expiresInDays > 0) {
+      const exp = new Date(Date.now() + body.expiresInDays * 86400000);
+      expiresAt = exp.toISOString();
+    }
+    const scopes = Array.isArray(body.scopes) && body.scopes.length > 0 ? body.scopes : ['*'];
+
+    db.prepare(`
+      INSERT INTO service_accounts (
+        id, organization_id, name, description, token_hash, scopes, is_active,
+        created_by_member_id, last_used_at, expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, ?, ?, ?)
+    `).run(
+      saId,
+      getOrgId(),
+      body.name.trim(),
+      body.description || null,
+      tokenHash,
+      JSON.stringify(scopes),
+      authContext.member.id,
+      expiresAt,
+      now,
+      now
+    );
+
+    sendJson(res, 201, {
+      id: saId,
+      name: body.name.trim(),
+      token: rawToken,
+      scopes,
+      expiresAt,
+      createdAt: now,
+      message: 'Guarde este token em segurança. Ele não será exibido novamente.',
+    });
+    return true;
+  }
+
+  const saDeleteMatch = pathname.match(/^\/api\/v1\/service-accounts\/([^/]+)$/);
+  if (saDeleteMatch && saDeleteMatch[1] && method === 'DELETE') {
+    if (!requirePermission(Permission.SERVICE_ACCOUNTS_MANAGE)) return true;
+    const saId = saDeleteMatch[1];
+    const now = new Date().toISOString();
+    const result = db.prepare(`
+      UPDATE service_accounts
+      SET is_active = 0, revoked_at = ?, updated_at = ?
+      WHERE id = ? AND organization_id = ?
+    `).run(now, now, saId, getOrgId());
+
+    if (result.changes === 0) {
+      sendJson(res, 404, { error: 'Conta de serviço não encontrada.' });
+      return true;
+    }
+    sendJson(res, 200, { success: true, message: 'Conta de serviço revogada com sucesso.' });
+    return true;
+  }
+
+  // --------------------------------------------------------------------------
+  // 10. Native MCP Server Endpoints (Issue #9 & ADR 0024)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/v1/mcp/sse' && method === 'GET') {
+    server.mcpServer.handleSse(req, res, authContext);
+    return true;
+  }
+
+  if (pathname === '/api/v1/mcp/messages' && method === 'POST') {
+    const sessionId = url.searchParams.get('sessionId');
+    if (!sessionId) {
+      sendJson(res, 400, { error: 'sessionId parameter is required for MCP messages endpoint' });
+      return true;
+    }
+    const body = await (server as any).sizeLimits.readJson(req);
+    await server.mcpServer.handleSseMessage(req, res, sessionId, body);
+    return true;
+  }
+
+  if ((pathname === '/api/v1/mcp' || pathname === '/api/v1/mcp/rpc') && method === 'POST') {
+    const body = await (server as any).sizeLimits.readJson(req);
+    await server.mcpServer.handleDirectRpc(res, authContext, body);
+    return true;
+  }
+
+  // --------------------------------------------------------------------------
+  // 11. Webhooks Management & Inbound Integrations (Issue #10 & ADR 0024)
+  // --------------------------------------------------------------------------
+  // Subscriptions CRUD
+  if (pathname === '/api/v1/webhooks/subscriptions' && method === 'GET') {
+    if (!requireAnyPermission(Permission.SETTINGS_MANAGE, Permission.SERVICE_ACCOUNTS_MANAGE)) return true;
+    const list = server.webhookService.listSubscriptions(getOrgId());
+    sendJson(res, 200, { subscriptions: list });
+    return true;
+  }
+
+  if (pathname === '/api/v1/webhooks/subscriptions' && method === 'POST') {
+    if (!requireAnyPermission(Permission.SETTINGS_MANAGE, Permission.SERVICE_ACCOUNTS_MANAGE)) return true;
+    const body = (await (server as any).sizeLimits.readJson(req)) as {
+      targetUrl: string;
+      secret?: string;
+      events?: string[];
+    };
+    try {
+      const sub = server.webhookService.createSubscription(getOrgId(), body);
+      sendJson(res, 201, sub);
+    } catch (err: unknown) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+    return true;
+  }
+
+  const webhookSubDeleteMatch = pathname.match(/^\/api\/v1\/webhooks\/subscriptions\/([^/]+)$/);
+  if (webhookSubDeleteMatch && webhookSubDeleteMatch[1] && method === 'DELETE') {
+    if (!requireAnyPermission(Permission.SETTINGS_MANAGE, Permission.SERVICE_ACCOUNTS_MANAGE)) return true;
+    const ok = server.webhookService.deleteSubscription(getOrgId(), webhookSubDeleteMatch[1]);
+    if (!ok) {
+      sendJson(res, 404, { error: 'Assinatura de webhook não encontrada' });
+      return true;
+    }
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  if (pathname === '/api/v1/webhooks/deliveries' && method === 'GET') {
+    if (!requireAnyPermission(Permission.SETTINGS_MANAGE, Permission.SERVICE_ACCOUNTS_MANAGE)) return true;
+    const subId = url.searchParams.get('subscriptionId') || undefined;
+    const deliveries = server.webhookService.getDeliveries(getOrgId(), subId);
+    sendJson(res, 200, { deliveries });
+    return true;
+  }
+
+  if (pathname === '/api/v1/webhooks/test-dispatch' && method === 'POST') {
+    if (!requireAnyPermission(Permission.SETTINGS_MANAGE, Permission.SERVICE_ACCOUNTS_MANAGE)) return true;
+    const body = (await (server as any).sizeLimits.readJson(req)) as { eventName?: string; data?: any };
+    const eventName = body.eventName || 'lead.created';
+    const testData = body.data || { test: true, ping: 'pong', timestamp: new Date().toISOString() };
+    const count = await server.webhookService.dispatch(getOrgId(), eventName, testData);
+    sendJson(res, 200, { success: true, dispatchedTo: count, eventName });
+    return true;
+  }
+
+  // Inbound Webhooks
+  if (pathname === '/api/v1/integrations/inbound/lead' && method === 'POST') {
+    if (!requireAnyPermission(Permission.CRM_WRITE, Permission.BASES_MANAGE)) return true;
+    const body = (await (server as any).sizeLimits.readJson(req)) as {
+      phone: string;
+      name?: string;
+      funnelId?: string;
+      stageId?: string;
+      value?: number;
+      notes?: string;
+      customFields?: Record<string, any>;
+    };
+
+    if (!body.phone) {
+      sendJson(res, 400, { error: 'O campo "phone" é obrigatório.' });
+      return true;
+    }
+
+    const tenantOrgId = getOrgId();
+    const normalized = normalizePhoneNumber(body.phone);
+    const now = new Date().toISOString();
+
+    // 1. Upsert contact
+    let contact = db.prepare('SELECT * FROM contacts WHERE normalized_phone = ? AND organization_id = ?').get(normalized.e164, tenantOrgId) as any;
+    if (!contact) {
+      const newContactId = `cnt_${crypto.randomUUID()}`;
+      db.prepare(`
+        INSERT INTO contacts (id, organization_id, normalized_phone, name, custom_fields, is_opted_out, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+      `).run(newContactId, tenantOrgId, normalized.e164, body.name || `Contato ${normalized.e164.slice(-4)}`, JSON.stringify(body.customFields || {}), now, now);
+      contact = { id: newContactId, normalized_phone: normalized.e164, is_opted_out: 0 };
+    } else if (body.name || body.customFields) {
+      const existingFields = JSON.parse(contact.custom_fields || '{}');
+      const mergedFields = { ...existingFields, ...(body.customFields || {}) };
+      db.prepare(`
+        UPDATE contacts
+        SET name = COALESCE(?, name), custom_fields = ?, updated_at = ?
+        WHERE id = ?
+      `).run(body.name || null, JSON.stringify(mergedFields), now, contact.id);
+    }
+
+    // 2. Resolve Funnel & Stage
+    let funnelId = body.funnelId;
+    if (!funnelId) {
+      const defFunnel = db.prepare('SELECT id FROM funnels WHERE organization_id = ? LIMIT 1').get(tenantOrgId) as any;
+      if (defFunnel) {
+        funnelId = defFunnel.id;
+      } else {
+        funnelId = 'fn_default';
+        const defaultStages = [
+          { id: 'st_lead', name: 'Lead / Novo', color: '#64748b' },
+          { id: 'st_contacted', name: 'Contato Feito', color: '#3b82f6' },
+          { id: 'st_won', name: 'Ganho / Fechado', color: '#10b981' },
+        ];
+        db.prepare('INSERT INTO funnels (id, organization_id, name, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(funnelId, tenantOrgId, 'Funil de Vendas', JSON.stringify(defaultStages), now, now);
+      }
+    }
+
+    let stageId = body.stageId;
+    if (!stageId) {
+      const fRow = db.prepare('SELECT stages FROM funnels WHERE id = ? AND organization_id = ?').get(funnelId, tenantOrgId) as any;
+      if (fRow) {
+        try {
+          const parsedStages = JSON.parse(fRow.stages);
+          stageId = parsedStages[0]?.id || 'st_default';
+        } catch {
+          stageId = 'st_default';
+        }
+      } else {
+        stageId = 'st_default';
+      }
+    }
+
+    // 3. Upsert Lead (UNIQUE per funnel_id + contact_id, ADR 0038)
+    let lead = db.prepare('SELECT id FROM leads WHERE funnel_id = ? AND contact_id = ? AND organization_id = ?').get(funnelId, contact.id, tenantOrgId) as any;
+    let isNewLead = false;
+    let leadId = lead?.id;
+
+    if (lead) {
+      db.prepare(`
+        UPDATE leads
+        SET stage_id = ?, value = COALESCE(?, value), notes = CASE WHEN ? != '' THEN notes || '\n' || ? ELSE notes END, updated_at = ?
+        WHERE id = ?
+      `).run(stageId, body.value ?? null, body.notes || '', body.notes || '', now, lead.id);
+    } else {
+      isNewLead = true;
+      leadId = `lead_${crypto.randomUUID()}`;
+      db.prepare(`
+        INSERT INTO leads (id, organization_id, funnel_id, contact_id, stage_id, value, notes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(leadId, tenantOrgId, funnelId, contact.id, stageId, body.value ?? null, body.notes || '', now, now);
+    }
+
+    // 4. Outbound Webhook dispatch (lead.created or lead.stage_changed)
+    const eventToDispatch = isNewLead ? 'lead.created' : 'lead.stage_changed';
+    server.webhookService.dispatch(tenantOrgId, eventToDispatch, {
+      leadId,
+      contactId: contact.id,
+      phone: normalized,
+      name: body.name || contact.name,
+      funnelId,
+      stageId,
+      value: body.value,
+      isNewLead,
+      timestamp: now,
+    }).catch(() => {});
+
+    sendJson(res, 201, {
+      success: true,
+      leadId,
+      contactId: contact.id,
+      phone: normalized,
+      funnelId,
+      stageId,
+      isNewLead,
+    });
+    return true;
+  }
+
+  // POST /api/v1/integrations/inbound/campaign-trigger
+  if (pathname === '/api/v1/integrations/inbound/campaign-trigger' && method === 'POST') {
+    if (!requirePermission(Permission.CAMPAIGNS_MANAGE)) return true;
+    const body = (await (server as any).sizeLimits.readJson(req)) as {
+      phone: string;
+      message: string;
+      variables?: Record<string, any>;
+      connectionId?: string;
+    };
+
+    if (!body.phone || !body.message) {
+      sendJson(res, 400, { error: 'phone e message são obrigatórios.' });
+      return true;
+    }
+
+    const tenantOrgId = getOrgId();
+    const normalized = normalizePhoneNumber(body.phone);
+
+    // Strict Opt-Out Verification (ADR 0040, ADR 0044)
+    const optOut = db.prepare('SELECT id FROM opt_outs WHERE organization_id = ? AND normalized_phone = ? LIMIT 1').get(tenantOrgId, normalized.e164);
+    const contact = db.prepare('SELECT is_opted_out FROM contacts WHERE organization_id = ? AND normalized_phone = ? LIMIT 1').get(tenantOrgId, normalized.e164) as any;
+
+    if (optOut || contact?.is_opted_out) {
+      sendJson(res, 403, {
+        error: 'OptedOut',
+        message: 'Envio abortado: destinatário solicitou Opt-out organizacional (ADR 0040).',
+        phone: normalized.e164,
+      });
+      return true;
+    }
+
+    // Format message with template variables if provided
+    let content = body.message;
+    if (body.variables && typeof body.variables === 'object') {
+      for (const [k, v] of Object.entries(body.variables)) {
+        content = content.replace(new RegExp(`{{\\s*${k}\\s*}}`, 'g'), String(v));
+      }
+    }
+
+    // Resolve connection
+    const connId = body.connectionId || getConnectionId();
+    const now = new Date().toISOString();
+
+    // Check connection status & dispatch
+    let dispatched = false;
+    let messageId = `msg_${crypto.randomUUID()}`;
+    if (server.baileysConnector && server.baileysConnector.getStatus(connId) === 'connected') {
+      try {
+        await server.baileysConnector.sendMessage(connId, {
+          to: normalized.e164,
+          content: { text: content },
+        });
+        dispatched = true;
+      } catch (err) {
+        server.logger.error('Failed to dispatch transactional trigger message', { error: String(err) });
+      }
+    }
+
+    sendJson(res, 200, {
+      success: true,
+      phone: normalized.e164,
+      messageId,
+      dispatched,
+      connectionId: connId,
+      queuedAt: now,
+    });
     return true;
   }
 

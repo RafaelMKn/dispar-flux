@@ -30,17 +30,19 @@ describe('Phase 1 Gate: Fundação Executável', () => {
     assert.match(dockerfile, /FROM node:22/i, 'Dockerfile must use Node 22 base');
     assert.match(dockerfile, /VOLUME \["\/data"\]/, 'Dockerfile must declare /data volume');
     assert.match(dockerfile, /EXPOSE 3000/, 'Dockerfile must expose port 3000');
+    assert.match(dockerfile, /dispar-cli/, 'Dockerfile must configure dispar-cli');
 
     assert.ok(fs.existsSync(composePath), 'deploy/compose.yaml must exist');
     const compose = fs.readFileSync(composePath, 'utf-8');
     assert.match(compose, /services:/, 'compose.yaml must define services');
-    assert.match(compose, /dispar-flux-data:\/data/, 'compose.yaml must mount persistent volume');
+    assert.match(compose, /(\.\/data|dispar-flux-data):\/data/, 'compose.yaml must mount persistent volume');
     assert.match(compose, /caddy:/, 'compose.yaml must define Caddy reverse proxy service');
 
     assert.ok(fs.existsSync(caddyfilePath), 'deploy/Caddyfile must exist');
     const caddyfile = fs.readFileSync(caddyfilePath, 'utf-8');
     assert.match(caddyfile, /reverse_proxy/, 'Caddyfile must configure reverse proxy');
     assert.match(caddyfile, /dispar-flux:3000/, 'Caddyfile must proxy to dispar-flux:3000');
+    assert.match(caddyfile, /microphone=\(self\)/, 'Caddyfile must allow microphone=(self) in Permissions-Policy');
 
     assert.ok(fs.existsSync(installShPath), 'deploy/install.sh must exist');
     const installSh = fs.readFileSync(installShPath, 'utf-8');
