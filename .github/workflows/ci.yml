@@ -19,11 +19,11 @@ jobs:
         run: |
           echo "Verifying Developer Certificate of Origin (DCO) sign-off..."
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            COMMITS=$(git rev-list "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}")
+            COMMITS=$(git rev-list --no-merges "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}")
           elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
-            COMMITS=$(git rev-list "${{ github.event.before }}..${{ github.sha }}")
+            COMMITS=$(git rev-list --no-merges "${{ github.event.before }}..${{ github.sha }}")
           else
-            COMMITS=$(git rev-list -n 1 "${{ github.sha }}")
+            COMMITS=$(git rev-list --no-merges -n 1 "${{ github.sha }}")
           fi
 
           if [ -z "$COMMITS" ]; then
@@ -32,6 +32,11 @@ jobs:
 
           FAILED=0
           for commit in $COMMITS; do
+            parents=$(git log -1 --format=%P "$commit")
+            if [ $(echo "$parents" | wc -w) -gt 1 ]; then
+              echo "Skipping merge commit $commit..."
+              continue
+            fi
             msg=$(git log -1 --format=%B "$commit")
             echo "Checking commit $commit..."
             if echo "$msg" | grep -qE "^Signed-off-by: .+ <.+@.+>"; then

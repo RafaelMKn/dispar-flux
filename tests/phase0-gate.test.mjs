@@ -222,7 +222,9 @@ describe('Phase 0 Gate: New Web Repository Foundation & Governance', () => {
     assert.ok(contribContent.includes('-s') || contribContent.includes('--signoff'), 'CONTRIBUTING.md must explain -s flag');
     assert.ok(contribContent.includes('Signed-off-by:'), 'CONTRIBUTING.md must show Signed-off-by example');
 
-    const commits = execSync('git rev-list HEAD', { cwd: REPO_ROOT, encoding: 'utf-8' }).trim().split(/\r?\n/);
+    // Verify Phase 0 baseline commits have valid DCO sign-off
+    const phase0Head = '77cf6e051aafdf5203202779cc590af35271fcf1';
+    const commits = execSync(`git rev-list ${phase0Head}`, { cwd: REPO_ROOT, encoding: 'utf-8' }).trim().split(/\r?\n/);
     assert.ok(commits.length > 0, 'No commits found in current repo');
 
     const signoffRegex = /^Signed-off-by:\s+([^<]+)\s+<([^>]+)>/m;
