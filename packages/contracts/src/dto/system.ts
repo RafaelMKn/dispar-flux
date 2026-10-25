@@ -1,7 +1,7 @@
 export interface SystemStatusResponse {
   installationId: string;
   version: string;
-  edition: 'community';
+  edition: 'community' | 'enterprise';
   environment: string;
   operationalTimezone: string;
   uptimeSeconds: number;

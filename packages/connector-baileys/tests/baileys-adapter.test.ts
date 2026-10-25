@@ -13,11 +13,14 @@ import {
   type QREventPayload,
   type StatusEventPayload,
   type InboundMessage,
+  type HistorySyncPayload,
+  type MessageStatusUpdatePayload,
 } from '../src/index.js';
 
 class MockWASocket {
   public ev = new EventEmitter();
   public sentMessages: Array<{ jid: string; content: any; options?: any }> = [];
+  public historyRequests: Array<{ count: number; oldestKey: any; tsMs: number }> = [];
   public closed = false;
 
   async sendMessage(jid: string, content: any, options?: any) {
@@ -25,6 +28,11 @@ class MockWASocket {
     return {
       key: { id: `msg_mock_${Date.now()}` },
     };
+  }
+
+  async fetchMessageHistory(count: number, oldestKey: any, tsMs: number) {
+    this.historyRequests.push({ count, oldestKey, tsMs });
+    return `req_hist_${Date.now()}`;
   }
 
   async onWhatsApp(...phoneNumbers: string[]) {
@@ -468,6 +476,146 @@ describe('Baileys Connector: Adapter Lifecycle & Operations (ADR 0002, 0005, 001
 
       assert.equal(mockSocket!.closed, true);
       assert.equal(connector.getStatus('conn-1'), 'disconnected');
+    });
+  });
+
+  describe('History Synchronization & Status Updates (ADR 0002, 0015)', () => {
+    it('captures messaging-history.set and emits structured history event with chats, contacts, and messages', async () => {
+      let mockSocket: MockWASocket | null = null;
+      let historyEvent: HistorySyncPayload | null = null;
+
+      connector.on('history', (payload) => {
+        historyEvent = payload;
+      });
+
+      await connector.connect('conn-1', {
+        dataDir: tempBaseDir,
+        authStateFactory: async () => ({
+          state: { creds: {}, keys: {} } as any,
+          saveCreds: async () => {},
+        }),
+        socketFactory: () => {
+          mockSocket = new MockWASocket();
+          return mockSocket;
+        },
+      });
+
+      mockSocket!.ev.emit('connection.update', { connection: 'open' });
+
+      // Emit messaging-history.set
+      mockSocket!.ev.emit('messaging-history.set', {
+        chats: [
+          { id: '5511999990001@s.whatsapp.net', name: 'Cliente A', conversationTimestamp: 1700000000, unreadCount: 2 },
+        ],
+        contacts: [
+          { id: '5511999990001@s.whatsapp.net', name: 'Cliente A', notify: 'A' },
+        ],
+        messages: [
+          {
+            key: { id: 'msg-hist-1', remoteJid: '5511999990001@s.whatsapp.net', fromMe: false },
+            message: { conversation: 'Olá, tudo bem?' },
+            messageTimestamp: 1699999000,
+          },
+          {
+            key: { id: 'msg-hist-2', remoteJid: '5511999990001@s.whatsapp.net', fromMe: true },
+            message: { conversation: 'Tudo bem! Como posso ajudar?' },
+            messageTimestamp: 1699999500,
+          },
+        ],
+        lidPnMappings: [
+          { lid: '123456@lid', pn: '5511999990001@s.whatsapp.net' },
+        ],
+        isLatest: true,
+        progress: 100,
+      });
+
+      assert.notEqual(historyEvent, null);
+      assert.equal(historyEvent?.connectionId, 'conn-1');
+      assert.equal(historyEvent?.chats.length, 1);
+      assert.equal(historyEvent?.chats[0]?.name, 'Cliente A');
+      assert.equal(historyEvent?.contacts.length, 1);
+      assert.equal(historyEvent?.messages.length, 2);
+      assert.equal(historyEvent?.messages[0]?.direction, 'inbound');
+      assert.equal(historyEvent?.messages[1]?.direction, 'outbound');
+      assert.equal(historyEvent?.messages[1]?.fromMe, true);
+      assert.equal(historyEvent?.isLatest, true);
+    });
+
+    it('captures messages.update and emits message:status events', async () => {
+      let mockSocket: MockWASocket | null = null;
+      const statusUpdates: MessageStatusUpdatePayload[] = [];
+
+      connector.on('message:status', (payload) => {
+        statusUpdates.push(payload);
+      });
+
+      await connector.connect('conn-1', {
+        dataDir: tempBaseDir,
+        authStateFactory: async () => ({
+          state: { creds: {}, keys: {} } as any,
+          saveCreds: async () => {},
+        }),
+        socketFactory: () => {
+          mockSocket = new MockWASocket();
+          return mockSocket;
+        },
+      });
+
+      mockSocket!.ev.emit('connection.update', { connection: 'open' });
+
+      // Emit messages.update for delivery ack (status 3) and read ack (status 4)
+      mockSocket!.ev.emit('messages.update', [
+        {
+          key: { id: 'msg-123', remoteJid: '5511999990001@s.whatsapp.net' },
+          update: { status: 3 },
+        },
+        {
+          key: { id: 'msg-456', remoteJid: '5511999990001@s.whatsapp.net' },
+          update: { status: 4 },
+        },
+      ]);
+
+      assert.equal(statusUpdates.length, 2);
+      assert.equal(statusUpdates[0]?.messageId, 'msg-123');
+      assert.equal(statusUpdates[0]?.status, 'delivered');
+      assert.equal(statusUpdates[1]?.messageId, 'msg-456');
+      assert.equal(statusUpdates[1]?.status, 'read');
+    });
+
+    it('fetchOlderMessages delegates to sock.fetchMessageHistory with timestamp in milliseconds', async () => {
+      let mockSocket: MockWASocket | null = null;
+
+      await connector.connect('conn-1', {
+        dataDir: tempBaseDir,
+        authStateFactory: async () => ({
+          state: { creds: {}, keys: {} } as any,
+          saveCreds: async () => {},
+        }),
+        socketFactory: () => {
+          mockSocket = new MockWASocket();
+          return mockSocket;
+        },
+      });
+
+      mockSocket!.ev.emit('connection.update', { connection: 'open' });
+
+      const timestampMs = 1700000000000;
+      const result = await connector.fetchOlderMessages(
+        'conn-1',
+        '5511999990001@s.whatsapp.net',
+        50,
+        {
+          id: 'msg-anchor-1',
+          fromMe: false,
+          timestampMs,
+        }
+      );
+
+      assert.ok(result.requestId);
+      assert.equal(result.count, 50);
+      assert.equal(mockSocket!.historyRequests.length, 1);
+      assert.equal(mockSocket!.historyRequests[0]?.tsMs, timestampMs);
+      assert.equal(mockSocket!.historyRequests[0]?.oldestKey.id, 'msg-anchor-1');
     });
   });
 });

@@ -16,3 +16,6 @@ export * from './openapi/builder.js';
 
 // Messaging Connector Contract
 export * from './connector.js';
+
+// Plugin & Extension Contracts (ADR 0052)
+export * from './plugin.js';

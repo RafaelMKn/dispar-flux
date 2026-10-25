@@ -1,0 +1,26 @@
+{
+  "name": "@dispar-flux/enterprise",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dispar Flux - Recursos Comerciais e Extensões Enterprise (Licença Comercial Proprietária, ADR 0009 & ADR 0052)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "dependencies": {
+    "@dispar-flux/contracts": "*",
+    "@dispar-flux/domain": "*",
+    "@dispar-flux/database": "*",
+    "@dispar-flux/migration": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.9",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  },
+  "license": "Proprietary"
+}

@@ -162,8 +162,8 @@ export default function InboxPage(): JSX.Element {
   const [syncing, setSyncing] = useState(false)
   const [showSyncMenu, setShowSyncMenu] = useState(false)
   const [syncNote, setSyncNote] = useState<string | null>(null)
-  /** Foco na base de leads: e o modo padrao da tela (ver comentario abaixo). */
-  const [onlyLeads, setOnlyLeads] = useState(true)
+  /** Foco na base de leads: inicia desligado para exibir todas as conversas do WhatsApp por padrão */
+  const [onlyLeads, setOnlyLeads] = useState(false)
   const [leadCount, setLeadCount] = useState(0)
   const [leadSync, setLeadSync] = useState<ChatSyncState>({
     running: false,
@@ -205,7 +205,7 @@ export default function InboxPage(): JSX.Element {
    * evento precisam do valor atual sem virar dependencia dos efeitos — senao
    * digitar na busca recriaria o intervalo a cada tecla.
    */
-  const queryRef = useRef({ onlyLeads: true, search: '' })
+  const queryRef = useRef({ onlyLeads: false, search: '' })
   useEffect(() => {
     queryRef.current = { onlyLeads, search }
   }, [onlyLeads, search])

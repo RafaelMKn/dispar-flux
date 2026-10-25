@@ -327,6 +327,164 @@ export async function handleApiRoutes(
   }
 
   // --------------------------------------------------------------------------
+  // 1.1 Messaging Connections Endpoints (Multi-Connection / Enterprise, ADR 0005 & 0013)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/v1/connections' && method === 'GET') {
+    if (!requirePermission(Permission.CONNECTIONS_MANAGE)) return true;
+    const rows = db.prepare('SELECT * FROM messaging_connections WHERE organization_id = ? ORDER BY created_at ASC').all(getOrgId()) as any[];
+    const connections = rows.map((r) => {
+      const liveStatus = server.baileysConnector.getStatus(r.id);
+      const connState = server.connectionStates?.get(r.id);
+      return {
+        id: r.id,
+        organizationId: r.organization_id,
+        name: r.name,
+        provider: r.provider,
+        status: liveStatus !== 'disconnected' ? liveStatus : (connState?.status || r.status || 'disconnected'),
+        phoneNumber: r.phone_number,
+        jid: r.jid,
+        isDefault: Boolean(r.is_default),
+        qrDataUrl: connState?.qrDataUrl || null,
+        me: connState?.me || (r.phone_number ? { id: r.phone_number, name: r.name } : null),
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      };
+    });
+    sendJson(res, 200, { connections, edition: server.edition });
+    return true;
+  }
+
+  if (pathname === '/api/v1/connections' && method === 'POST') {
+    if (!requirePermission(Permission.CONNECTIONS_MANAGE)) return true;
+    const body = (await (server as any).sizeLimits.readJson(req)) as { name?: string; id?: string; isDefault?: boolean };
+    const existingCount = (db.prepare('SELECT count(*) as count FROM messaging_connections WHERE organization_id = ?').get(getOrgId()) as any).count;
+    if (server.edition === 'community' && existingCount >= 1) {
+      sendJson(res, 403, {
+        error: 'CommunityEditionConnectionLimitError',
+        message: 'A Edição Comunitária permite apenas 1 Conexão de Mensageria ativa por Instalação (ADR 0005 & ADR 0013). Faça upgrade para a Edição Enterprise para suporte a múltiplas conexões simultâneas.',
+      });
+      return true;
+    }
+
+    const name = (body.name || 'Nova Conexão').trim();
+    const newId = body.id || `conn_${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    const isDefault = existingCount === 0 || Boolean(body.isDefault);
+
+    if (isDefault && existingCount > 0) {
+      db.prepare('UPDATE messaging_connections SET is_default = 0 WHERE organization_id = ?').run(getOrgId());
+    }
+
+    db.prepare(`
+      INSERT INTO messaging_connections (id, organization_id, name, provider, status, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 'baileys', 'disconnected', ?, ?, ?)
+    `).run(newId, getOrgId(), name, isDefault ? 1 : 0, now, now);
+
+    const created = {
+      id: newId,
+      organizationId: getOrgId(),
+      name,
+      provider: 'baileys',
+      status: 'disconnected',
+      isDefault,
+      phoneNumber: null,
+      jid: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    server.broadcast('connection:created', created);
+    sendJson(res, 201, created);
+    return true;
+  }
+
+  const connConnectMatch = pathname.match(/^\/api\/v1\/connections\/([^/]+)\/connect$/);
+  if (connConnectMatch && method === 'POST') {
+    if (!requirePermission(Permission.CONNECTIONS_MANAGE)) return true;
+    const targetConnId = connConnectMatch[1]!;
+    const row = db.prepare('SELECT * FROM messaging_connections WHERE id = ? AND organization_id = ?').get(targetConnId, getOrgId()) as any;
+    if (!row) {
+      sendJson(res, 404, { error: 'ConnectionNotFound', message: 'Conexão não encontrada' });
+      return true;
+    }
+
+    try {
+      await server.baileysConnector.connect(targetConnId, { dataDir: server.dataDir, replaceExisting: true });
+    } catch (err) {
+      server.logger.error('Failed to initiate WhatsApp connection', {
+        connectionId: targetConnId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    sendJson(res, 200, { success: true, message: `Connecting connection ${targetConnId}` });
+    return true;
+  }
+
+  const connDisconnectMatch = pathname.match(/^\/api\/v1\/connections\/([^/]+)\/disconnect$/);
+  if (connDisconnectMatch && method === 'POST') {
+    if (!requirePermission(Permission.CONNECTIONS_MANAGE)) return true;
+    const targetConnId = connDisconnectMatch[1]!;
+    const row = db.prepare('SELECT * FROM messaging_connections WHERE id = ? AND organization_id = ?').get(targetConnId, getOrgId()) as any;
+    if (!row) {
+      sendJson(res, 404, { error: 'ConnectionNotFound', message: 'Conexão não encontrada' });
+      return true;
+    }
+
+    try {
+      await server.baileysConnector.disconnect(targetConnId);
+    } catch (err) {
+      server.logger.error('Failed to disconnect connection', {
+        connectionId: targetConnId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    const now = new Date().toISOString();
+    db.prepare("UPDATE messaging_connections SET status = 'disconnected', updated_at = ? WHERE id = ? AND organization_id = ?").run(
+      now,
+      targetConnId,
+      getOrgId()
+    );
+
+    const connState = { status: 'disconnected' as const, qrDataUrl: null, me: null };
+    server.connectionStates.set(targetConnId, connState);
+    server.broadcast('connection:state', { connectionId: targetConnId, ...connState });
+
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  const connDeleteMatch = pathname.match(/^\/api\/v1\/connections\/([^/]+)$/);
+  if (connDeleteMatch && method === 'DELETE') {
+    if (!requirePermission(Permission.CONNECTIONS_MANAGE)) return true;
+    const targetConnId = connDeleteMatch[1]!;
+    const row = db.prepare('SELECT * FROM messaging_connections WHERE id = ? AND organization_id = ?').get(targetConnId, getOrgId()) as any;
+    if (!row) {
+      sendJson(res, 404, { error: 'ConnectionNotFound', message: 'Conexão não encontrada' });
+      return true;
+    }
+
+    try {
+      await server.baileysConnector.disconnect(targetConnId);
+    } catch {}
+
+    const authDir = path.join(server.dataDir, 'wa-auth', targetConnId);
+    try {
+      if (fs.existsSync(authDir)) {
+        fs.rmSync(authDir, { recursive: true, force: true });
+      }
+    } catch {}
+
+    db.prepare('DELETE FROM messaging_connections WHERE id = ? AND organization_id = ?').run(targetConnId, getOrgId());
+    server.connectionStates.delete(targetConnId);
+    server.broadcast('connection:deleted', { connectionId: targetConnId });
+
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  // --------------------------------------------------------------------------
   // 2. Contact Lists (Bases) Endpoints
   // --------------------------------------------------------------------------
   if (pathname === '/api/v1/bases' && method === 'GET') {
@@ -1066,25 +1224,48 @@ export async function handleApiRoutes(
   // --------------------------------------------------------------------------
   if ((pathname === '/api/v1/inbox/chats' || pathname === '/api/v1/inbox/conversations') && method === 'GET') {
     if (!requirePermission(Permission.INBOX_READ)) return true;
-    const rows = db.prepare(`
-      SELECT c.*, ct.normalized_phone, ct.name as contact_name, l.stage_id as lead_stage_id
+    const search = url.searchParams.get('search')?.trim();
+    const onlyLeads = url.searchParams.get('onlyLeads') === 'true';
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 100, 1), 200);
+    const offset = Math.max(Number(url.searchParams.get('offset')) || 0, 0);
+
+    let sql = `
+      SELECT c.*, ct.normalized_phone, ct.name as contact_name, ct.is_opted_out, l.stage_id as lead_stage_id,
+             (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message_content,
+             (SELECT created_at FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message_time
       FROM conversations c
       JOIN contacts ct ON ct.id = c.contact_id
       LEFT JOIN leads l ON l.contact_id = ct.id AND l.organization_id = c.organization_id
       WHERE c.organization_id = ?
-      ORDER BY c.last_message_at DESC LIMIT 100
-    `).all(getOrgId()) as any[];
+    `;
+    const params: any[] = [getOrgId()];
 
-    const chats = rows.map((r) => ({
-      jid: `${r.normalized_phone.replace('+', '')}@s.whatsapp.net`,
-      name: r.contact_name || r.normalized_phone,
-      lastMessage: 'Olá, como posso ajudar?',
-      lastMessageTimestamp: r.last_message_at ? new Date(r.last_message_at).getTime() : Date.now(),
-      unreadCount: r.unread_count || 0,
-      avatarUrl: null,
-      isLead: Boolean(r.lead_stage_id),
-      optOut: false,
-    }));
+    if (onlyLeads) {
+      sql += ' AND l.stage_id IS NOT NULL';
+    }
+    if (search) {
+      sql += ' AND (ct.name LIKE ? OR ct.normalized_phone LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
+    sql += ' ORDER BY COALESCE(last_message_time, c.last_message_at, c.created_at) DESC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+
+    const rows = db.prepare(sql).all(...params) as any[];
+
+    const chats = rows.map((r) => {
+      const rawTime = r.last_message_time || r.last_message_at;
+      return {
+        jid: `${r.normalized_phone.replace('+', '')}@s.whatsapp.net`,
+        name: r.contact_name || r.normalized_phone,
+        lastMessage: r.last_message_content || null,
+        lastMessageTimestamp: rawTime ? new Date(rawTime).getTime() : Date.now(),
+        unreadCount: r.unread_count || 0,
+        avatarUrl: null,
+        isLead: Boolean(r.lead_stage_id),
+        optOut: Boolean(r.is_opted_out),
+      };
+    });
     sendJson(res, 200, chats);
     return true;
   }
@@ -1103,11 +1284,172 @@ export async function handleApiRoutes(
     return true;
   }
 
+  if (pathname === '/api/v1/inbox/sync-state' && method === 'GET') {
+    if (!requirePermission(Permission.INBOX_READ)) return true;
+    const state = (server as any).historySyncState || { state: 'idle', percent: 100, running: false, messages: 0 };
+    sendJson(res, 200, state);
+    return true;
+  }
+
+  if (pathname === '/api/v1/inbox/resync' && method === 'POST') {
+    if (!requirePermission(Permission.INBOX_READ)) return true;
+    sendJson(res, 200, { outcome: 'ok' });
+    return true;
+  }
+
+  const chatCountMatch = pathname.match(/^\/api\/v1\/inbox\/chats\/([^/]+)\/count$/);
+  if (chatCountMatch && chatCountMatch[1] && method === 'GET') {
+    if (!requirePermission(Permission.INBOX_READ)) return true;
+    const jid = decodeURIComponent(chatCountMatch[1]);
+    const phone = '+' + jid.split('@')[0];
+
+    const row = db.prepare(`
+      SELECT COUNT(m.id) as count
+      FROM contacts ct
+      JOIN conversations c ON c.contact_id = ct.id AND c.organization_id = ct.organization_id
+      JOIN messages m ON m.conversation_id = c.id
+      WHERE ct.organization_id = ? AND ct.normalized_phone = ?
+    `).get(getOrgId(), phone) as { count: number } | undefined;
+
+    sendJson(res, 200, row?.count || 0);
+    return true;
+  }
+
+  const chatReadMatch = pathname.match(/^\/api\/v1\/inbox\/chats\/([^/]+)\/read$/);
+  if (chatReadMatch && chatReadMatch[1] && method === 'POST') {
+    if (!requirePermission(Permission.INBOX_READ)) return true;
+    const jid = decodeURIComponent(chatReadMatch[1]);
+    const phone = '+' + jid.split('@')[0];
+
+    const conv = db.prepare(`
+      SELECT c.id
+      FROM conversations c
+      JOIN contacts ct ON ct.id = c.contact_id
+      WHERE c.organization_id = ? AND ct.normalized_phone = ?
+    `).get(getOrgId(), phone) as { id: string } | undefined;
+
+    if (conv) {
+      const now = new Date().toISOString();
+      db.prepare('UPDATE conversations SET unread_count = 0, updated_at = ? WHERE id = ?').run(now, conv.id);
+      db.prepare("UPDATE messages SET status = 'read', read_at = ? WHERE conversation_id = ? AND direction = 'inbound' AND status != 'read'").run(now, conv.id);
+      (server as any).broadcast('inbox:changed', { chatJid: jid });
+    }
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  const chatSyncMatch = pathname.match(/^\/api\/v1\/inbox\/chats\/([^/]+)\/sync$/);
+  if (chatSyncMatch && chatSyncMatch[1] && method === 'POST') {
+    if (!requirePermission(Permission.INBOX_READ)) return true;
+    const jid = decodeURIComponent(chatSyncMatch[1]);
+    const phone = '+' + jid.split('@')[0];
+    const connId = getConnectionId();
+
+    const conv = db.prepare(`
+      SELECT c.id
+      FROM conversations c
+      JOIN contacts ct ON ct.id = c.contact_id
+      WHERE c.organization_id = ? AND ct.normalized_phone = ?
+    `).get(getOrgId(), phone) as { id: string } | undefined;
+
+    let oldest: { id: string; external_id: string; direction: string; created_at: string } | undefined;
+    if (conv) {
+      oldest = db.prepare(`
+        SELECT id, external_id, direction, created_at
+        FROM messages
+        WHERE conversation_id = ? AND external_id IS NOT NULL
+        ORDER BY created_at ASC
+        LIMIT 1
+      `).get(conv.id) as { id: string; external_id: string; direction: string; created_at: string } | undefined;
+    }
+
+    if (!oldest || !oldest.external_id) {
+      sendJson(res, 200, { outcome: 'noAnchor', jid, fetched: 0, pendingRequests: 0 });
+      return true;
+    }
+
+    const connStatus = server.baileysConnector.getStatus(connId);
+    if (connStatus !== 'connected') {
+      sendJson(res, 200, { outcome: 'offline', jid, fetched: 0, pendingRequests: 0 });
+      return true;
+    }
+
+    try {
+      const oldestTs = new Date(oldest.created_at).getTime();
+      const result = await (server.baileysConnector as any).fetchOlderMessages?.(
+        connId,
+        jid,
+        50,
+        {
+          id: oldest.external_id,
+          fromMe: oldest.direction === 'outbound',
+          timestampMs: oldestTs,
+        }
+      );
+      sendJson(res, 200, { outcome: 'awaitingPhone', jid, fetched: 0, requestId: result?.requestId || null, pendingRequests: 1 });
+      return true;
+    } catch (err) {
+      server.logger.error('Failed to trigger on-demand history fetch', {
+        error: err instanceof Error ? err.message : String(err),
+        jid,
+      });
+      sendJson(res, 200, { outcome: 'requestFailed', jid, fetched: 0, pendingRequests: 0 });
+      return true;
+    }
+  }
+
+  const chatSingleMatch = pathname.match(/^\/api\/v1\/inbox\/chats\/([^/]+)$/);
+  if (chatSingleMatch && chatSingleMatch[1] && method === 'GET') {
+    if (!requirePermission(Permission.INBOX_READ)) return true;
+    const jid = decodeURIComponent(chatSingleMatch[1]);
+    const phone = '+' + jid.split('@')[0];
+
+    const row = db.prepare(`
+      SELECT c.*, ct.normalized_phone, ct.name as contact_name, ct.is_opted_out, l.stage_id as lead_stage_id,
+             (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message_content,
+             (SELECT created_at FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message_time
+      FROM contacts ct
+      LEFT JOIN conversations c ON c.contact_id = ct.id AND c.organization_id = ct.organization_id
+      LEFT JOIN leads l ON l.contact_id = ct.id AND l.organization_id = ct.organization_id
+      WHERE ct.organization_id = ? AND ct.normalized_phone = ?
+    `).get(getOrgId(), phone) as any;
+
+    if (!row) {
+      sendJson(res, 200, {
+        jid,
+        name: jid.split('@')[0],
+        lastMessage: null,
+        lastMessageTimestamp: Date.now(),
+        unreadCount: 0,
+        avatarUrl: null,
+        isLead: false,
+        optOut: false,
+        syncedFull: false,
+      });
+      return true;
+    }
+
+    const rawTime = row.last_message_time || row.last_message_at;
+    sendJson(res, 200, {
+      jid,
+      name: row.contact_name || row.normalized_phone,
+      lastMessage: row.last_message_content || null,
+      lastMessageTimestamp: rawTime ? new Date(rawTime).getTime() : Date.now(),
+      unreadCount: row.unread_count || 0,
+      avatarUrl: null,
+      isLead: Boolean(row.lead_stage_id),
+      optOut: Boolean(row.is_opted_out),
+      syncedFull: true,
+    });
+    return true;
+  }
+
   const chatMessagesMatch = pathname.match(/^\/api\/v1\/inbox\/chats\/([^/]+)\/messages$/);
   if (chatMessagesMatch && chatMessagesMatch[1] && method === 'GET') {
     if (!requirePermission(Permission.INBOX_READ)) return true;
     const jid = decodeURIComponent(chatMessagesMatch[1]);
     const phone = '+' + jid.split('@')[0];
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 50, 1), 200);
 
     const contact = db.prepare('SELECT id FROM contacts WHERE organization_id = ? AND normalized_phone = ?').get(getOrgId(), phone) as { id: string } | undefined;
     if (!contact) {
@@ -1121,7 +1463,7 @@ export async function handleApiRoutes(
       return true;
     }
 
-    const rows = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT 100').all(conversation.id) as any[];
+    const rows = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?').all(conversation.id, limit) as any[];
     const messages = rows.map((r) => ({
       id: r.id,
       chatJid: jid,
@@ -1260,11 +1602,146 @@ export async function handleApiRoutes(
   }
 
   // --------------------------------------------------------------------------
-  // 5. CRM Kanban & Funnel Endpoints
+  // 5. CRM Kanban & Funnel Endpoints (ADR 0037 & 0038, Multi-Funnel Enterprise)
   // --------------------------------------------------------------------------
+  if (pathname === '/api/v1/crm/funnels' && method === 'GET') {
+    if (!requirePermission(Permission.CRM_READ)) return true;
+    let funnels = db.prepare('SELECT * FROM funnels WHERE organization_id = ? ORDER BY created_at ASC').all(getOrgId()) as any[];
+    if (funnels.length === 0) {
+      const defaultStages = [
+        { id: 'st_1', name: 'Aguardando Resposta', order: 0 },
+        { id: 'st_2', name: 'Em Andamento', order: 1 },
+        { id: 'st_3', name: 'Proposta Enviada', order: 2 },
+        { id: 'st_4', name: 'Fechado / Ganho', order: 3 },
+      ];
+      const now = new Date().toISOString();
+      db.prepare('INSERT INTO funnels (id, organization_id, name, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run('fn_default', getOrgId(), 'Funil de Vendas', JSON.stringify(defaultStages), now, now);
+      funnels = db.prepare('SELECT * FROM funnels WHERE organization_id = ? ORDER BY created_at ASC').all(getOrgId()) as any[];
+    }
+    const result = funnels.map((f) => {
+      let stages = [];
+      try {
+        stages = JSON.parse(f.stages);
+      } catch {}
+      return {
+        id: f.id,
+        organizationId: f.organization_id,
+        name: f.name,
+        stages,
+        createdAt: f.created_at,
+        updatedAt: f.updated_at,
+      };
+    });
+    sendJson(res, 200, { funnels: result, edition: server.edition });
+    return true;
+  }
+
+  if (pathname === '/api/v1/crm/funnels' && method === 'POST') {
+    if (!requirePermission(Permission.CRM_WRITE)) return true;
+    const body = (await (server as any).sizeLimits.readJson(req)) as {
+      name?: string;
+      stages?: Array<{ id: string; name: string; order: number }>;
+    };
+
+    const existingCount = (db.prepare('SELECT count(*) as count FROM funnels WHERE organization_id = ?').get(getOrgId()) as any).count;
+    if (server.edition === 'community' && existingCount >= 1) {
+      sendJson(res, 403, {
+        error: 'CommunityEditionFunnelLimitError',
+        message: 'A Edição Comunitária permite apenas 1 Funil ativo por Organização (ADR 0037). Faça upgrade para a Edição Enterprise para suporte a múltiplos funis simultâneos.',
+      });
+      return true;
+    }
+
+    const name = (body.name || 'Novo Funil').trim();
+    const stages = body.stages && body.stages.length > 0 ? body.stages : [
+      { id: 'st_1', name: 'Aguardando Resposta', order: 0 },
+      { id: 'st_2', name: 'Em Andamento', order: 1 },
+      { id: 'st_3', name: 'Proposta Enviada', order: 2 },
+      { id: 'st_4', name: 'Fechado / Ganho', order: 3 },
+    ];
+    const newId = `fn_${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+
+    db.prepare('INSERT INTO funnels (id, organization_id, name, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(newId, getOrgId(), name, JSON.stringify(stages), now, now);
+
+    const created = {
+      id: newId,
+      organizationId: getOrgId(),
+      name,
+      stages,
+      createdAt: now,
+      updatedAt: now,
+    };
+    (server as any).broadcast('crm:funnels:changed', created);
+    sendJson(res, 201, created);
+    return true;
+  }
+
+  const funnelSingleMatch = pathname.match(/^\/api\/v1\/crm\/funnels\/([^/]+)$/);
+  if (funnelSingleMatch && method === 'GET') {
+    if (!requirePermission(Permission.CRM_READ)) return true;
+    const fId = funnelSingleMatch[1]!;
+    const row = db.prepare('SELECT * FROM funnels WHERE id = ? AND organization_id = ?').get(fId, getOrgId()) as any;
+    if (!row) {
+      sendJson(res, 404, { error: 'FunnelNotFound', message: 'Funil não encontrado' });
+      return true;
+    }
+    let stages = [];
+    try { stages = JSON.parse(row.stages); } catch {}
+    sendJson(res, 200, {
+      id: row.id,
+      organizationId: row.organization_id,
+      name: row.name,
+      stages,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    });
+    return true;
+  }
+
+  if (funnelSingleMatch && method === 'PATCH') {
+    if (!requirePermission(Permission.CRM_WRITE)) return true;
+    const fId = funnelSingleMatch[1]!;
+    const row = db.prepare('SELECT * FROM funnels WHERE id = ? AND organization_id = ?').get(fId, getOrgId()) as any;
+    if (!row) {
+      sendJson(res, 404, { error: 'FunnelNotFound', message: 'Funil não encontrado' });
+      return true;
+    }
+    const body = (await (server as any).sizeLimits.readJson(req)) as {
+      name?: string;
+      stages?: Array<{ id: string; name: string; order: number }>;
+    };
+    const newName = body.name ? body.name.trim() : row.name;
+    const newStages = body.stages ? JSON.stringify(body.stages) : row.stages;
+    const now = new Date().toISOString();
+    db.prepare('UPDATE funnels SET name = ?, stages = ?, updated_at = ? WHERE id = ? AND organization_id = ?')
+      .run(newName, newStages, now, fId, getOrgId());
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
+  if (funnelSingleMatch && method === 'DELETE') {
+    if (!requirePermission(Permission.CRM_WRITE)) return true;
+    const fId = funnelSingleMatch[1]!;
+    const count = (db.prepare('SELECT count(*) as count FROM funnels WHERE organization_id = ?').get(getOrgId()) as any).count;
+    if (count <= 1) {
+      sendJson(res, 400, { error: 'CannotDeleteLastFunnel', message: 'Não é permitido excluir o único funil da organização' });
+      return true;
+    }
+    db.prepare('DELETE FROM funnels WHERE id = ? AND organization_id = ?').run(fId, getOrgId());
+    sendJson(res, 200, { success: true });
+    return true;
+  }
+
   if (pathname === '/api/v1/crm/board' && method === 'GET') {
     if (!requirePermission(Permission.CRM_READ)) return true;
-    const funnel = db.prepare('SELECT * FROM funnels WHERE organization_id = ? LIMIT 1').get(getOrgId()) as any;
+    const requestedFunnelId = url.searchParams.get('funnelId');
+    let funnel = requestedFunnelId
+      ? (db.prepare('SELECT * FROM funnels WHERE id = ? AND organization_id = ?').get(requestedFunnelId, getOrgId()) as any)
+      : (db.prepare('SELECT * FROM funnels WHERE organization_id = ? ORDER BY created_at ASC LIMIT 1').get(getOrgId()) as any);
+
     let stages = [
       { id: 'st_1', name: 'Aguardando Resposta', order: 0 },
       { id: 'st_2', name: 'Em Andamento', order: 1 },
@@ -1276,16 +1753,20 @@ export async function handleApiRoutes(
         stages = JSON.parse(funnel.stages);
       } catch {}
     } else {
+      const defaultId = requestedFunnelId || 'fn_default';
+      const now = new Date().toISOString();
       db.prepare('INSERT INTO funnels (id, organization_id, name, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run('fn_default', getOrgId(), 'Funil de Vendas', JSON.stringify(stages), new Date().toISOString(), new Date().toISOString());
+        .run(defaultId, getOrgId(), 'Funil de Vendas', JSON.stringify(stages), now, now);
+      funnel = { id: defaultId, name: 'Funil de Vendas', stages: JSON.stringify(stages) };
     }
 
+    const targetFunnelId = funnel.id;
     const leadsRows = db.prepare(`
       SELECT l.*, c.normalized_phone, c.name as contact_name
       FROM leads l
       JOIN contacts c ON c.id = l.contact_id
-      WHERE l.organization_id = ?
-    `).all(getOrgId()) as any[];
+      WHERE l.organization_id = ? AND (l.funnel_id = ? OR l.funnel_id IS NULL OR l.funnel_id = 'fn_default')
+    `).all(getOrgId(), targetFunnelId) as any[];
 
     const leads = leadsRows.map((r) => ({
       id: r.id,
@@ -1299,7 +1780,7 @@ export async function handleApiRoutes(
       firstReplyAt: r.updated_at ? new Date(r.updated_at).getTime() : null,
     }));
 
-    sendJson(res, 200, { stages, leads });
+    sendJson(res, 200, { funnelId: targetFunnelId, funnelName: funnel.name, stages, leads });
     return true;
   }
 

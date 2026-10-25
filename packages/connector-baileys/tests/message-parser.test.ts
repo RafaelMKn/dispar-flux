@@ -137,7 +137,7 @@ describe('Baileys Connector: Message Parsing & Normalization', () => {
   });
 
   describe('parseBaileysMessage', () => {
-    it('ignores outbound messages (fromMe = true)', () => {
+    it('correctly parses outbound messages (fromMe = true) with outbound direction', () => {
       const outboundMsg = {
         key: {
           id: 'msg-out-1',
@@ -145,10 +145,15 @@ describe('Baileys Connector: Message Parsing & Normalization', () => {
           fromMe: true,
         },
         message: { conversation: 'Mensagem enviada por mim' },
+        messageTimestamp: 1700000000,
       };
 
       const result = parseBaileysMessage(outboundMsg, 'conn-1');
-      assert.equal(result, null);
+      assert.notEqual(result, null);
+      assert.equal(result?.direction, 'outbound');
+      assert.equal(result?.fromMe, true);
+      assert.equal(result?.content, 'Mensagem enviada por mim');
+      assert.equal(result?.remoteJid, '5511998765432@s.whatsapp.net');
     });
 
     it('parses valid inbound message into InboundMessage contract', () => {

@@ -15,6 +15,8 @@ import type {
   InboundMessage,
   QREventPayload,
   StatusEventPayload,
+  HistorySyncPayload,
+  MessageStatusUpdatePayload,
 } from '@dispar-flux/contracts';
 import {
   DuplicateConnectionError,
@@ -101,8 +103,13 @@ export class BaileysConnector extends EventEmitter implements MessagingConnector
         auth: state,
         printQRInTerminal: options.printQRInTerminal ?? false,
         logger,
-        browser: options.browser || ['Dispar Flux', 'Chrome', '1.0.0'],
-        markOnlineOnConnect: options.markOnlineOnConnect ?? true,
+        browser: options.browser || ['Mac OS', 'Desktop', '14.4.1'],
+        syncFullHistory: true,
+        shouldSyncHistoryMessage: () => true,
+        markOnlineOnConnect: options.markOnlineOnConnect ?? false,
+        connectTimeoutMs: 60_000,
+        defaultQueryTimeoutMs: 90_000,
+        getMessage: async () => undefined,
       } as any);
 
       session.socket = sock;
@@ -125,6 +132,16 @@ export class BaileysConnector extends EventEmitter implements MessagingConnector
         // Listen to incoming messages
         sock.ev.on('messages.upsert', (upsert: any) => {
           this.handleMessagesUpsert(session, upsert);
+        });
+
+        // Listen to message status updates (delivery / read receipts)
+        sock.ev.on('messages.update', (updates: any[]) => {
+          this.handleMessagesUpdate(session, updates);
+        });
+
+        // Listen to messaging history sync
+        sock.ev.on('messaging-history.set', (payload: any) => {
+          this.handleMessagingHistorySet(session, payload);
         });
 
         // Listen to contact changes for LID / JID mapping reconciliation
@@ -244,6 +261,98 @@ export class BaileysConnector extends EventEmitter implements MessagingConnector
       }
     }
   }
+
+  /**
+   * Handles messaging-history.set event from Baileys.
+   */
+  private handleMessagingHistorySet(session: ConnectionSession, payload: any): void {
+    if (!payload) return;
+
+    // 1. Ingest lidPnMappings first so messages addressed to LID can be resolved
+    if (Array.isArray(payload.lidPnMappings)) {
+      for (const map of payload.lidPnMappings) {
+        if (map?.lid && map?.pn) {
+          session.reconciler.registerMapping(map.lid, map.pn);
+        }
+      }
+    }
+
+    // 2. Ingest contacts
+    if (Array.isArray(payload.contacts)) {
+      this.handleContactsUpdate(session, payload.contacts);
+    }
+
+    // 3. Parse messages
+    const parsedMessages: InboundMessage[] = [];
+    if (Array.isArray(payload.messages)) {
+      for (const rawMsg of payload.messages) {
+        const parsed = parseBaileysMessage(rawMsg, session.connectionId, session.reconciler);
+        if (parsed) {
+          parsedMessages.push(parsed);
+        }
+      }
+    }
+
+    // 4. Map chats
+    const chats = Array.isArray(payload.chats)
+      ? payload.chats.map((c: any) => ({
+          id: c.id,
+          name: c.name || undefined,
+          conversationTimestamp:
+            typeof c.conversationTimestamp === 'object' && c.conversationTimestamp?.low
+              ? c.conversationTimestamp.low
+              : Number(c.conversationTimestamp) || undefined,
+          unreadCount: Number(c.unreadCount) || 0,
+        }))
+      : [];
+
+    const contacts = Array.isArray(payload.contacts)
+      ? payload.contacts.map((c: any) => ({
+          id: c.id,
+          name: c.name || undefined,
+          notify: c.notify || undefined,
+          phoneNumber: c.phoneNumber || undefined,
+          lid: c.lid || undefined,
+        }))
+      : [];
+
+    const historyPayload: HistorySyncPayload = {
+      connectionId: session.connectionId,
+      chats,
+      contacts,
+      messages: parsedMessages,
+      lidPnMappings: Array.isArray(payload.lidPnMappings) ? payload.lidPnMappings : [],
+      isLatest: Boolean(payload.isLatest),
+      progress: payload.progress ?? null,
+      syncType: payload.syncType ?? null,
+    };
+
+    this.emit('history', historyPayload);
+  }
+
+  /**
+   * Handles messages.update events (delivery and read status receipts).
+   */
+  private handleMessagesUpdate(session: ConnectionSession, updates: any[]): void {
+    if (!Array.isArray(updates)) return;
+
+    for (const item of updates) {
+      if (!item?.key?.id) continue;
+      const statusCode = item.update?.status;
+      let status: 'pending' | 'sent' | 'delivered' | 'read' = 'sent';
+      if (statusCode === 2) status = 'sent';
+      else if (statusCode === 3) status = 'delivered';
+      else if (statusCode === 4 || statusCode === 5) status = 'read';
+
+      this.emit('message:status', {
+        connectionId: session.connectionId,
+        messageId: item.key.id,
+        remoteJid: item.key.remoteJid || '',
+        status,
+      });
+    }
+  }
+
 
   /**
    * Updates session status and emits structured status event.
@@ -477,10 +586,47 @@ export class BaileysConnector extends EventEmitter implements MessagingConnector
     }
   }
 
+  /**
+   * Fetches older messages from WhatsApp using sock.fetchMessageHistory anchored at oldest message.
+   */
+  async fetchOlderMessages(
+    connectionId: string,
+    jid: string,
+    count = 50,
+    oldestKey: { id: string; fromMe: boolean; timestampMs: number }
+  ): Promise<{ requestId: string | null; count: number }> {
+    const session = this.sessions.get(connectionId);
+    if (!session) {
+      throw new ConnectionNotFoundError(connectionId);
+    }
+    if (session.status !== 'connected' || !session.socket) {
+      throw new NotConnectedError(connectionId, session ? session.status : 'disconnected');
+    }
+    if (typeof session.socket.fetchMessageHistory !== 'function') {
+      return { requestId: null, count: 0 };
+    }
+    // CRITICAL: timestamp must be in milliseconds to avoid WhatsApp 1970 bug!
+    const tsMs = oldestKey.timestampMs > 1e11 ? oldestKey.timestampMs : oldestKey.timestampMs * 1000;
+    const targetJid = formatToWhatsAppJid(jid);
+    try {
+      const requestId = await session.socket.fetchMessageHistory(
+        count,
+        { id: oldestKey.id, remoteJid: targetJid, fromMe: oldestKey.fromMe },
+        tsMs
+      );
+      return { requestId: requestId || null, count };
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      throw new MessageDeliveryError(`Failed to fetch history for '${jid}': ${error.message}`, error);
+    }
+  }
+
   // Strongly typed event listener overloads
   override on(event: 'qr', listener: (payload: QREventPayload) => void): this;
   override on(event: 'status', listener: (payload: StatusEventPayload) => void): this;
   override on(event: 'message', listener: (message: InboundMessage) => void): this;
+  override on(event: 'history', listener: (payload: HistorySyncPayload) => void): this;
+  override on(event: 'message:status', listener: (payload: MessageStatusUpdatePayload) => void): this;
   override on(event: 'error', listener: (error: Error, connectionId?: string) => void): this;
   override on(event: string | symbol, listener: (...args: any[]) => void): this {
     return super.on(event, listener);

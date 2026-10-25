@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import process from 'node:process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { seedDevCredentials, printDevCredentials } from './dev-seed.mjs';
 
 const isWin = process.platform === 'win32';
 
@@ -51,8 +52,42 @@ const server = runCommand(isWin ? 'npx.cmd' : 'npx', ['tsx', 'watch', 'apps/serv
 
 let web = null;
 
-// 2. Aguarda 600ms para o backend inicializar antes de subir o Vite
-const timer = setTimeout(() => {
+// 2. Espera o backend responder (aplica migrações no boot), roda o seed de
+//    credenciais de teste e só então sobe o Vite.
+const PORT = process.env.PORT || '3000';
+
+async function waitForBackend(timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${PORT}/health`);
+      if (res.ok) return true;
+    } catch {
+      // ainda subindo
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return false;
+}
+
+let cancelled = false;
+
+const bootstrap = (async () => {
+  const ready = await waitForBackend();
+  if (cancelled) return;
+
+  if (!ready) {
+    console.log('\x1b[90m%s\x1b[0m', `[dev-seed] backend não respondeu em /health (porta ${PORT}); seed ignorado.`);
+  } else {
+    try {
+      printDevCredentials(await seedDevCredentials({ dataDir }));
+    } catch (err) {
+      console.error('\x1b[31m%s\x1b[0m', `[dev-seed] falhou: ${err?.message || err}`);
+    }
+  }
+
+  if (cancelled) return;
+
   web = runCommand(isWin ? 'npm.cmd' : 'npm', ['--workspace=@dispar-flux/web', 'run', 'dev']);
 
   web.on('exit', (code) => {
@@ -60,7 +95,7 @@ const timer = setTimeout(() => {
       console.error(`\x1b[31m[Web Frontend finalizou com código ${code}]\x1b[0m`);
     }
   });
-}, 600);
+})();
 
 server.on('exit', (code) => {
   if (code !== null && code !== 0) {
@@ -82,7 +117,8 @@ function killProcess(child) {
 }
 
 function shutdown() {
-  clearTimeout(timer);
+  cancelled = true;
+  void bootstrap;
   console.log('\n\x1b[33m%s\x1b[0m', 'Encerrando servidores Dispar Flux...');
   killProcess(server);
   killProcess(web);

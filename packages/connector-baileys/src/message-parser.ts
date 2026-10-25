@@ -146,12 +146,7 @@ export function parseBaileysMessage(
   }
 
   const { key, message, messageTimestamp } = baileysMsg;
-
-  // Ignore outbound messages when processing inbound events
-  if (key.fromMe) {
-    return null;
-  }
-
+  const fromMe = Boolean(key.fromMe);
   const remoteJid = key.remoteJid || '';
   const participant = key.participant;
 
@@ -174,6 +169,8 @@ export function parseBaileysMessage(
     fileName: extracted.fileName,
     timestamp,
     isLid: identity.isLid,
+    direction: fromMe ? 'outbound' : 'inbound',
+    fromMe,
     raw: baileysMsg,
   };
 }

@@ -8,6 +8,8 @@ export type {
   InboundMessage,
   QREventPayload,
   StatusEventPayload,
+  HistorySyncPayload,
+  MessageStatusUpdatePayload,
 } from '@dispar-flux/contracts';
 
 // Connector Adapter

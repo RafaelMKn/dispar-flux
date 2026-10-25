@@ -62,6 +62,12 @@ export function setStoredToken(token: string | null): void {
 }
 
 export function getDeviceFingerprint(): string {
+  // Em desenvolvimento usa um fingerprint fixo, casado com scripts/dev-seed.mjs,
+  // para que o dispositivo já venha aprovado e o login de testes entre direto.
+  if (import.meta.env.DEV) {
+    return 'df_fp_dev_fixed';
+  }
+
   try {
     let fp = localStorage.getItem('df_device_fingerprint');
     if (!fp) {
@@ -291,41 +297,52 @@ export const webApi: DisparApi = {
   },
 
   inbox: {
-    chats: () => req('/api/v1/inbox/chats'),
-    chat: async (jid: string) => ({
-      jid,
-      name: jid.split('@')[0],
-      lastMessage: null,
-      lastTs: Date.now(),
-      unread: 0,
-      avatarUrl: null,
-      isLead: false,
-      optOut: false,
-      syncedFrom: null,
-      syncedFull: true,
-    } as any),
+    chats: (opts?: { limit?: number; onlyLeads?: boolean; search?: string }) => {
+      const params = new URLSearchParams();
+      if (opts?.limit) params.set('limit', String(opts.limit));
+      if (opts?.onlyLeads !== undefined) params.set('onlyLeads', String(opts.onlyLeads));
+      if (opts?.search) params.set('search', opts.search);
+      const qs = params.toString();
+      return req(`/api/v1/inbox/chats${qs ? `?${qs}` : ''}`);
+    },
+    chat: (jid: string) => req(`/api/v1/inbox/chats/${encodeURIComponent(jid)}`),
     leadCount: () => req('/api/v1/inbox/lead-count'),
     totalUnread: () => req('/api/v1/inbox/total-unread'),
     messages: (chatJid: string, limit?: number) =>
       req(`/api/v1/inbox/chats/${encodeURIComponent(chatJid)}/messages?limit=${limit || 50}`),
-    count: async () => 10,
-    requestOlder: async () => true,
-    syncChat: async (jid: string) => ({ jid, inserted: 0, fetched: 0, outcome: 'ok', pendingRequests: 0 } as any),
+    count: (jid: string) => req(`/api/v1/inbox/chats/${encodeURIComponent(jid)}/count`),
+    requestOlder: async (jid: string) => {
+      try {
+        await req(`/api/v1/inbox/chats/${encodeURIComponent(jid)}/sync`, {
+          method: 'POST',
+          body: JSON.stringify({ limit: 50 }),
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    syncChat: (jid: string, days?: number | null) =>
+      req(`/api/v1/inbox/chats/${encodeURIComponent(jid)}/sync`, {
+        method: 'POST',
+        body: JSON.stringify({ days }),
+      }),
     opened: async () => null,
     syncLeads: async () => ({ running: false, done: true, processed: 0, total: 0, jid: '', fetched: 0, stoppedReason: null } as any),
     cancelLeadSync: async () => {},
     leadSyncState: async () => ({ running: false, done: true, processed: 0, total: 0, jid: '', fetched: 0, stoppedReason: null } as any),
     onLeadSync: () => () => {},
     onHistoryLate: () => () => {},
-    syncState: async () => ({ state: 'idle', percent: 100, running: false, messages: 0 } as any),
-    onSyncProgress: () => () => {},
+    syncState: () => req('/api/v1/inbox/sync-state'),
+    onSyncProgress: (cb: any) => subscribe('inbox:sync-progress', cb),
     send: async (chatJid: string, text: string) => {
       await req(`/api/v1/inbox/chats/${encodeURIComponent(chatJid)}/send`, {
         method: 'POST',
         body: JSON.stringify({ text }),
       });
     },
-    markRead: async () => {},
+    markRead: (jid: string) =>
+      req(`/api/v1/inbox/chats/${encodeURIComponent(jid)}/read`, { method: 'POST' }),
     pickAttachment: async () => null,
     sendMedia: async () => ({} as any),
     sendVoice: async () => ({} as any),
@@ -334,7 +351,7 @@ export const webApi: DisparApi = {
       window.open(`/api/v1/inbox/messages/${id}/media`, '_blank');
     },
     saveMediaAs: async () => null,
-    resync: async () => {},
+    resync: () => req('/api/v1/inbox/resync', { method: 'POST' }),
     onChanged: (cb: any) => subscribe('inbox:changed', cb),
   },
 

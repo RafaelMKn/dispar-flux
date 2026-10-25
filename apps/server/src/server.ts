@@ -74,6 +74,8 @@ import {
   type InboundMessage,
   type QREventPayload,
   type StatusEventPayload,
+  type HistorySyncPayload,
+  type MessageStatusUpdatePayload,
 } from '@dispar-flux/connector-baileys';
 import { CopilotService } from '@dispar-flux/inbox';
 import { handleApiRoutes } from './api-router.js';
@@ -89,6 +91,7 @@ export interface ServerOptions {
   recoveryKey?: string;
   nodeEnv?: string;
   version?: string;
+  edition?: 'community' | 'enterprise';
   logger?: SanitizedLogger;
 }
 
@@ -97,7 +100,26 @@ export class DisparFluxServer {
   public readonly host: string;
   public readonly dataDir: string;
   public readonly nodeEnv: string;
+  public readonly edition: 'community' | 'enterprise';
   public recoveryKey: string;
+  public connectionStates = new Map<string, {
+    status: 'disconnected' | 'connecting' | 'pairing' | 'connected' | 'failed';
+    qrDataUrl: string | null;
+    me: { id: string; name?: string } | null;
+  }>();
+  public historySyncState: {
+    running: boolean;
+    state: 'idle' | 'syncing' | 'completed' | 'error';
+    percent: number | null;
+    messages: number;
+    lastSyncAt: string | null;
+  } = {
+    running: false,
+    state: 'idle',
+    percent: null,
+    messages: 0,
+    lastSyncAt: null,
+  };
   private readonly isEphemeralRecoveryKey: boolean = false;
 
   private httpServer: http.Server | null = null;
@@ -149,6 +171,8 @@ export class DisparFluxServer {
     this.host = options.host ?? '127.0.0.1';
     this.dataDir = path.resolve(options.dataDir ?? process.env.DATA_DIR ?? './data');
     this.nodeEnv = options.nodeEnv ?? process.env.NODE_ENV ?? 'development';
+    const rawEdition = (options.edition ?? process.env.DISPAR_FLUX_EDITION ?? 'community').toLowerCase();
+    this.edition = rawEdition === 'enterprise' ? 'enterprise' : 'community';
     this.logger = extraOptions?.logger ?? options.logger ?? new SanitizedLogger('DisparFluxServer');
 
     const rawRecoveryKey = options.recoveryKey ?? process.env.RECOVERY_KEY;
@@ -321,7 +345,7 @@ export class DisparFluxServer {
           type: 'system.status_changed',
           payload: {
             status: 'connected',
-            details: { edition: 'community' },
+            details: { edition: this.edition },
           },
         })
       );
@@ -486,7 +510,7 @@ export class DisparFluxServer {
       const response: SystemStatusResponse = {
         installationId: org?.id || 'inst_unclaimed',
         version: '0.0.1',
-        edition: 'community',
+        edition: this.edition,
         environment: this.nodeEnv,
         operationalTimezone: org?.operational_timezone || 'America/Sao_Paulo',
         uptimeSeconds: Math.floor((Date.now() - this.startTime) / 1000),
@@ -1530,13 +1554,17 @@ export class DisparFluxServer {
     this.baileysConnector.on('qr', async (payload: QREventPayload) => {
       try {
         const qrDataUrl = await QRCode.toDataURL(payload.qr);
-        this.whatsappState = {
-          status: 'pairing',
+        const connState = {
+          status: 'pairing' as const,
           qrDataUrl,
           me: null,
         };
+        this.connectionStates.set(payload.connectionId, connState);
+        this.broadcast('connection:state', { connectionId: payload.connectionId, ...connState });
+
+        this.whatsappState = connState;
         this.broadcast('whatsapp:state', this.whatsappState);
-        this.broadcast('whatsapp:qr', { qrDataUrl });
+        this.broadcast('whatsapp:qr', { qrDataUrl, connectionId: payload.connectionId });
       } catch (err) {
         this.logger.error('Failed to generate QR data URL', {
           error: err instanceof Error ? err.message : String(err),
@@ -1587,17 +1615,24 @@ export class DisparFluxServer {
           }
         }
 
-        this.whatsappState = {
-          status: 'connected',
+        const connState = {
+          status: 'connected' as const,
           qrDataUrl: null,
           me,
         };
+        this.connectionStates.set(connId, connState);
+        this.broadcast('connection:state', { connectionId: connId, ...connState });
+        this.whatsappState = connState;
       } else if (payload.status === 'connecting') {
-        this.whatsappState = {
-          status: 'connecting',
+        const prevMe = this.connectionStates.get(connId)?.me || this.whatsappState.me;
+        const connState = {
+          status: 'connecting' as const,
           qrDataUrl: null,
-          me: this.whatsappState.me,
+          me: prevMe,
         };
+        this.connectionStates.set(connId, connState);
+        this.broadcast('connection:state', { connectionId: connId, ...connState });
+        this.whatsappState = connState;
       } else if (payload.status === 'disconnected' || payload.status === 'failed') {
         if (this.db) {
           try {
@@ -1614,11 +1649,14 @@ export class DisparFluxServer {
           }
         }
 
-        this.whatsappState = {
-          status: 'disconnected',
+        const connState = {
+          status: 'disconnected' as const,
           qrDataUrl: null,
           me: null,
         };
+        this.connectionStates.set(connId, connState);
+        this.broadcast('connection:state', { connectionId: connId, ...connState });
+        this.whatsappState = connState;
       }
 
       this.broadcast('whatsapp:state', this.whatsappState);
@@ -1637,15 +1675,17 @@ export class DisparFluxServer {
         const orgId = conn?.organization_id || this.getDefaultOrgId();
         const connId = conn?.id || this.getDefaultConnectionId();
 
-        const norm = normalizePhoneNumber(payload.from);
+        const isOutbound = Boolean(payload.fromMe || payload.direction === 'outbound');
+        const targetPhone = payload.from;
+        const norm = normalizePhoneNumber(targetPhone);
         const normalizedPhone = norm.isValid && norm.e164
           ? norm.e164
-          : (payload.from.startsWith('+') ? payload.from : `+${payload.from.replace('@s.whatsapp.net', '').replace(/\D/g, '')}`);
+          : (targetPhone.startsWith('+') ? targetPhone : `+${targetPhone.replace('@s.whatsapp.net', '').replace(/\D/g, '')}`);
 
         let contact = this.db.prepare('SELECT id FROM contacts WHERE organization_id = ? AND normalized_phone = ?').get(orgId, normalizedPhone) as { id: string } | undefined;
         if (!contact) {
           const contactId = crypto.randomUUID();
-          const contactName = payload.from.split('@')[0] || payload.from;
+          const contactName = targetPhone.split('@')[0] || targetPhone;
           this.db.prepare(`
             INSERT INTO contacts (id, organization_id, normalized_phone, name, custom_fields, is_opted_out, created_at, updated_at)
             VALUES (?, ?, ?, ?, '{}', 0, ?, ?)
@@ -1657,28 +1697,33 @@ export class DisparFluxServer {
 
         if (!conv) {
           const convId = crypto.randomUUID();
+          const initialUnread = isOutbound ? 0 : 1;
           this.db.prepare(`
             INSERT INTO conversations (id, organization_id, connection_id, contact_id, unread_count, last_message_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 1, ?, ?, ?)
-          `).run(convId, orgId, connId, contact.id, now, now, now);
-          conv = { id: convId, unread_count: 1 };
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(convId, orgId, connId, contact.id, initialUnread, now, now, now);
+          conv = { id: convId, unread_count: initialUnread };
         } else {
           this.db.prepare(`
             UPDATE conversations
             SET last_message_at = ?,
-                unread_count = unread_count + 1,
+                unread_count = unread_count + ?,
                 updated_at = ?
             WHERE id = ?
-          `).run(now, now, conv.id);
+          `).run(now, isOutbound ? 0 : 1, now, conv.id);
         }
 
         const msgId = crypto.randomUUID();
+        const direction = isOutbound ? 'outbound' : 'inbound';
+        const kind = isOutbound ? 'outbound' : 'inbound';
         this.db.prepare(`
           INSERT INTO messages (id, conversation_id, direction, type, kind, content, media_url, media_type, external_id, status, created_at)
-          VALUES (?, ?, 'inbound', 'manual', 'inbound', ?, ?, ?, ?, 'delivered', ?)
+          VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?, 'delivered', ?)
         `).run(
           msgId,
           conv.id,
+          direction,
+          kind,
           payload.content || '',
           payload.mediaUrl || null,
           payload.mediaType || null,
@@ -1688,36 +1733,193 @@ export class DisparFluxServer {
 
         this.broadcast('inbox:changed', { chatJid: payload.from });
 
-        // CRM lead progression
-        const leads = this.db.prepare('SELECT id, funnel_id, stage_id FROM leads WHERE contact_id = ?').all(contact.id) as Array<{ id: string; funnel_id: string; stage_id: string }>;
-        if (leads && leads.length > 0) {
-          let crmChanged = false;
-          for (const lead of leads) {
-            let inProgressStageId = 'st_2';
-            const funnel = this.db.prepare('SELECT stages FROM funnels WHERE id = ?').get(lead.funnel_id) as { stages: string } | undefined;
-            if (funnel?.stages) {
-              try {
-                const stages = JSON.parse(funnel.stages) as Array<{ id: string; name: string; order?: number }>;
-                const inProgress = stages.find((s) => s.name.toLowerCase().includes('andamento') || s.order === 1);
-                if (inProgress) {
-                  inProgressStageId = inProgress.id;
-                } else if (stages.length > 1 && stages[1]) {
-                  inProgressStageId = stages[1].id;
-                }
-              } catch {}
-            }
+        // CRM lead progression ONLY for inbound messages from clients
+        if (!isOutbound) {
+          const leads = this.db.prepare('SELECT id, funnel_id, stage_id FROM leads WHERE contact_id = ?').all(contact.id) as Array<{ id: string; funnel_id: string; stage_id: string }>;
+          if (leads && leads.length > 0) {
+            let crmChanged = false;
+            for (const lead of leads) {
+              let inProgressStageId = 'st_2';
+              const funnel = this.db.prepare('SELECT stages FROM funnels WHERE id = ?').get(lead.funnel_id) as { stages: string } | undefined;
+              if (funnel?.stages) {
+                try {
+                  const stages = JSON.parse(funnel.stages) as Array<{ id: string; name: string; order?: number }>;
+                  const inProgress = stages.find((s) => s.name.toLowerCase().includes('andamento') || s.order === 1);
+                  if (inProgress) {
+                    inProgressStageId = inProgress.id;
+                  } else if (stages.length > 1 && stages[1]) {
+                    inProgressStageId = stages[1].id;
+                  }
+                } catch {}
+              }
 
-            if (lead.stage_id !== inProgressStageId) {
-              this.db.prepare('UPDATE leads SET stage_id = ?, updated_at = ? WHERE id = ?').run(inProgressStageId, now, lead.id);
-              crmChanged = true;
+              if (lead.stage_id !== inProgressStageId) {
+                this.db.prepare('UPDATE leads SET stage_id = ?, updated_at = ? WHERE id = ?').run(inProgressStageId, now, lead.id);
+                crmChanged = true;
+              }
             }
-          }
-          if (crmChanged) {
-            this.broadcast('crm:changed', {});
+            if (crmChanged) {
+              this.broadcast('crm:changed', {});
+            }
           }
         }
       } catch (err) {
         this.logger.error('Failed to process inbound message', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+
+    // Event: 'message:status'
+    this.baileysConnector.on('message:status', (payload: MessageStatusUpdatePayload) => {
+      if (!this.db || !payload.messageId) return;
+      try {
+        this.db.prepare('UPDATE messages SET status = ? WHERE external_id = ?').run(payload.status, payload.messageId);
+        this.broadcast('inbox:changed', { chatJid: payload.remoteJid });
+      } catch (err) {
+        this.logger.error('Failed to update message status', {
+          error: err instanceof Error ? err.message : String(err),
+          messageId: payload.messageId,
+        });
+      }
+    });
+
+    // Event: 'history' (messaging-history.set)
+    this.baileysConnector.on('history', (historyPayload: HistorySyncPayload) => {
+      if (!this.db) return;
+      const now = new Date().toISOString();
+
+      try {
+        const conn =
+          (this.db.prepare('SELECT id, organization_id FROM messaging_connections WHERE id = ?').get(historyPayload.connectionId) as { id: string; organization_id: string } | undefined) ||
+          (this.db.prepare('SELECT id, organization_id FROM messaging_connections LIMIT 1').get() as { id: string; organization_id: string } | undefined);
+
+        const orgId = conn?.organization_id || this.getDefaultOrgId();
+        const connId = conn?.id || this.getDefaultConnectionId();
+
+        this.historySyncState.running = !historyPayload.isLatest;
+        this.historySyncState.state = historyPayload.isLatest ? 'idle' : 'syncing';
+        this.historySyncState.percent = historyPayload.progress ?? (historyPayload.isLatest ? 100 : null);
+        this.historySyncState.messages += historyPayload.messages.length;
+        if (historyPayload.isLatest) {
+          this.historySyncState.lastSyncAt = now;
+        }
+
+        this.db.transaction(() => {
+          // 1. Ingest contacts
+          for (const contact of historyPayload.contacts) {
+            const raw = contact.phoneNumber || contact.id;
+            if (!raw || raw.includes('@g.us') || raw.includes('status@broadcast')) continue;
+            const norm = normalizePhoneNumber(raw);
+            const normalizedPhone = norm.isValid && norm.e164 ? norm.e164 : (raw.startsWith('+') ? raw : `+${raw.replace(/\D/g, '')}`);
+            if (!normalizedPhone || normalizedPhone.length < 5) continue;
+
+            const name = contact.name || contact.notify || normalizedPhone;
+            const existing = this.db!.prepare('SELECT id, name FROM contacts WHERE organization_id = ? AND normalized_phone = ?').get(orgId, normalizedPhone) as { id: string; name: string } | undefined;
+            if (!existing) {
+              const contactId = crypto.randomUUID();
+              this.db!.prepare(`
+                INSERT INTO contacts (id, organization_id, normalized_phone, name, custom_fields, is_opted_out, created_at, updated_at)
+                VALUES (?, ?, ?, ?, '{}', 0, ?, ?)
+              `).run(contactId, orgId, normalizedPhone, name, now, now);
+            } else if ((!existing.name || existing.name === normalizedPhone) && name !== normalizedPhone) {
+              this.db!.prepare('UPDATE contacts SET name = ?, updated_at = ? WHERE id = ?').run(name, now, existing.id);
+            }
+          }
+
+          // 2. Ingest chats
+          for (const chat of historyPayload.chats) {
+            if (!chat.id || chat.id.includes('@g.us') || chat.id.includes('status@broadcast')) continue;
+            const norm = normalizePhoneNumber(chat.id);
+            const normalizedPhone = norm.isValid && norm.e164 ? norm.e164 : (chat.id.startsWith('+') ? chat.id : `+${chat.id.replace(/\D/g, '')}`);
+            if (!normalizedPhone || normalizedPhone.length < 5) continue;
+
+            let contact = this.db!.prepare('SELECT id FROM contacts WHERE organization_id = ? AND normalized_phone = ?').get(orgId, normalizedPhone) as { id: string } | undefined;
+            if (!contact) {
+              const contactId = crypto.randomUUID();
+              const name = chat.name || normalizedPhone;
+              this.db!.prepare(`
+                INSERT INTO contacts (id, organization_id, normalized_phone, name, custom_fields, is_opted_out, created_at, updated_at)
+                VALUES (?, ?, ?, ?, '{}', 0, ?, ?)
+              `).run(contactId, orgId, normalizedPhone, name, now, now);
+              contact = { id: contactId };
+            }
+
+            const existingConv = this.db!.prepare('SELECT id FROM conversations WHERE connection_id = ? AND contact_id = ?').get(connId, contact.id) as { id: string } | undefined;
+            const ts = chat.conversationTimestamp ? new Date(chat.conversationTimestamp * 1000).toISOString() : now;
+            if (!existingConv) {
+              const convId = crypto.randomUUID();
+              this.db!.prepare(`
+                INSERT INTO conversations (id, organization_id, connection_id, contact_id, unread_count, last_message_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              `).run(convId, orgId, connId, contact.id, chat.unreadCount || 0, ts, now, now);
+            }
+          }
+
+          // 3. Ingest messages
+          for (const msg of historyPayload.messages) {
+            const isOutbound = Boolean(msg.fromMe || msg.direction === 'outbound');
+            const targetJid = msg.remoteJid || msg.from;
+            if (!targetJid || targetJid.includes('@g.us') || targetJid.includes('status@broadcast')) continue;
+
+            const norm = normalizePhoneNumber(targetJid);
+            const normalizedPhone = norm.isValid && norm.e164 ? norm.e164 : (targetJid.startsWith('+') ? targetJid : `+${targetJid.replace(/\D/g, '')}`);
+            if (!normalizedPhone || normalizedPhone.length < 5) continue;
+
+            let contact = this.db!.prepare('SELECT id FROM contacts WHERE organization_id = ? AND normalized_phone = ?').get(orgId, normalizedPhone) as { id: string } | undefined;
+            if (!contact) {
+              const contactId = crypto.randomUUID();
+              const name = targetJid.split('@')[0] || normalizedPhone;
+              this.db!.prepare(`
+                INSERT INTO contacts (id, organization_id, normalized_phone, name, custom_fields, is_opted_out, created_at, updated_at)
+                VALUES (?, ?, ?, ?, '{}', 0, ?, ?)
+              `).run(contactId, orgId, normalizedPhone, name, now, now);
+              contact = { id: contactId };
+            }
+
+            let conv = this.db!.prepare('SELECT id, last_message_at FROM conversations WHERE connection_id = ? AND contact_id = ?').get(connId, contact.id) as { id: string; last_message_at: string | null } | undefined;
+            const msgTimestamp = msg.timestamp instanceof Date ? msg.timestamp.toISOString() : now;
+
+            if (!conv) {
+              const convId = crypto.randomUUID();
+              this.db!.prepare(`
+                INSERT INTO conversations (id, organization_id, connection_id, contact_id, unread_count, last_message_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+              `).run(convId, orgId, connId, contact.id, msgTimestamp, now, now);
+              conv = { id: convId, last_message_at: msgTimestamp };
+            } else if (!conv.last_message_at || new Date(msgTimestamp) > new Date(conv.last_message_at)) {
+              this.db!.prepare('UPDATE conversations SET last_message_at = ?, updated_at = ? WHERE id = ?').run(msgTimestamp, now, conv.id);
+            }
+
+            if (msg.messageId) {
+              const existingMsg = this.db!.prepare('SELECT id FROM messages WHERE external_id = ?').get(msg.messageId) as { id: string } | undefined;
+              if (existingMsg) continue;
+            }
+
+            const msgId = crypto.randomUUID();
+            const direction = isOutbound ? 'outbound' : 'inbound';
+            const kind = isOutbound ? 'outbound' : 'inbound';
+            this.db!.prepare(`
+              INSERT INTO messages (id, conversation_id, direction, type, kind, content, media_url, media_type, external_id, status, created_at)
+              VALUES (?, ?, ?, 'manual', ?, ?, ?, ?, ?, 'delivered', ?)
+            `).run(
+              msgId,
+              conv.id,
+              direction,
+              kind,
+              msg.content || '',
+              msg.mediaUrl || null,
+              msg.mediaType || null,
+              msg.messageId || null,
+              msgTimestamp
+            );
+          }
+        });
+
+        this.broadcast('inbox:sync-progress', this.historySyncState);
+        this.broadcast('inbox:changed', { chatJid: '*' });
+      } catch (err) {
+        this.logger.error('Failed to process WhatsApp history sync event', {
           error: err instanceof Error ? err.message : String(err),
         });
       }

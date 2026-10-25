@@ -49,6 +49,8 @@ export interface InboundMessage {
   fileName?: string;
   timestamp: Date;
   isLid?: boolean;
+  direction?: 'inbound' | 'outbound';
+  fromMe?: boolean;
   raw?: unknown;
 }
 
@@ -64,14 +66,52 @@ export interface StatusEventPayload {
   error?: Error;
 }
 
+export interface MessageStatusUpdatePayload {
+  connectionId: string;
+  messageId: string;
+  remoteJid: string;
+  status: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
+}
+
+export interface HistorySyncPayload {
+  connectionId: string;
+  chats: Array<{
+    id: string;
+    name?: string;
+    conversationTimestamp?: number;
+    unreadCount?: number;
+  }>;
+  contacts: Array<{
+    id: string;
+    name?: string;
+    notify?: string;
+    phoneNumber?: string;
+    lid?: string;
+  }>;
+  messages: Array<InboundMessage>;
+  lidPnMappings?: Array<{ lid: string; pn: string }>;
+  isLatest?: boolean;
+  progress?: number | null;
+  syncType?: number | null;
+}
+
 export interface MessagingConnector {
   connect(connectionId: string, options?: ConnectOptions): Promise<void>;
   disconnect(connectionId: string): Promise<void>;
   sendMessage(params: SendMessageParams): Promise<SendResult>;
   getStatus(connectionId: string): ConnectionStatus;
+  fetchOlderMessages?(
+    connectionId: string,
+    jid: string,
+    count: number,
+    oldestKey: { id: string; fromMe: boolean; timestampMs: number }
+  ): Promise<{ requestId: string | null; count: number }>;
   on(event: 'qr', listener: (payload: QREventPayload) => void): void;
   on(event: 'status', listener: (payload: StatusEventPayload) => void): void;
   on(event: 'message', listener: (message: InboundMessage) => void): void;
+  on(event: 'history', listener: (payload: HistorySyncPayload) => void): void;
+  on(event: 'message:status', listener: (payload: MessageStatusUpdatePayload) => void): void;
   on(event: 'error', listener: (error: Error, connectionId?: string) => void): void;
-  on(event: 'qr' | 'status' | 'message' | 'error', listener: Function): void;
+  on(event: 'qr' | 'status' | 'message' | 'history' | 'message:status' | 'error', listener: Function): void;
 }
+

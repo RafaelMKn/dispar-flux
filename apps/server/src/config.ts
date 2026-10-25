@@ -10,7 +10,7 @@ export interface ServerConfig {
   recoveryKey: string;
   nodeEnv: string;
   version: string;
-  edition: 'community';
+  edition: 'community' | 'enterprise';
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   logFormat: 'json' | 'text';
 }
@@ -56,7 +56,8 @@ export function loadConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
   }
 
   const version = overrides.version ?? '0.0.1';
-  const edition = 'community' as const;
+  const rawEdition = (overrides.edition ?? process.env.DISPAR_FLUX_EDITION ?? 'community').toLowerCase();
+  const edition: 'community' | 'enterprise' = rawEdition === 'enterprise' ? 'enterprise' : 'community';
 
   const rawLogLevel = (overrides.logLevel ?? process.env.LOG_LEVEL ?? (nodeEnv === 'production' ? 'info' : 'debug')).toLowerCase();
   const logLevel: 'debug' | 'info' | 'warn' | 'error' =
